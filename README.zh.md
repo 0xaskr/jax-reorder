@@ -18,11 +18,18 @@ uv sync --locked
 # 查看原始 jaxpr、BFS 编号与重排结果
 uv run python examples/inspect_jaxpr.py
 
+# 手动自检：图比较、重排前后执行及数值反例
+uv run python examples/check_correctness.py
+
 # 重放 AI 的经典组合和 SGLang-JAX LlamaMLP 正反例
 uv run python examples/bfs_reordering.py
 ```
 
 `uv sync` 创建本地 `.venv` 并安装开发依赖。默认缓存不可写时，设置 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`。
+
+[自检脚本](examples/check_correctness.py)支持 `--show-jaxpr` 查看原图和重排结果，
+`--trials 100 --seed 42` 调整数值样本。可修改其中的 `original`、候选函数和 `make_inputs`
+测试自己的计算；`CASES` 保存预期标签。检查失败时脚本返回非零退出码。
 
 ## 使用
 

@@ -18,11 +18,19 @@ uv sync --locked
 # Inspect the original jaxprs, BFS IDs, and reordered equations
 uv run python examples/inspect_jaxpr.py
 
+# Check graph comparisons, reordered execution, and numerical counterexamples
+uv run python examples/check_correctness.py
+
 # Replay AI-authored classic examples and SGLang-JAX LlamaMLP variants
 uv run python examples/bfs_reordering.py
 ```
 
 `uv sync` creates a local `.venv` and installs development dependencies. If the default cache is not writable, set `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`.
+
+The [manual check script](examples/check_correctness.py) accepts `--show-jaxpr` to display
+original and reordered graphs, and `--trials 100 --seed 42` to adjust numerical samples.
+Edit `original`, the candidate functions, and `make_inputs` to try your own computations;
+`CASES` records expected labels. Failed checks return a nonzero exit code.
 
 ## Usage
 

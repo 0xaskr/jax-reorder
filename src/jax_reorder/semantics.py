@@ -1,4 +1,10 @@
-"""Lossless in-memory values for structural comparison, never text summaries."""
+"""把参数、抽象值与常量编码成可精确比较的内存结构。
+
+编码带有类型或类别标签，避免 Python 中 True == 1 等规则混淆不同语义。
+数值数组保留 dtype、shape 和完整内容；嵌套图交由规范化器处理。
+这不是持久化格式，也不会用 repr、打印摘要或哈希代替完整比较。
+未知类型必须明确拒绝，不能为了得到相等结果而丢弃字段。
+"""
 
 import dataclasses
 import enum
@@ -16,29 +22,41 @@ from jax._src.random.prng import KeyTy, PRNGKeyArray
 
 from .errors import UnsupportedJaxprError
 
+# 编码结果主要由带标签的元组、frozenset、字节串以及已适配的描述符组成。
+# Any 避免为不同参数类型建立庞大的联合类型，不表示允许任意未知对象原样透传。
 type Frozen = Any
 
 
 class Encoder:
+    """由当前图提供引用解析规则的语义编码器。
+
+    nested(child, path) 返回子图的规范化结果；variable(var) 返回当前图内的
+    规范值引用。通过回调把图遍历与值编码分开，不让本模块自行分配节点编号。
+    """
+
     def __init__(self, nested: Callable, variable: Callable):
         self.nested = nested
         self.variable = variable
         self.active: set[int] = set()
 
     def fields(self, obj: Any, names: tuple[str, ...], path: str) -> Frozen:
+        """保存对象实际类型及指定字段，字段顺序由已核对的类型适配规则确定。"""
         return (
             type(obj),
             tuple((name, self.encode(getattr(obj, name), f"{path}.{name}")) for name in names),
         )
 
     def literal(self, value: Any, aval: core.AbstractValue, path: str) -> Frozen:
-        # Literal storage may be a Python scalar, TypedFloat/TypedInt, or NumPy
-        # scalar. Its meaning is determined by its declared dtype, not storage.
+        """按抽象值声明的 dtype 编码字面量，而不是按其 Python 存储类型编码。"""
+        # JAX 字面量可能存成 Python 标量、TypedFloat/TypedInt 或 NumPy 标量。
+        # 相同声明类型和数值不应仅因这些存储形式不同而被判为不同。
         if isinstance(aval, core.ShapedArray):
             return self.encode(np.asarray(value, dtype=aval.dtype), path)
         return self.encode(value, path)
 
     def encode(self, value: Any, path: str) -> Frozen:
+        """编码单个值，并检查当前递归路径上是否出现循环参数容器。"""
+        # 只检测当前路径，不永久标记对象；同一对象出现在两个独立参数中是合法共享。
         if id(value) in self.active:
             raise UnsupportedJaxprError(path, "cyclic parameter container")
         self.active.add(id(value))
@@ -48,6 +66,8 @@ class Encoder:
             self.active.remove(id(value))
 
     def _encode(self, value: Any, path: str) -> Frozen:
+        """按语义类别分派；特殊类型须先于其通用容器或数组类型处理。"""
+        # 图、变量、原语不能按字符串比较：分别使用规范子图、规范引用和原语身份。
         if isinstance(value, core.Jaxpr):
             return ("jaxpr", self.nested(value, path).graph)
         if isinstance(value, core.Var):
@@ -55,32 +75,38 @@ class Encoder:
         if isinstance(value, core.Primitive):
             return ("primitive", value)
         if isinstance(value, NoDCEEffect):
+            # 已核对的 NoDCEEffect 没有附加语义字段；顺序处理由图规范化器负责。
             return ("no_dce_effect",)
         if isinstance(value, HashableArray):
+            # 仍读取完整数组内容，不依赖包装对象的哈希或可能合并 NaN 情况的比较。
             return self.fields(value, ("val",), path)
         if isinstance(value, _ScalarMeta) or (
             isinstance(value, type)
             and (issubclass(value, np.generic) or value in (bool, int, float, complex))
         ):
+            # 某些合法参数直接传 jnp.float32 等 dtype 类，而不是 np.dtype 实例。
             return ("dtype", np.dtype(value))
         if value is None:
             return ("none",)
         if isinstance(value, enum.Enum):
+            # 保留枚举类型，不能把不同枚举类中数值相同的成员合并。
             return ("enum", type(value), self.encode(value.value, path))
         if type(value) in (bool, int, str, bytes):
             return (type(value), value)
         if type(value) is float:
+            # 普通浮点相等会合并 +0/-0，NaN 又不等于自身；字节编码保留位模式。
             return (float, struct.pack(">d", value))
         if type(value) is complex:
             return (complex, struct.pack(">dd", value.real, value.imag))
         if isinstance(value, np.dtype):
-            # dtype.str alone conflates distinct ml_dtypes (e.g. float8 formats).
+            # 不只保存 dtype.str：不同 ml_dtypes（如 float8 格式）可能得到相同字符串。
             return ("dtype", value)
         if isinstance(value, KeyTy):
-            # KeyTy equality compares its complete PRNGImpl, including function
-            # identities. It is an audited immutable descriptor, not its name.
+            # KeyTy 的相等比较包含完整 PRNGImpl（含函数身份），是已核对的描述符语义。
+            # 只保存名称会漏掉同名但实现不同的随机数生成器。
             return ("key_dtype", value)
         if isinstance(value, PRNGKeyArray):
+            # key 数组不能直接当普通 NumPy 数组读取；同时保存实现类型和底层 key 数据。
             return (
                 "key_array",
                 self.encode(value.dtype, path),
@@ -92,12 +118,14 @@ class Encoder:
             array = np.asarray(value)
             if array.dtype.hasobject:
                 raise UnsupportedJaxprError(path, "object arrays have opaque element semantics")
+            # 按逻辑 C 顺序读取元素，保存完整内容而非显示截断后的文本。
+            # shape、dtype 另存，避免形状不同或类型不同的相同字节被误判相等。
             return ("array", array.dtype, array.shape, array.tobytes(order="C"))
         if isinstance(value, core.AbstractToken):
             return ("token",)
         if isinstance(value, jax.tree_util.PyTreeDef):
-            # Auxiliary data may itself contain opaque Python objects. Encode
-            # it explicitly instead of delegating to arbitrary __eq__ methods.
+            # 自定义 pytree 的辅助数据可能是不透明对象，不能直接信任其 __eq__。
+            # 分别保存节点类型、辅助数据和有序子树；未知辅助数据会走显式拒绝路径。
             node = value.node_data()
             if node is None:
                 return ("pytree_leaf",)
@@ -110,6 +138,8 @@ class Encoder:
                     self.encode(c, f"{path}.children[{i}]") for i, c in enumerate(value.children())
                 ),
             )
+        # JAX 0.11.2 的 scan 等参数使用 FlatTree；各变体的语义字段并不相同。
+        # 升级 JAX 时需要重新核对这些字段，不能把内部对象的打印形式当作契约。
         flat_fields = {
             flattree.FTTuple: ("elts",),
             flattree.FTDict: ("keys", "_vals"),
@@ -121,7 +151,8 @@ class Encoder:
         if type(value) in flat_fields:
             return self.fields(value, flat_fields[type(value)], path)
         if isinstance(value, core.ShapedArray):
-            # _stripped_weak_type is a derived cache, not another semantic field.
+            # 抽象值不只有 dtype/shape，分片、布局、弱类型等也影响语义。
+            # _stripped_weak_type 是派生缓存，不作为额外语义字段保存。
             return self.fields(
                 value,
                 (
@@ -138,6 +169,7 @@ class Encoder:
         if isinstance(value, core.ManualAxisType):
             return self.fields(value, ("varying", "unreduced", "reduced", "unreduced_kind"), path)
         if isinstance(value, core.JaxprEqnContext):
+            # 保存所有已设置的上下文字段；弱引用槽不是执行语义，未设置槽不能读取。
             names = tuple(
                 name for name in value.__slots__ if name != "__weakref__" and hasattr(value, name)
             )
@@ -147,6 +179,7 @@ class Encoder:
                 value, ("axis_sizes", "axis_names", "axis_types", "abstract_device"), path
             )
         if isinstance(value, mesh.Mesh):
+            # 相同 mesh 形状不代表相同设备排列；设备顺序和轴类型都必须保留。
             devices = tuple(self.encode(v, f"{path}.devices") for v in value.devices.flat)
             return (
                 "mesh",
@@ -170,6 +203,7 @@ class Encoder:
         if value is jax.sharding.PartitionSpec.UNCONSTRAINED:
             return ("unconstrained_partition",)
         if value is layout.AutoLayout or value is named_sharding.UNSPECIFIED:
+            # 自动布局与未指定分片是已知单例，不需要编码其实现缓存或打印文本。
             return ("singleton", type(value))
         if isinstance(value, layout.Layout):
             return self.fields(
@@ -180,10 +214,12 @@ class Encoder:
         if isinstance(value, range):
             return (range, value.start, value.stop, value.step)
         if isinstance(value, tuple):
+            # 保留有序元素及实际类型，因此 namedtuple 不会退化成普通 tuple。
             return (type(value), tuple(self.encode(v, f"{path}[{i}]") for i, v in enumerate(value)))
         if type(value) is list:
             return (list, tuple(self.encode(v, f"{path}[{i}]") for i, v in enumerate(value)))
         if type(value) is dict:
+            # 字典插入顺序不是这里的参数语义；键和值本身仍需逐项完整编码。
             return (
                 dict,
                 frozenset(
@@ -192,10 +228,13 @@ class Encoder:
                 ),
             )
         if type(value) in (set, frozenset):
+            # 无序容器保持无序语义，并区分 set 与 frozenset 的类型。
             return (type(value), frozenset(self.encode(v, path) for v in value))
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            # JAX 描述符逐字段编码；不据此接纳任意用户 dataclass 或隐藏的回调语义。
             if type(value).__module__.startswith(("jax.", "jaxlib.")):
                 return self.fields(value, tuple(f.name for f in dataclasses.fields(value)), path)
+        # 不使用 repr 回退：不同对象可能有相同显示文本，却承载不同计算语义。
         raise UnsupportedJaxprError(
             path,
             "opaque parameter or abstract value of type "
@@ -204,13 +243,19 @@ class Encoder:
 
 
 def replace_nested(value: Any, replace: Callable) -> Any:
-    """Replace sub-jaxprs while retaining container types and all other values."""
+    """替换参数容器里的子 jaxpr，保留容器类型及其余对象。
+
+    当前递归处理 tuple/namedtuple、list 和 dict 中的值，其他描述符原样保留。
+    调用前须先完成语义编码和环检查；本函数只负责重建必要的运行时参数容器。
+    """
     if isinstance(value, core.Jaxpr):
         return replace(value)
     if isinstance(value, tuple):
         new = tuple(replace_nested(v, replace) for v in value)
+        # 用身份判断是否真的需要重建，避免无关数组触发逐元素相等比较。
         if all(a is b for a, b in zip(value, new, strict=True)):
             return value
+        # namedtuple 构造函数接收位置参数，普通 tuple 接收可迭代对象。
         return type(value)(*new) if hasattr(value, "_fields") else type(value)(new)
     if type(value) is list:
         new = [replace_nested(v, replace) for v in value]
