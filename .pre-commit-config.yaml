@@ -1,0 +1,19 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: Ruff format check
+        entry: uv run ruff format --check
+        language: system
+        types_or: [python, pyi]
+      - id: docs-check
+        name: Document and skill links
+        entry: uv run python scripts/check_docs.py
+        language: system
+        pass_filenames: false
+        files: '\.(md|ya?ml)$'

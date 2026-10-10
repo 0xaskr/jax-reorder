@@ -1,36 +1,10 @@
-# Project context
+# 项目上下文入口
 
-## Requested scope
+`jax-reorder` 通过 jaxpr 结构规范化比较 AI 生成的 JAX 代码与原始代码。当前以单脚本示例为入口，规范化和比较尚未实现。
 
-`jax-reorder` compares JAX programs through canonicalized jaxprs.
+- [AGENTS.md](../AGENTS.md)：工作规则、命令与技能入口。
+- [ARCHITECTURE.md](../ARCHITECTURE.md)：比较契约、支持边界和结论范围。
+- [文档索引](../docs/index.md)：设计、计划、验证与参考资料。
+- [执行计划](../docs/PLANS.md)：复杂任务的进度与完成记录。
 
-1. Normalize variable names and the order of independent equations.
-2. Support commutative and associative normalization as an explicit algebraic mode.
-3. Warn when floating-point expressions are changed by algebraic rewrites.
-4. A match should provide a useful sufficient condition within its stated scope;
-   a mismatch is not a proof that two programs compute different functions.
-
-## Comparison contract to implement
-
-- Structural mode preserves operations, operand order, data dependencies,
-  constants, abstract values, primitive parameters, and ordered outputs.
-- Algebraic mode has a distinct match category and records the rewrites used.
-  Floating-point reassociation can cause substantial differences, overflow,
-  cancellation, and different NaN behavior; warnings must not promise a small error.
-- Function-level comparison must account for input and output pytree structure.
-- Comparisons are specialized to the traced input signature and static arguments.
-  Python side effects outside the trace and arbitrary input signatures are out of scope.
-- Include closed-over constant values, not just printed jaxpr text. Any digest is
-  an indexing aid, not a replacement for exact canonical representation comparison.
-- Specify support for nested jaxprs, effects, and primitive parameters before
-  accepting them. Unsupported constructs should produce an explicit result/error.
-
-## Initial milestone
-
-The repository currently contains a uv environment definition, package skeleton,
-lint configuration, CI smoke check, and a runnable tracing example. The reorder
-algorithm and comparison API are intentionally left for the next task.
-
-When implementing, start with structural normalization and soundness tests, then
-add audited algebraic rules and precision warnings. Record any change to this
-contract in the README and tests.
+原本写在此处的语义约束已集中到架构与可靠性文档中；本文件保留导航，避免重复维护。
