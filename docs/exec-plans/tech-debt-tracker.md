@@ -7,3 +7,12 @@
 | IR-001 | Oryx 接入 | 已测依赖组合不兼容 JAX 0.11.2；模式匹配缺少闭包值、共享关系及 effects 的完整检查，需要当前 JAX 适配设计 | P1 | 待处理 | [首次评估](../development-docs/oryx-evaluation.md) |
 | AI-001 | 上游技能登记 | 原登记表的 3 个技能文件在源仓库中缺失 | P2 | 待处理 | 原仓库 AGENTS.md 登记表 |
 | AI-002 | 外部工具 | Falcon、Plane 与 TPU/GPU 未在本项目配置或验证 | P2 | 待处理 | [维护模板](../../.github/workflow-templates/) |
+
+## BFS 第一轮之后的工作
+
+| 编号 | 问题 | 优先级 | 状态 | 依据 |
+| --- | --- | --- | --- | --- |
+| BFS-001 | 未参与输出的纯子图与未使用常量尚无完整唯一标号；当前保留并返回 unknown | P2 | 待处理 | [已实现边界](../development-docs/bfs-reordering.md) |
+| BFS-002 | 函数级输入输出 pytree、静态参数与追踪上下文尚由调用方核对；接口只比较 jaxpr | P2 | 待处理 | [架构](../../ARCHITECTURE.md) |
+| BFS-003 | 私有 JAX IR 适配与 reduce callable 例外需在升级锁定版本时复审 | P2 | 待处理 | [适配记录](../development-docs/bfs-reordering.md) |
+| BFS-004 | 持久化表示、代数规则与深层区域的迭代遍历未实现；普通长依赖链已迭代处理 | P2 | 待处理 | [执行记录](completed/bfs-reordering.md) |

@@ -6,24 +6,23 @@
 
 - 项目介绍与运行方式：[中文 README](README.zh.md)、[英文 README](README.md)。
 - 架构与比较契约：[ARCHITECTURE.md](ARCHITECTURE.md)。
-- 开发、审查与验证流程：[CONTRIBUTING.md](CONTRIBUTING.md)。
+- 算法设计、审查与验证：[BFS 开发记录](docs/development-docs/bfs-reordering.md)。
 - 文档知识库：[docs/index.md](docs/index.md)。
 - AI 工作闭环与工具：[docs/AI_WORKFLOW.md](docs/AI_WORKFLOW.md)。
 - 执行计划与技术债：[docs/PLANS.md](docs/PLANS.md)。
 
 ## 当前形态与目录
 
-项目通过 jaxpr 结构规范化比较 AI 生成的 JAX 代码与原始代码。目前以单脚本示例为入口，规范化与比较功能尚未实现。
+项目通过 jaxpr 结构规范化比较 AI 生成的 JAX 代码与原始代码。当前已实现第一轮 BFS 计算图规范化与比较；支持状态和边界见架构与开发记录。
 
 | 路径 | 用途 |
 | --- | --- |
 | [examples/inspect_jaxpr.py](examples/inspect_jaxpr.py) | 当前 tracing 入口；可运行示例放在 examples |
-| [src/jax_reorder](src/jax_reorder/) | 实现代码目录，当前仅有占位文件 |
-| [tests](tests/) | 后续算法测试 |
-| [scripts](scripts/) | 文档检查和迁入的辅助工具 |
+| [src/jax_reorder](src/jax_reorder/) | 实现代码目录，BFS、语义编码及比较实现 |
+| [tests](tests/) | 算法、CPU 原语与 AI 固定用例测试 |
 | [docs/development-docs](docs/development-docs/index.md) | 算法、工具设计与实验记录 |
 | [docs/design-docs](docs/design-docs/index.md) | 跨功能设计决定 |
-| [.github/workflow-templates](.github/workflow-templates/) | 尚未启用的自动化模板 |
+| [.github/workflows](.github/workflows/) | CPU CI |
 
 ## 必须遵守
 
@@ -50,14 +49,15 @@ uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run python examples/inspect_jaxpr.py
-uv run python scripts/check_docs.py
+uv run pytest
+uv run python examples/bfs_reordering.py
+uv run python tests/lax_inventory.py
 ```
 
-- 提交前运行 Ruff、格式检查和 tracing 示例；验证细则见贡献指引。
+- 提交前运行 Ruff、格式检查和 tracing 示例；算法变更还需运行 pytest；验证证据见开发记录。
 - 缓存只读时设置 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`。
 - 使用 `uv add` / `uv add --dev` 管理依赖，提交依赖变更时包含 `uv.lock`。
-- 迁入工具的额外依赖使用 `uv sync --group ai-tools`；其他环境要求见各工具说明。
-- 当前没有算法测试；实现规范化时加入有意义的测试，再在 CI 中启用 `uv run pytest`。
+- CI 已启用 `uv run pytest`；新增规范化规则应覆盖正例、反例与拒绝路径。
 
 ## 技能入口
 
@@ -68,5 +68,5 @@ uv run python scripts/check_docs.py
 - README 面向使用者，中英文同步；AGENTS 保持导航和必要规则。
 - 比较契约在架构文档中维护，具体设计与实验进入 development-docs，长期决策进入 design-docs。
 - 复杂工作的 active 计划完成后移到 completed；未解决问题进入技术债记录。
-- 新增、移动或删除文档时更新索引与引用，运行文档检查和 `git diff --check`。
+- 新增、移动或删除文档时更新索引与引用，检查本次变更的本地链接并运行 `git diff --check`；原文档检查脚本当前缺失。
 - 上游快照保留原项目上下文，本项目的当前状态与验证结论独立记录。

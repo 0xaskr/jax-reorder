@@ -2,55 +2,72 @@
 
 [English](README.md) | [简体中文](README.zh.md)
 
-通过 jaxpr 结构规范化，比较 AI 生成代码与原始 JAX 代码的计算一致性。
+通过 jaxpr 结构规范化，比较 AI 生成或改写的 JAX 代码是否与原始代码等价。
 
-`jax-reorder` 旨在检查 AI 生成或改写的 JAX 代码是否与原始代码等价。预期流程是在相同输入签名和静态参数下追踪两个版本，将它们的 jaxpr 转换成统一的结构表示，再进行比较。
+当前实现第一轮计算图比较：从输出反向 BFS 编号，再按依赖深度重排独立方程。保留操作数位置、参数、常量、dtype、shape、共享关系及嵌套子图，不执行交换律、结合律等代数变换。
 
 ## 开发快速开始
 
-开发使用 Python 3.12，通过 [uv](https://docs.astral.sh/uv/) 管理环境与依赖。
+使用 Python 3.12 和 [uv](https://docs.astral.sh/uv/)。锁定环境为 JAX/jaxlib 0.11.2、CPU。
 
 ```bash
 git clone https://github.com/0xaskr/jax-reorder.git
 cd jax-reorder
-
-# 安装锁定版本的环境，包含开发工具
 uv sync --locked
 
-# 查看算子排列顺序不同的两个计算
+# 查看原始 jaxpr、BFS 编号与重排结果
 uv run python examples/inspect_jaxpr.py
+
+# 重放 AI 的经典组合和 SGLang-JAX LlamaMLP 正反例
+uv run python examples/bfs_reordering.py
 ```
 
-`uv sync` 会创建本地 `.venv`，准备 CPU 版 JAX 和开发依赖。如需直接激活环境，执行 `source .venv/bin/activate`。
+`uv sync` 创建本地 `.venv` 并安装开发依赖。默认缓存不可写时，设置 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`。
 
-常用检查：
+## 使用
+
+```python
+import jax
+import jax.numpy as jnp
+from jax_reorder import compare_jaxprs
+
+
+def original(x, y):
+    a = jnp.sin(x)
+    b = jnp.cos(y)
+    return a + b
+
+
+def candidate(x, y):
+    b = jnp.cos(y)
+    a = jnp.sin(x)
+    return a + b
+
+
+signature = jax.ShapeDtypeStruct((4,), jnp.float32)
+left = jax.make_jaxpr(original)(signature, signature)
+right = jax.make_jaxpr(candidate)(signature, signature)
+result = compare_jaxprs(left, right)
+print(result.status.value)  # equivalent
+```
+
+结果为 `equivalent`（计算图等价）、`different`（计算图不等价）或 `unknown`（无法判定）。`different` 提供差异位置，但不证明数学公式不等价。存在未使用分支或未支持的语义时返回 `unknown`，并说明原因。
+
+`canonicalize(jaxpr)` 可单独获取重排后的 jaxpr、规范结构、编号、深度与变量引用映射。调用方须保持追踪上下文一致，并核对函数输入输出 pytree；本接口只接收展平后的 jaxpr。
+
+## 验证与文档
 
 ```bash
 uv run ruff check .
 uv run ruff format --check .
+uv run pytest
+uv run python tests/lax_inventory.py
 ```
 
-`pytest` 已列为开发依赖。实现规范化算法时，应在 `tests/` 下加入有意义的测试，再在 CI 中启用。
+测试覆盖公开 lax 原语、独立分支组合、嵌套图、19 种 dtype 与多种 shape，以及 18 个保存了 AI 判断和数值证据的组合案例。集合通信测试默认使用两个逻辑 CPU 设备。有限测试样本不限制原语的合法参数域，也不代表穷举所有组合。
 
-## 示例与项目导航
-
-[`examples/inspect_jaxpr.py`](examples/inspect_jaxpr.py) 追踪两个计算 `sin(x) + cos(y)` 的函数，它们的独立运算排列顺序不同：
-
-```python
-import jax.numpy as jnp
-
-
-def first(x, y):
-    a = jnp.sin(x)
-    b = jnp.cos(y)
-    return a + b
-
-
-def second(x, y):
-    b = jnp.cos(y)
-    a = jnp.sin(x)
-    return a + b
-```
-
-在这个示例中，`first` 代表原始实现，`second` 代表一种 AI 可能产出的候选改写。
-
+- [架构与比较契约](ARCHITECTURE.md)
+- [BFS 设计与 review](docs/development-docs/bfs-reordering.md)
+- [逐原语覆盖与 CPU 限制](docs/development-docs/lax-coverage.md)
+- [AI 案例及模型来源](docs/development-docs/bfs-cases.md)
+- [文档索引](docs/index.md)

@@ -1,10 +1,12 @@
 # 开发文档索引
 
-规范化算法、比较实现和辅助工具的具体设计、实验与验证放在本目录。当前核心算法尚未实现；以 [比较契约](../../ARCHITECTURE.md) 为起点。
+规范化算法、比较实现和辅助工具的具体设计、实验与验证放在本目录。当前已实现第一轮 BFS 图规范化与比较；以 [比较契约](../../ARCHITECTURE.md) 为起点。
 
 | 主题 | 文档 |
 | --- | --- |
-| Oryx 接口、兼容性与最小转换实验 | [oryx-evaluation.md](oryx-evaluation.md) |
+| BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
+| CPU lax 逐项原语清单与验证绑定 | [lax-coverage.md](lax-coverage.md) |
+| AI 组合判断、反例与模型提取来源 | [bfs-cases.md](bfs-cases.md) |
 
 开发文档应覆盖：
 

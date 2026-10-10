@@ -1,0 +1,26 @@
+name: CPU validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      JAX_PLATFORMS: cpu
+      XLA_FLAGS: --xla_force_host_platform_device_count=2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.9"
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+      - run: uv run python tests/lax_inventory.py
+      - run: uv run python examples/inspect_jaxpr.py
+      - run: uv run python examples/bfs_reordering.py

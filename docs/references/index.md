@@ -2,7 +2,7 @@
 
 | 主题 | 入口 |
 | --- | --- |
-| jaxpr 四类比较结果与判定边界 | [equivalence-results.md](equivalence-results.md) |
+| jaxpr 两轮规范化、四类比较结果与判定边界 | [equivalence-results.md](equivalence-results.md) |
 | Oryx / MLIR / StableHLO 参考路线 | [ir-comparison.md](ir-comparison.md) |
 | 原仓库资料快照 | [pallas-kernel/README.md](pallas-kernel/README.md) |
 | 逐文件来源 | [manifest.json](pallas-kernel/manifest.json) |

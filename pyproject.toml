@@ -5,10 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "jax-reorder"
 version = "0.1.0"
-description = "Canonicalize JAX jaxprs for structural and algebraic comparison."
+description = "Canonicalize and compare JAX computation graphs."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["jax[cpu]"]
+dependencies = [
+    "jax[cpu]",
+    "numpy>=2.5.3",
+]
 
 [project.urls]
 Repository = "https://github.com/0xaskr/jax-reorder"
@@ -29,4 +32,5 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra"
