@@ -1,9 +1,9 @@
-# 工具与来源索引
+# 参考文档索引
 
 | 主题 | 入口 |
 | --- | --- |
+| jaxpr 四类比较结果与判定边界 | [equivalence-results.md](equivalence-results.md) |
 | Oryx / MLIR / StableHLO 参考路线 | [ir-comparison.md](ir-comparison.md) |
-| 技能配置与维护约定 | [skills.md](skills.md) |
 | 原仓库资料快照 | [pallas-kernel/README.md](pallas-kernel/README.md) |
 | 逐文件来源 | [manifest.json](pallas-kernel/manifest.json) |
 | 源代码许可证 | [LICENSE](pallas-kernel/LICENSE) |

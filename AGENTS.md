@@ -61,7 +61,7 @@ uv run python scripts/check_docs.py
 
 ## 技能入口
 
-当前未配置项目技能。新增技能的约定见 [技能说明](docs/references/skills.md)。
+当前未配置项目技能。
 
 ## 文档维护
 
