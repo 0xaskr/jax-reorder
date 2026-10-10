@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jax-reorder"
+version = "0.1.0"
+description = "Canonicalize JAX jaxprs for structural and algebraic comparison."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["jax[cpu]"]
+
+[project.urls]
+Repository = "https://github.com/0xaskr/jax-reorder"
+Issues = "https://github.com/0xaskr/jax-reorder/issues"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jax_reorder"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
