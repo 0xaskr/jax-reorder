@@ -18,7 +18,11 @@ Repository = "https://github.com/0xaskr/jax-reorder"
 Issues = "https://github.com/0xaskr/jax-reorder/issues"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.11"]
+dev = [
+    "flax>=0.12.10",
+    "pytest>=8",
+    "ruff>=0.11",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jax_reorder"]

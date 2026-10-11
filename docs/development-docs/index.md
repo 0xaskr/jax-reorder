@@ -5,8 +5,12 @@
 | 主题 | 文档 |
 | --- | --- |
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
+| cond 闭包捕获与实参/形参同步规范化 | [cond-bindings.md](cond-bindings.md) |
 | CPU lax 逐项原语清单与验证绑定 | [lax-coverage.md](lax-coverage.md) |
 | AI 组合判断、反例与模型提取来源 | [bfs-cases.md](bfs-cases.md) |
+| 通信组合、参数反例与 CPU 多设备验证 | [collective-jaxpr.md](collective-jaxpr.md) |
+| 真实层级场景、AI hardcode 改写与独立数值参照 | [business-layer-cases.md](business-layer-cases.md) |
+| SGLang-JAX 全部模型的层级对抗验证 | [sglang-model-layers.md](sglang-model-layers.md) |
 
 开发文档应覆盖：
 

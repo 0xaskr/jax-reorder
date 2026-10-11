@@ -1,0 +1,221 @@
+"""手工选择真实层及模型调用关系；注册清单另由源码独立读取。"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class LayerSpec:
+    key: str
+    path: str
+    class_name: str
+    family: str
+    configuration: str = "非量化、小形状、CPU 单设备 data/tensor mesh"
+
+
+LAYERS = (
+    LayerSpec("llama", "models/llama.py", "LlamaMLP", "up_silu"),
+    LayerSpec("qwen", "models/qwen.py", "QWenMLP", "qwen"),
+    LayerSpec("qwen2", "models/qwen2.py", "Qwen2MLP", "up_silu"),
+    LayerSpec("qwen3", "models/qwen3.py", "Qwen3MLP", "up_silu"),
+    LayerSpec("qwen2_moe", "models/qwen2_moe.py", "Qwen2MoeMLP", "up_silu"),
+    LayerSpec("bailing", "models/bailing_moe.py", "BailingMoEMLP", "up_silu"),
+    LayerSpec("bailing3", "models/bailing_moe_v3.py", "BailingMoeV3MLP", "gate_silu"),
+    LayerSpec("deepseek", "models/deepseek_v3.py", "DeepseekV3MLP", "gate_silu"),
+    LayerSpec("dflash", "models/dflash.py", "DFlashMLP", "gate_silu"),
+    LayerSpec("gemma2", "models/gemma2.py", "Gemma2MLP", "up_gelu"),
+    LayerSpec("gemma4", "models/gemma4.py", "Gemma4MLP", "up_gelu"),
+    LayerSpec("gemma4_vision", "models/gemma4_vision.py", "Gemma4VisionMLP", "vision_gate_gelu"),
+    LayerSpec("glm4", "models/glm4_moe.py", "Glm4MoeMLP", "up_silu"),
+    LayerSpec("glm5", "models/glm5_moe.py", "Glm5MLP", "up_silu", "CPU 非融合路径 use_fused=False"),
+    LayerSpec(
+        "grok", "models/grok.py", "Grok1MLP", "grok", "residual_moe=True 的残差 MLP；关闭序列并行"
+    ),
+    LayerSpec(
+        "kimi_norm",
+        "layers/attention/fla/gated_rmsnorm.py",
+        "GatedRMSNorm",
+        "gated_norm",
+        "KimiLinearAttention.o_norm；FP32 归约，epsilon=1e-6",
+    ),
+    LayerSpec(
+        "kimi_vision",
+        "multimodal/models/kimi_k25/kimi_k25_vit.py",
+        "KimiK25VisionMLP",
+        "nnx_gelu",
+    ),
+    LayerSpec("mimo2", "models/mimo_v2_flash.py", "MiMoV2MLP", "up_silu"),
+    LayerSpec("mimo_vision", "models/mimo_v2_vision.py", "MiMoVisionMLP", "vision_gate_silu"),
+    LayerSpec("minimax2", "models/minimax_m2.py", "MiniMaxM2QKNorm", "qk_norm"),
+    LayerSpec(
+        "minimax3",
+        "models/minimax_m3.py",
+        "MiniMaxM3MLP",
+        "swigluoai",
+        "非融合共享专家 MLP；alpha=1.702，limit=7.0",
+    ),
+    LayerSpec("qwen25_vision", "models/qwen2_5_vl.py", "Qwen2_5_VLMLP", "vision_gate_silu"),
+    LayerSpec("qwen3_vision", "models/qwen3_vl.py", "Qwen3VLVisionMLP", "vision_gelu"),
+    LayerSpec("umt5", "models/umt5.py", "UMT5FFN", "t5_gated"),
+    LayerSpec("dspark", "models/dspark.py", "VanillaMarkovHead", "markov"),
+    LayerSpec(
+        "qwen3_moe_gate",
+        "layers/gate.py",
+        "GateLogit",
+        "router",
+        "QWen3MoeDecoderLayer.moe_gate；softmax",
+    ),
+    LayerSpec("wan", "multimodal/layers/mlp.py", "MLP", "dit_mlp"),
+    LayerSpec("flux", "multimodal/layers/mlp.py", "FeedForward", "flux_ffn"),
+    LayerSpec(
+        "qwen25_legacy",
+        "multimodal/models/qwen2_5VL/qwen2_5_vit.py",
+        "Qwen2_5_VisionMLP",
+        "nnx_gate_silu",
+    ),
+    LayerSpec(
+        "qwen_omni_vision",
+        "multimodal/models/qwen3_omni_moe/vision_encoder.py",
+        "VisionMLP",
+        "omni_vision",
+    ),
+    LayerSpec(
+        "mimo_audio",
+        "multimodal/models/mimo_audio/mimo_audio_backbone.py",
+        "MiMoAudioMLP",
+        "up_silu",
+    ),
+    LayerSpec(
+        "audio_quantizer",
+        "multimodal/models/mimo_audio/mimo_audio_tokenizer.py",
+        "ResidualVectorQuantizer",
+        "rvq_decode",
+        "两级码本的 decode 方法，保留量化索引和分级求和顺序",
+    ),
+    LayerSpec("clip", "multimodal/models/encoders/clip.py", "CLIPMLP", "clip_mlp"),
+    LayerSpec("t5", "multimodal/models/encoders/t5.py", "T5FFN", "t5_gated"),
+    LayerSpec(
+        "flux_vae",
+        "multimodal/models/vaes/common.py",
+        "ResnetBlock2D",
+        "resnet",
+        "带 1×1 shortcut，推理 dropout",
+    ),
+    LayerSpec(
+        "wan_vae",
+        "multimodal/models/wan/vaes/wanvae.py",
+        "CausalConv3d",
+        "causal_conv",
+        "真实 nnx.Conv；保留输入缓存、时间方向左填充及返回缓存",
+    ),
+)
+LAYER_BY_KEY = {item.key: item for item in LAYERS}
+
+# 每项明确指定模型实际使用的层；同名家族与继承别名不会凭名字自动归类。
+MODEL_LAYERS = {
+    "BailingMoEForCausalLM": "bailing",
+    "BailingMoeForCausalLM": "bailing",
+    "BailingMoeV2ForCausalLM": "bailing",
+    "BailingMoeV2_5ForCausalLM": "deepseek",
+    "BailingMoeV3ForCausalLM": "bailing3",
+    "DeepseekV3ForCausalLM": "deepseek",
+    "DeepseekV2ForCausalLM": "deepseek",
+    "DFlashDraftModel": "dflash",
+    "Qwen3DSparkModel": "dspark",
+    "Gemma2ForCausalLM": "gemma2",
+    "Gemma4ForCausalLM": "gemma4",
+    "Gemma4ForConditionalGeneration": "gemma4_vision",
+    "Glm4MoeForCausalLM": "glm4",
+    "Glm5ForCausalLM": "glm5",
+    "GlmMoeDsaForCausalLM": "glm5",
+    "Grok1ForCausalLM": "grok",
+    "KimiK25ForConditionalGeneration": "kimi_vision",
+    "KimiLinearForCausalLM": "kimi_norm",
+    "LlamaForCausalLM": "llama",
+    "Phi3ForCausalLM": "llama",
+    "InternLM3ForCausalLM": "llama",
+    "LlamaForCausalLMEagle3": "llama",
+    "MiMoForCausalLM": "qwen2",
+    "MiMoMTPForCausalLM": "qwen2",
+    "MiMoV2FlashForCausalLM": "mimo2",
+    "MiMoV2ForConditionalGeneration": "mimo_vision",
+    "MiMoV2MTPForCausalLM": "mimo2",
+    "MiMoV2ForCausalLM": "mimo2",
+    "MiniMaxM2ForCausalLM": "minimax2",
+    "MiniMaxM3SparseForCausalLM": "minimax3",
+    "MiniMaxM3SparseForConditionalGeneration": "minimax3",
+    "QWenLMHeadModel": "qwen",
+    "Qwen2ForCausalLM": "qwen2",
+    "Qwen2_5_VLForConditionalGeneration": "qwen25_vision",
+    "Qwen2MoeForCausalLM": "qwen2_moe",
+    "Qwen3ForCausalLM": "qwen3",
+    "Qwen3_5MoeForConditionalGeneration": "qwen2_moe",
+    "Qwen3_5ForConditionalGeneration": "qwen2_moe",
+    "Qwen3MoeForCausalLM": "qwen3_moe_gate",
+    "Qwen3VLForConditionalGeneration": "qwen3_vision",
+    "UMT5EncoderModel": "umt5",
+    "UMT5DecoderModel": "umt5",
+    "UMT5Model": "umt5",
+    "UMT5ForConditionalGeneration": "umt5",
+}
+
+CONFIG_LAYERS = {
+    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": "wan",
+    "Wan2.1-T2V-1.3B-Diffusers": "wan",
+    "Wan-AI/Wan2.1-T2V-14B-Diffusers": "wan",
+    "Wan2.1-T2V-14B-Diffusers": "wan",
+    "Wan2.1-I2V-14B-480P-Diffusers": "wan",
+    "Wan2.1-I2V-14B-720P-Diffusers": "wan",
+    "Wan-AI/Wan2.2-T2V-A14B-Diffusers": "wan",
+    "Wan2.2-T2V-A14B-Diffusers": "wan",
+    "Wan-AI/Wan2.2-I2V-A14B-Diffusers": "wan",
+    "Wan2.2-I2V-A14B-Diffusers": "wan",
+    "Qwen/Qwen2.5-VL-3B-Instruct": "qwen25_legacy",
+    "Qwen/Qwen2.5-VL-7B-Instruct": "qwen25_legacy",
+    "Qwen2.5-VL-7B-Instruct": "qwen25_legacy",
+    "Qwen/Qwen2.5-VL-32B-Instruct": "qwen25_legacy",
+    "Qwen2.5-VL-32B-Instruct": "qwen25_legacy",
+    "Qwen/Qwen2.5-VL-72B-Instruct": "qwen25_legacy",
+    "Qwen2.5-VL-72B-Instruct": "qwen25_legacy",
+    "Qwen/Qwen3-Omni-30B-A3B-Instruct": "qwen_omni_vision",
+    "XiaomiMiMo/MiMo-Audio-7B-Instruct": "mimo_audio",
+    "XiaomiMiMo/MiMo-Audio-7B-Base": "mimo_audio",
+    "MiMo-Audio-7B-Instruct": "mimo_audio",
+    "MiMo-Audio-7B-Base": "mimo_audio",
+    "XiaoMi/MiMo-Audio-Tokenizer": "audio_quantizer",
+    "MiMo-Audio-Tokenizer": "audio_quantizer",
+    "black-forest-labs/FLUX.1-dev": "flux",
+    "FLUX.1-dev": "flux",
+}
+
+# manager/stage.py 明确将流水线 UMT5 指向 multimodal/encoders/t5.py。
+COMPONENT_LAYERS = {
+    "Qwen2ForCausalLM": "qwen2",
+    "AutoencoderKL": "flux_vae",
+    "AutoencoderKLWan": "wan_vae",
+    "CLIPTextModel": "clip",
+    "FluxTransformer2DModel": "flux",
+    "MiMoAudioForCausalLM": "mimo_audio",
+    "MiMoAudioTokenizer": "audio_quantizer",
+    "Qwen2_5_VL_Generation": "qwen2",
+    "Qwen2_5_VL_VisionModel": "qwen25_legacy",
+    "Qwen3OmniMoeThinkerEmbedding": "qwen_omni_vision",
+    "Qwen3OmniMoeThinkerTextForConditionalGeneration": "qwen3_moe_gate",
+    "T5EncoderModel": "t5",
+    "UMT5EncoderModel": "t5",
+    "WanDualTransformer3DModel": "wan",
+    "WanTransformer3DModel": "wan",
+}
+
+MULTIMODAL_LAYERS = {
+    "FluxTransformer2DModel": "flux",
+    "CLIPTextModel": "clip",
+    "CLIPVisionModel": "clip",
+    "T5EncoderModel": "t5",
+    "UMT5EncoderModel": "t5",
+    "KimiK25ForConditionalGeneration": "kimi_vision",
+    "MiMoAudioForCausalLM": "mimo_audio",
+    "MiMoAudioTokenizer": "audio_quantizer",
+    "AutoencoderKL": "flux_vae",
+    "WanTransformer3DModel": "wan",
+    "AutoencoderKLWan": "wan_vae",
+}

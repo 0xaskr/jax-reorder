@@ -8,6 +8,7 @@
 import sys
 
 from jax import lax
+from jax._src import core as jax_core
 from jax._src import pjit, shard_map
 from jax.extend import core
 
@@ -41,4 +42,7 @@ def supported_primitive_identities() -> frozenset[core.Primitive]:
     # 已支持的公开 lax 包装路径，因此明确移除，避免把它当普通纯子图重排。
     result.discard(pjit.program_order_p)
     result.add(shard_map.shard_map_p)
+    # check_vma=True 的通信组合会插入 pvary，改变手动轴的变化类型。
+    # 它定义在 core，未被上面的 lax 模块扫描发现；仍保留节点、axes 和抽象值。
+    result.add(jax_core.pvary_p)
     return frozenset(result)

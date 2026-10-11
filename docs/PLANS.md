@@ -4,10 +4,14 @@
 
 ## 当前计划
 
-暂无。
+暂无活动计划。
 
 ## 已完成计划
 
+- [SGLang-JAX 全模型层级对抗验证](exec-plans/completed/sglang-model-layers.md)：全部注册入口映射到 36 个真实层，216 个候选/签名组合、1080 组数值检查通过；新增 182 项回归，全量 844 passed。
+- [cond 内部参数绑定规范化](exec-plans/completed/cond-bindings.md)：修复捕获槽位同步换序误判，新增 30 项回归，全量 662 passed。
+- [真实层级场景的 AI 固定改写](exec-plans/completed/business-layer-cases.md)：五个 base、20 个 AI hardcode 候选；独立参照与两组种子验证通过，新增 67 项回归，全量 632 passed。
+- [带通信的 jaxpr 验证](exec-plans/completed/collective-jaxpr.md)：补齐 pvary；22 个组合通过双/四 CPU 设备验证，新增 49 项回归，全量 565 passed。
 - [第一轮：基于 BFS 的 jaxpr 计算图规范化与比较](exec-plans/completed/bfs-reordering.md)：实现与自审完成，516 个测试通过；CPU 原语逐项覆盖、AI 经典案例及 LlamaMLP 正反例已固化。
 
 ## 计划应包含

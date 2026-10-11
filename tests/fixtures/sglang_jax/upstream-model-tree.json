@@ -1,0 +1,597 @@
+{
+  "revision": "c98ced4a7a64e83261f6672937ce41f0095828ba",
+  "files": [
+    {
+      "path": "python/sgl_jax/srt/models/bailing_moe.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "107fa15f83a4de37581893b83a20aa4b17ca5cfd",
+      "size": 37587,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/107fa15f83a4de37581893b83a20aa4b17ca5cfd"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/bailing_moe_linear.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "58fdba76c53cc469085f06e107e8640e81281cf1",
+      "size": 47736,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/58fdba76c53cc469085f06e107e8640e81281cf1"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/bailing_moe_v3.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d6f16233bc3ee3a2ef32ab87cfe1719a70faa5cf",
+      "size": 32230,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/d6f16233bc3ee3a2ef32ab87cfe1719a70faa5cf"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/deepseek_v3.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eb48f9bacbf9e47181e19a3dd07efb6b7c2ead83",
+      "size": 37599,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/eb48f9bacbf9e47181e19a3dd07efb6b7c2ead83"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/dflash.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "299a51016159fefd2c35f1c9e1930d98b4cf57e7",
+      "size": 18669,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/299a51016159fefd2c35f1c9e1930d98b4cf57e7"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/dspark.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f50c63a68f7441b942863db1c6199f0fbb9d7dbc",
+      "size": 5115,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/f50c63a68f7441b942863db1c6199f0fbb9d7dbc"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/gemma2.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "aeea700e8c88f45d542d18316b8ea4b17b90c271",
+      "size": 14926,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/aeea700e8c88f45d542d18316b8ea4b17b90c271"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/gemma4.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fe64887413c35d6145b286ddc2cbd5924292a2d4",
+      "size": 39062,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/fe64887413c35d6145b286ddc2cbd5924292a2d4"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/gemma4_vision.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ac1ba1548cf7637d0615ff805d47e48a4de669c4",
+      "size": 21320,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/ac1ba1548cf7637d0615ff805d47e48a4de669c4"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/glm4_moe.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "befc8985d6ada01e4f10f54a5f91f85d26d8acea",
+      "size": 31969,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/befc8985d6ada01e4f10f54a5f91f85d26d8acea"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/glm5_moe.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9767bda2e4e05d2b7e4dedbb1aafbcf2746ece08",
+      "size": 54556,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/9767bda2e4e05d2b7e4dedbb1aafbcf2746ece08"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/grok.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "319073f9250b3d1005ae9c5ed226e28905f206ce",
+      "size": 41602,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/319073f9250b3d1005ae9c5ed226e28905f206ce"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/kimi_k25_vl_generation.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "916b69772c1f5d9ea944618e024654b2aa7899f7",
+      "size": 242,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/916b69772c1f5d9ea944618e024654b2aa7899f7"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/kimi_linear.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "38a4aa0516c19fb476a407373c8600e42dbf7758",
+      "size": 30913,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/38a4aa0516c19fb476a407373c8600e42dbf7758"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/llama.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "8d8f9b8367e58f0771de32d29bf616ff15386e22",
+      "size": 24418,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/8d8f9b8367e58f0771de32d29bf616ff15386e22"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/llama_eagle3.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a00e9242f4134afe8f28042c6eadeaf4f1d207cc",
+      "size": 14383,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/a00e9242f4134afe8f28042c6eadeaf4f1d207cc"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a305654037a8f4b4f4fa385c013d0000a7ab4f13",
+      "size": 1299,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/a305654037a8f4b4f4fa385c013d0000a7ab4f13"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_mtp.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "23e3ad91c9e2fbca75bac4d72a6bfb18f2751016",
+      "size": 10058,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/23e3ad91c9e2fbca75bac4d72a6bfb18f2751016"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_audio.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fbe033073276e86466b5c843d39d0f50ea57df7e",
+      "size": 10602,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/fbe033073276e86466b5c843d39d0f50ea57df7e"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_flash.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e607024ea6bd47ebbc828341ef8d7a18b4205cc7",
+      "size": 30552,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/e607024ea6bd47ebbc828341ef8d7a18b4205cc7"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_mm.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a68f69b571442fe9af0fc1372094568cf449556c",
+      "size": 12284,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/a68f69b571442fe9af0fc1372094568cf449556c"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_nextn.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "18d942bf5d2f2b829d0731b783b36f7bc3f35dc4",
+      "size": 13645,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/18d942bf5d2f2b829d0731b783b36f7bc3f35dc4"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_pro.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d4749da91585aa220280fc6dd666db3159a711bc",
+      "size": 8583,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/d4749da91585aa220280fc6dd666db3159a711bc"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_vision.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e13ae3d15bfd0f362d9d841175161d5e8b72eb02",
+      "size": 21406,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/e13ae3d15bfd0f362d9d841175161d5e8b72eb02"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_weight_loading.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4f9bdd4fad167f35c1df8aa4bd1d9cf948aef843",
+      "size": 10983,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/4f9bdd4fad167f35c1df8aa4bd1d9cf948aef843"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/minimax_m2.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4a9a219fe97674507b5f049c64218c55d0018ded",
+      "size": 20085,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/4a9a219fe97674507b5f049c64218c55d0018ded"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/minimax_m3.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "81d353c9f57f6e14b864faf13d0957a04083556a",
+      "size": 24459,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/81d353c9f57f6e14b864faf13d0957a04083556a"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "04edf6d377e32ccf32c73882f784588caf8ffbff",
+      "size": 14264,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/04edf6d377e32ccf32c73882f784588caf8ffbff"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen2.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6dba9010eec1dfe3dad72aabd4f0ad0d487653eb",
+      "size": 17101,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/6dba9010eec1dfe3dad72aabd4f0ad0d487653eb"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen2_5_vl.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2617666d159441b83fd2b90f974ac59820126547",
+      "size": 35497,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/2617666d159441b83fd2b90f974ac59820126547"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen2_moe.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "34f991f9cc27e51bf53c956d26d106add5793f2a",
+      "size": 23370,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/34f991f9cc27e51bf53c956d26d106add5793f2a"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dea60ec9dcc73a42f343d3794cc17f9c67893784",
+      "size": 21860,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/dea60ec9dcc73a42f343d3794cc17f9c67893784"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3_5.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "351c04ec1cb676196ba773dfd69211a791a87890",
+      "size": 40812,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/351c04ec1cb676196ba773dfd69211a791a87890"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3_moe.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f7d810079ffe38234d5b318bd274e855ee427bcc",
+      "size": 25751,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/f7d810079ffe38234d5b318bd274e855ee427bcc"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3_vl.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d593e23fd394733156a238851115ad0083141783",
+      "size": 29689,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/d593e23fd394733156a238851115ad0083141783"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/registry.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3da7bc52dfd708ea665272c589fcfc2c4ad6195a",
+      "size": 3806,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/3da7bc52dfd708ea665272c589fcfc2c4ad6195a"
+    },
+    {
+      "path": "python/sgl_jax/srt/models/umt5.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "03f5f527706ff331b72dbe2af571ad2e94dc38ea",
+      "size": 30047,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/03f5f527706ff331b72dbe2af571ad2e94dc38ea"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/diffusion_solvers/flow_match_euler_discrete_scheduler.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "828240dfa5fd6e67bea4ff9b9e30c3d96baf483a",
+      "size": 14085,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/828240dfa5fd6e67bea4ff9b9e30c3d96baf483a"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/diffusion_solvers/flow_unipc_multistep_scheduler.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "634f6158358c6e62cf24f142391d7e5cf18701e9",
+      "size": 24083,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/634f6158358c6e62cf24f142391d7e5cf18701e9"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/dits/flux.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "de34fa800393f16e11548844fd800b3338489493",
+      "size": 28888,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/de34fa800393f16e11548844fd800b3338489493"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/dits/flux_dit_weights_mapping.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7b196bc03fb2657746d9061e6c9e25a3edb8f638",
+      "size": 9935,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/7b196bc03fb2657746d9061e6c9e25a3edb8f638"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/encoders/base.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a0fadcbfd43ad0044561ec9df8f0ca647c5dfce0",
+      "size": 680,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/a0fadcbfd43ad0044561ec9df8f0ca647c5dfce0"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/encoders/clip.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b3dff484d798748e93a70c32547131516bf44a45",
+      "size": 22004,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/b3dff484d798748e93a70c32547131516bf44a45"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/encoders/t5.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "565d18a78de4ee8fedaeca09d92ebabcfa97a074",
+      "size": 15811,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/565d18a78de4ee8fedaeca09d92ebabcfa97a074"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/kimi_k25/kimi_k25_vit.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e32129e4dcc93190f4050403e89e602620e3bae3",
+      "size": 30016,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/e32129e4dcc93190f4050403e89e602620e3bae3"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/kimi_k25/kimi_k25_vl_generation.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6d18985e9eb1719d589595ad0ee7e363eeba4e52",
+      "size": 5164,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/6d18985e9eb1719d589595ad0ee7e363eeba4e52"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/__init__.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c284c8f278822b5cd40ca97659614ad207515b12",
+      "size": 369,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/c284c8f278822b5cd40ca97659614ad207515b12"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_backbone.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ce892924c1bc9a8c1b42f70c05622b4e20253020",
+      "size": 24948,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/ce892924c1bc9a8c1b42f70c05622b4e20253020"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_backbone_weights_mapping.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "61782a74ff3755417dbbc95ecddd92eeb22c9d89",
+      "size": 4046,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/61782a74ff3755417dbbc95ecddd92eeb22c9d89"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_tokenizer.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "74de9f7d4d2baa160c4bda42e44a9752e8cbf949",
+      "size": 29365,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/74de9f7d4d2baa160c4bda42e44a9752e8cbf949"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_tokenizer_weights_mapping.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4413e1f47551e152c63ce805d048d86c2732b486",
+      "size": 11315,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/4413e1f47551e152c63ce805d048d86c2732b486"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen2_5VL/qwen2_5_vit.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ee8e9fed138b57a3cb9e79ea08281312852a2215",
+      "size": 33738,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/ee8e9fed138b57a3cb9e79ea08281312852a2215"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen2_5VL/qwen2_5_vl_generation.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "09c97150ea3c9d69b539fdd099a976dd592fe6cc",
+      "size": 11283,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/09c97150ea3c9d69b539fdd099a976dd592fe6cc"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/audio_encoder.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "56a12b758a99f56ff019e4cb32673e31e300978c",
+      "size": 13093,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/56a12b758a99f56ff019e4cb32673e31e300978c"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/qwen3_omni_thinker.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7f500b050e4126faa46bdc1052c8751913977384",
+      "size": 23436,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/7f500b050e4126faa46bdc1052c8751913977384"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/qwen3_omni_thinker_embedding.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0f9c0d24179deec1b5008453255f4abbe9b9cea7",
+      "size": 16373,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/0f9c0d24179deec1b5008453255f4abbe9b9cea7"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/vision_encoder.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "da66035532537899567e6a511792b3b6bd73e851",
+      "size": 28389,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/da66035532537899567e6a511792b3b6bd73e851"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/__init__.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "edeaa33811b910321686122a5217152d66ca734e",
+      "size": 198,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/edeaa33811b910321686122a5217152d66ca734e"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/flux1_dev_stage_config.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f347c4ffb3b32b2d5c4add0b75ccdd822bd43741",
+      "size": 825,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/f347c4ffb3b32b2d5c4add0b75ccdd822bd43741"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/mimo_audio_stage_config.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1a092a44c93e4a7bda0cffbdfe3c9e7e14669f29",
+      "size": 1261,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/1a092a44c93e4a7bda0cffbdfe3c9e7e14669f29"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/qwen2_5_vl_stage_config.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "caad1fe74246ec6a5ccf21989db64014c05dcc39",
+      "size": 735,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/caad1fe74246ec6a5ccf21989db64014c05dcc39"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/qwen2_5_vl_stage_config_tp4.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "39dc6a12531f9f20d41326c92e3cdcc7f15e883e",
+      "size": 802,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/39dc6a12531f9f20d41326c92e3cdcc7f15e883e"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/qwen3_omni_stage_config.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5a40cfcc6a0e11028c4b929ea4db5f6785102df8",
+      "size": 820,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/5a40cfcc6a0e11028c4b929ea4db5f6785102df8"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/wan2_1_stage_config.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a87334a64df2d5f7f2b0aaf562088b9313a5a697",
+      "size": 1543,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/a87334a64df2d5f7f2b0aaf562088b9313a5a697"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/wan2_2_stage_config.yaml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "33cf4850c597c8d10b0747a44c6a1e41e88af5b9",
+      "size": 782,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/33cf4850c597c8d10b0747a44c6a1e41e88af5b9"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/yaml_registry.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2dce03ea0956f87cdb5b3701a136b552edbccf3f",
+      "size": 5885,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/2dce03ea0956f87cdb5b3701a136b552edbccf3f"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/vaes/autoencoder.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6dd33031b7e1fe8c83937b9d25341bc1f76e8196",
+      "size": 7569,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/6dd33031b7e1fe8c83937b9d25341bc1f76e8196"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/vaes/common.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e225edd0f63a20da61c55a17aae6ab77d9d6fca3",
+      "size": 16951,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/e225edd0f63a20da61c55a17aae6ab77d9d6fca3"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/vaes/flux_vae_weight_mappings.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3896a9f52ba4128b0fa08ceaa855980891100bea",
+      "size": 9675,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/3896a9f52ba4128b0fa08ceaa855980891100bea"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/diffusion/wan_dit.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9043f4866ec1419db647b0bb250013607825980e",
+      "size": 37834,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/9043f4866ec1419db647b0bb250013607825980e"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/diffusion/wan_dit_weights_mapping.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6c2a0aa3c5cf11c0b1a90224e22629944701a419",
+      "size": 12172,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/6c2a0aa3c5cf11c0b1a90224e22629944701a419"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/vaes/commons.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "55f047a747032bad914feff1e70d1a02f6a12f40",
+      "size": 2917,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/55f047a747032bad914feff1e70d1a02f6a12f40"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/vaes/vae_weights_mappings.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "7b71c921eff72505b55590e76bcebb3dbf247afe",
+      "size": 18533,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/7b71c921eff72505b55590e76bcebb3dbf247afe"
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/vaes/wanvae.py",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b6a1789b04919e303861445df2cc77b6f7a00c53",
+      "size": 44648,
+      "url": "https://api.github.com/repos/sgl-project/sglang-jax/git/blobs/b6a1789b04919e303861445df2cc77b6f7a00c53"
+    }
+  ]
+}

@@ -1,0 +1,546 @@
+{
+  "repository": "https://github.com/sgl-project/sglang-jax",
+  "revision": "c98ced4a7a64e83261f6672937ce41f0095828ba",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "5a188386852af8c37a1a983a24bff477bc3eabdfa650c6bc3fa049e7da314e10",
+      "bytes": 6069
+    },
+    {
+      "path": "python/sgl_jax/srt/configs/dtype_config.py",
+      "sha256": "5c7291f2ca4de24de46fa419553a4445df539e32961da94250fefb36bb315a6d",
+      "bytes": 3355
+    },
+    {
+      "path": "python/sgl_jax/srt/configs/mimo.py",
+      "sha256": "5cc88de5ee1237945770c1152197f9daec3e9cf4259414b4b8c4ba21f7528a1d",
+      "bytes": 694
+    },
+    {
+      "path": "python/sgl_jax/srt/layers/activation.py",
+      "sha256": "b466c3557796df8f2b16bb2991d219ea9aa89d4457f42a627833dba300af2a45",
+      "bytes": 949
+    },
+    {
+      "path": "python/sgl_jax/srt/layers/attention/fla/gated_rmsnorm.py",
+      "sha256": "4faea35577089e85ad3a444b9c719ef8cbf960d5ac1fff97c7cebcf0ee424e58",
+      "bytes": 1309
+    },
+    {
+      "path": "python/sgl_jax/srt/layers/embeddings.py",
+      "sha256": "bdf329b84ff61d37ee8da0fdb704860d16226c90a3f9280310a53be6828e0c07",
+      "bytes": 35186
+    },
+    {
+      "path": "python/sgl_jax/srt/layers/gate.py",
+      "sha256": "896069b7a8d608195e6f2e5b1a507f81bcbe366e2319eb0ee81abb9c86312d52",
+      "bytes": 13867
+    },
+    {
+      "path": "python/sgl_jax/srt/layers/linear.py",
+      "sha256": "c49c550db1abf646300b85f4148b75b8f865c59c422bc872f6a52d81ca00beb3",
+      "bytes": 22468
+    },
+    {
+      "path": "python/sgl_jax/srt/layers/moe.py",
+      "sha256": "aa77faa778f97ebc5831eb4efa9e2bcaf8f7801a9321f08a7b2a3fecfdd8445b",
+      "bytes": 41736
+    },
+    {
+      "path": "python/sgl_jax/srt/models/bailing_moe.py",
+      "sha256": "30e7b9c003ceab33d834fe5d6fefe6bfeb17a787eb3f15a77c0825df1af2a893",
+      "bytes": 37587
+    },
+    {
+      "path": "python/sgl_jax/srt/models/bailing_moe_linear.py",
+      "sha256": "f5696fbce22aaa48e67101807db2bd5dcf54066bb40885d96a065814bcad58e9",
+      "bytes": 47736
+    },
+    {
+      "path": "python/sgl_jax/srt/models/bailing_moe_v3.py",
+      "sha256": "89ccedc02cce027701c9a1abeb7e8ef3675d5279bd72911472e14105d360d3f6",
+      "bytes": 32230
+    },
+    {
+      "path": "python/sgl_jax/srt/models/deepseek_v3.py",
+      "sha256": "b23183e972cc88a886c6e61e054eb7672a6929f9ff197c98afd1ca44f76aec49",
+      "bytes": 37599
+    },
+    {
+      "path": "python/sgl_jax/srt/models/dflash.py",
+      "sha256": "157fe3e5a13b2c093dfd2df6f9eda89613a62afa7fccb23a44a6d019462ffe3f",
+      "bytes": 18669
+    },
+    {
+      "path": "python/sgl_jax/srt/models/dspark.py",
+      "sha256": "2ffe1a17944afe359be3f20d460266acdfe1f404ed87ec5c1e24bc32524034a0",
+      "bytes": 5115
+    },
+    {
+      "path": "python/sgl_jax/srt/models/gemma2.py",
+      "sha256": "5ccdcd2d1d83bba52af9382f17f828e8f6f353ea3cdcf26e1b80d33f97df3493",
+      "bytes": 14926
+    },
+    {
+      "path": "python/sgl_jax/srt/models/gemma4.py",
+      "sha256": "1b4a6c40ac81d53568d0ca06d36dfe04ffc5797b59e47633b4b949c211f6f3f2",
+      "bytes": 39062
+    },
+    {
+      "path": "python/sgl_jax/srt/models/gemma4_vision.py",
+      "sha256": "b3f107887cc1cdb2b35f2def39b0f55b9170b5544d118ac92b2e24b9ddf249a2",
+      "bytes": 21320
+    },
+    {
+      "path": "python/sgl_jax/srt/models/glm4_moe.py",
+      "sha256": "a47c7b3dd4c5e90924e30fbfc74737937418e5f764939aace2d3e35f1b1729f1",
+      "bytes": 31969
+    },
+    {
+      "path": "python/sgl_jax/srt/models/glm5_moe.py",
+      "sha256": "f0b9656cfffa29289016a0990686b3a86c06db4a5e1f014990df8bf61773a4f0",
+      "bytes": 54556
+    },
+    {
+      "path": "python/sgl_jax/srt/models/grok.py",
+      "sha256": "cc6a610ae2cf8b42ca50200428cb239730a265b96e2d038bc3ec50d1daaae219",
+      "bytes": 41602
+    },
+    {
+      "path": "python/sgl_jax/srt/models/kimi_k25_vl_generation.py",
+      "sha256": "54d0838658823dc6fc74534a3546da3438a6fd5cbbf725e34932cb4cd6e96bf4",
+      "bytes": 242
+    },
+    {
+      "path": "python/sgl_jax/srt/models/kimi_linear.py",
+      "sha256": "b521b47562df0a45915af24184a205c6057895725c8f03f4479031e78133004b",
+      "bytes": 30913
+    },
+    {
+      "path": "python/sgl_jax/srt/models/llama.py",
+      "sha256": "f24b4f0cd8f3f1fbeafe4fd1e0d992bfb96b141bf5a909219025579b6fa031f3",
+      "bytes": 24418
+    },
+    {
+      "path": "python/sgl_jax/srt/models/llama_eagle3.py",
+      "sha256": "6ef6b4020abd365313409b985b05368ade1fca77e761a9358ac32817199c07e3",
+      "bytes": 14383
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo.py",
+      "sha256": "2554520ec4ed1778de317651b570189a45f6e8dd4d86d88838aa02c2a7051739",
+      "bytes": 1299
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_mtp.py",
+      "sha256": "073c6738ab0bd3165a359701e0ee56739482c2acbc299700c6afb1e926da2c58",
+      "bytes": 10058
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_audio.py",
+      "sha256": "815d289a2f82f92772e790265436fdf8fd36bc40743797d9882734131391a6e5",
+      "bytes": 10602
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_flash.py",
+      "sha256": "e40c9d3b6cb1c4aaf210a6d10e8ff8eeefcd25b8ce33c1bd5ef9be3015685a36",
+      "bytes": 30552
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_mm.py",
+      "sha256": "49600c47876839260b0edf292800771a22c48c347b1c453ea0f8dacc73534338",
+      "bytes": 12284
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_nextn.py",
+      "sha256": "7ec7e8c9547e7c08e83098e75985635b68bbd4b79db59b644a68176f3203108c",
+      "bytes": 13645
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_pro.py",
+      "sha256": "3874bf0854f14d48f983a5be0baf7a6f3701370937c909b8bcfe10bdbb191bd6",
+      "bytes": 8583
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_v2_vision.py",
+      "sha256": "8f598fdea9b31efe3f19b949cbbca933484182296c1de01cbe2e7f82eea676c1",
+      "bytes": 21406
+    },
+    {
+      "path": "python/sgl_jax/srt/models/mimo_weight_loading.py",
+      "sha256": "72c12cd81af874074cb01428e5add1f9023d47d06d32be7ad297e92378a18ce2",
+      "bytes": 10983
+    },
+    {
+      "path": "python/sgl_jax/srt/models/minimax_m2.py",
+      "sha256": "c833fc76cc50ca555e78503a114c0dcbc4c26df5a46e8f7fc6442cb937def8ca",
+      "bytes": 20085
+    },
+    {
+      "path": "python/sgl_jax/srt/models/minimax_m3.py",
+      "sha256": "87d66f57a01ce3dd64a5c9c3e1b3c67a1e09d67339a7599d11f0fe7bab6baee7",
+      "bytes": 24459
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen.py",
+      "sha256": "567fa1b9fa8b469810cd1b2e601415faf6769b15f296d1fe8ea0e5d59b360b58",
+      "bytes": 14264
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen2.py",
+      "sha256": "403551621971eaa8e2725c6ba8693abbfb5f188c1cb9495c532b02f3317cd72d",
+      "bytes": 17101
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen2_5_vl.py",
+      "sha256": "5f225ac0281e605bdd7816acfa6edc8f7187dd3f94bd13dc6632b06394089b0f",
+      "bytes": 35497
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen2_moe.py",
+      "sha256": "0068e8a64d1c7f039bc02c290646cd47413760664014a1c98c85d0f852867de1",
+      "bytes": 23370
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3.py",
+      "sha256": "fe381ae6ae881c08eb0fe22baa5e17f79e4ea351d80a7d71dc6a4fe6a84f2c21",
+      "bytes": 21860
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3_5.py",
+      "sha256": "da0bfa30f98840656f2a55f46a7365188d315982fdeab36fb4177eb487bbf7cc",
+      "bytes": 40812
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3_moe.py",
+      "sha256": "0190e51533253871bb817a4603be236b57d68be02911ab29a668fd2ff55d3ad0",
+      "bytes": 25751
+    },
+    {
+      "path": "python/sgl_jax/srt/models/qwen3_vl.py",
+      "sha256": "26d549962ee6714142aebefceea868093d22d51c48dfe128c37486e5405cd6c0",
+      "bytes": 29689
+    },
+    {
+      "path": "python/sgl_jax/srt/models/registry.py",
+      "sha256": "735a6b8361beb536922ece5308d83532caa79ddb838adfa6eab746be438dcf70",
+      "bytes": 3806
+    },
+    {
+      "path": "python/sgl_jax/srt/models/umt5.py",
+      "sha256": "42222f26f4f54c2454c7e083cdd6dccd5fa34358ae75939f40c22dd0e8e1b995",
+      "bytes": 30047
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/config_registry.py",
+      "sha256": "184390b159e42ddc6d81799faa371beccfe95b0cc75e4910fd947e289c8c16ea",
+      "bytes": 22205
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/dits/flux_model_config.py",
+      "sha256": "bd56883ff8a75606da774610d48b306cf8b03df8b26e5e15a9d5425f0089f7c6",
+      "bytes": 1475
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/dits/wan_model_config.py",
+      "sha256": "c87af781baa424cabbcf6350ca2c251ced6b2a9f0f6f5cb6b812be5fecce243d",
+      "bytes": 1754
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/kimi/kimi_k25_config.py",
+      "sha256": "7705c944988d3449188b92f9e9f0bb2812b2dc2ea51c08ea81e3b04ade7d3e83",
+      "bytes": 771
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/mimo_audio/__init__.py",
+      "sha256": "c784daa127a410e8bcdf48eff4ae17536d3ac8a81d32f602d97ca437cd82e2dc",
+      "bytes": 369
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/mimo_audio/mimo_audio_backbone_config.py",
+      "sha256": "48ca6df187ff8d417c3a8397cd3424353efa6acebce392ed44c28cf1afea0d0a",
+      "bytes": 2674
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/mimo_audio/mimo_audio_config.py",
+      "sha256": "35ca638610ecbed88f7371071f0dce16e78c2d488db2d6b8e68b73df5d4a6c5d",
+      "bytes": 1976
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/multimodal_base_config.py",
+      "sha256": "4d6525a256107ff1bb4f8af3dc53f4baf5ed1cabfebc5b68dfb18550c6216fd6",
+      "bytes": 310
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/qwen_vl/qwen_2_5_vl_config.py",
+      "sha256": "384f664584dfb296573f69170718b5677cb0298a6c83a25b27f0a2f8def77887",
+      "bytes": 685
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/vaes/flux_vae_config.py",
+      "sha256": "d092bbd73e71f1202d2841d29228e9e9efd1e130ff2a00ffab0a1a435015660e",
+      "bytes": 2905
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/vaes/vae_base_config.py",
+      "sha256": "e76c543c5cb6853c4ef77296de0c99578757dfad3e02be74c2120aa2a631e7e4",
+      "bytes": 1098
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/configs/vaes/wan_vae_config.py",
+      "sha256": "f60165ceae691e6c5c0d78772b258e49eea0750513f3d0fcf9218164b5250d17",
+      "bytes": 2452
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/layers/mlp.py",
+      "sha256": "9e2db29f7b81c6effee4958102e1f9a8b256f75ae274906b05a54898a80d51f8",
+      "bytes": 3890
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/layers/vision_sharding.py",
+      "sha256": "bc17981e051b6c3a356bfa18b41cd34010cd1017e15d1a4ea070d38ef7128ee3",
+      "bytes": 1807
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/manager/stage.py",
+      "sha256": "f0e1cd917ace9fbb5c5566fa3290c5f9c4e3fe3c758dd4eaf91dd278b3cf3095",
+      "bytes": 11134
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/model_executor/audio/audio_backbone_model_runner.py",
+      "sha256": "5f9f8d957110eec5a1ea7ea3e42534df0c42adc43146c728e2c62463b7af0d20",
+      "bytes": 9755
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/model_executor/audio/audio_model_runner.py",
+      "sha256": "6fdf4524c864dc0500c00cc62082a975ec9aeac5522e0833d86f1be239892fbd",
+      "bytes": 4863
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/model_executor/diffusion/diffusion_model_runner.py",
+      "sha256": "9c9b09a05567952a8819d7cade99f267b83d455397376023daf3a40887fc219d",
+      "bytes": 16166
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/model_executor/embed/embed_model_runner.py",
+      "sha256": "d59498371934c1154b35bfba304257afbf789adf4b9b6df7281560843daa82ce",
+      "bytes": 7124
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/model_executor/encoder/encoder_model_runner.py",
+      "sha256": "3522fc8c28427468f906926372da544b5e12bc28a8023e94fb7755041f8c9b38",
+      "bytes": 17367
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/model_executor/vae/vae_model_runner.py",
+      "sha256": "83c089711b5e648eb27580acb8c216f989f82f3cc0a9c96b1acebe2630f9c633",
+      "bytes": 3356
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/model_executor/vit/vit_model_runner.py",
+      "sha256": "4c010fd913e9660e664b8c1dd22a15fde3d01bae7a328f64a6c2f0e4141e8717",
+      "bytes": 6138
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/diffusion_solvers/flow_match_euler_discrete_scheduler.py",
+      "sha256": "b866ee4847be0116ea020466231a5402ff25f5337e1c820d5391b07c3c1ab99f",
+      "bytes": 14085
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/diffusion_solvers/flow_unipc_multistep_scheduler.py",
+      "sha256": "0c00a1db1c372175c9ee541e20fce9d8d507a075203f035c4cbc28a245c2ce41",
+      "bytes": 24083
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/dits/flux.py",
+      "sha256": "8129561fc0bb6e24492a6236cdf97e9111b56d64fc75af77ab41c515c32bf59a",
+      "bytes": 28888
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/dits/flux_dit_weights_mapping.py",
+      "sha256": "c3b324c0fad4b231425c1bfe2ae0bbf2d5b8dcb38dc8c12eed7772ee09ab1d06",
+      "bytes": 9935
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/encoders/base.py",
+      "sha256": "46648b7e325bd1864e10a7e8b717328bfd9a60b740d98b3c0762ae070e8dbc66",
+      "bytes": 680
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/encoders/clip.py",
+      "sha256": "6eade09ee62dbbfbcc1521a18625cd1532c7849535baf96263f109d6c4cfb1ec",
+      "bytes": 22004
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/encoders/t5.py",
+      "sha256": "7b8d59be6378c2284090f5c08cd3586fcdc2ab74838ee640e0bfeaaeb8baf531",
+      "bytes": 15811
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/kimi_k25/kimi_k25_vit.py",
+      "sha256": "d015095bf5e957a2da4c907707166fe66f7be852a40df3b02b681507d9ef73c1",
+      "bytes": 30016
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/kimi_k25/kimi_k25_vl_generation.py",
+      "sha256": "36ab5573e5d6b8f2a4bd59c00d469122605cacb323d5ce24280375e93537f395",
+      "bytes": 5164
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/__init__.py",
+      "sha256": "4aad002fca840eba7dadac86e522f4201f04969faac66adaf7721ff4b4d74097",
+      "bytes": 369
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_backbone.py",
+      "sha256": "978224421d8338311bff8a3de6698719de3297c96d3106ac59ee00bb5af33f42",
+      "bytes": 24948
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_backbone_weights_mapping.py",
+      "sha256": "b948655d9281eb1e4aad0da063964c7ebbad128a4fa6d2f8553c4c6cc007cd64",
+      "bytes": 4046
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_tokenizer.py",
+      "sha256": "edd21ae05b9d632bbcb7d29f14e75370547ffebbed9a86a24692fc142f14c670",
+      "bytes": 29365
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/mimo_audio/mimo_audio_tokenizer_weights_mapping.py",
+      "sha256": "df2380db9cc97b33b4c0c2acc6bf95e280f1f9143c5adbd5e0fc23d5d721bee1",
+      "bytes": 11315
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen2_5VL/qwen2_5_vit.py",
+      "sha256": "e2871582e7a576fa95e09e9f550d4a09f5ed8e12967cc279588b278a24a926b5",
+      "bytes": 33738
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen2_5VL/qwen2_5_vl_generation.py",
+      "sha256": "71c49ca4f530b96dfc5be854f8595609e9f003207371a58cd832577d7d26b00c",
+      "bytes": 11283
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/audio_encoder.py",
+      "sha256": "630cc52deb009f76c6279a703b1a9eaef0e229f2e521d897460617aaa7db099e",
+      "bytes": 13093
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/qwen3_omni_thinker.py",
+      "sha256": "177bbcdb23c11f1cdf61fe2815d5ebebc51af38f25e50b31bb7dc10ed6384fed",
+      "bytes": 23436
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/qwen3_omni_thinker_embedding.py",
+      "sha256": "b6eb642723af828c05b6b33d8aa9a6d125a2fc2b34b7f1a9f18d2316a82e6a68",
+      "bytes": 16373
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/qwen3_omni_moe/vision_encoder.py",
+      "sha256": "38666f222c61be713c8104975bf6b841c4d45fbd8d92412da283c8c2b5940400",
+      "bytes": 28389
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/__init__.py",
+      "sha256": "783e6a2b0446309809979b3e2dd1b98a0e1bb50a7feb7c35098f781db218fdf1",
+      "bytes": 198
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/flux1_dev_stage_config.yaml",
+      "sha256": "de31d156a78427dace18d586f4208514b92d5478d78c556f027c28e304521a6d",
+      "bytes": 825
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/mimo_audio_stage_config.yaml",
+      "sha256": "d944d3470bf65ec2d7b324ba1b8d1a3fd6bc024d47dc19c5b75de8c0e8aff8cc",
+      "bytes": 1261
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/qwen2_5_vl_stage_config.yaml",
+      "sha256": "4f35b7beaedc49c2fcf7cb86d71b20e1511ec9e3972a8ae67ecee008da492d11",
+      "bytes": 735
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/qwen2_5_vl_stage_config_tp4.yaml",
+      "sha256": "a0756601e23913d886fb8d0d623095dbcce39736ed65b3d9833ae483d8df5076",
+      "bytes": 802
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/qwen3_omni_stage_config.yaml",
+      "sha256": "c0d9af7d5dc90d0b8dfcfdc14cad4abffb253e2224ea23a028e4fbc8480eb593",
+      "bytes": 820
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/wan2_1_stage_config.yaml",
+      "sha256": "12dd9bc9451da00d58bb75ea3db2c2d6fae9aabb22da517d1e6711dd952c48b2",
+      "bytes": 1543
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/wan2_2_stage_config.yaml",
+      "sha256": "ef15feb929b65c015462eced049c7e593f62e2821b61aafe1ee4cbd2ece586b9",
+      "bytes": 782
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/static_configs/yaml_registry.py",
+      "sha256": "b7042077fd1b068884a2aa50882b6bbdfca38e4629ec4033ff5c9b4318e24470",
+      "bytes": 5885
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/vaes/autoencoder.py",
+      "sha256": "eb701bafbfc3d39f64da511dc3003b17c63d73083c37505d8f39ec95ea8846aa",
+      "bytes": 7569
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/vaes/common.py",
+      "sha256": "f20b6cae27da7c9754d008f00eed954b141a3dc7a81c48a8861eaf48e1ad8952",
+      "bytes": 16951
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/vaes/flux_vae_weight_mappings.py",
+      "sha256": "98f7ac51b6b219e5dcc506525c12f2e78bfa1f14f74115b86535b06a719b3646",
+      "bytes": 9675
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/diffusion/wan_dit.py",
+      "sha256": "c3d90129371075473164e2547ad2aeac3e81b36c23975a2daece5811ce9e6981",
+      "bytes": 37834
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/diffusion/wan_dit_weights_mapping.py",
+      "sha256": "db765e18b643e1b10baa1692e9b96fce1c78ae05c03495cf89b99527e5fc13e2",
+      "bytes": 12172
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/vaes/commons.py",
+      "sha256": "865955aeadff4a0bc1e998b8cc391d1afaa2a8d4ac3d25456e4d76a057d86cab",
+      "bytes": 2917
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/vaes/vae_weights_mappings.py",
+      "sha256": "a4cc7e060d83c62dcaa011db3a04891810cb2772ed7b70a5ee8ee6ce89d955bb",
+      "bytes": 18533
+    },
+    {
+      "path": "python/sgl_jax/srt/multimodal/models/wan/vaes/wanvae.py",
+      "sha256": "2321bbb8aebd8eeb46c8ba2ad0a183c84caa729520921b6a5162ae412d833126",
+      "bytes": 44648
+    },
+    {
+      "path": "python/sgl_jax/srt/utils/debug_utils.py",
+      "sha256": "b306833207a2ec6816a65d195f1eb4de1d27e33edeb25ea44152ba9f34c2ee29",
+      "bytes": 1415
+    },
+    {
+      "path": "python/sgl_jax/srt/utils/parallel_utils.py",
+      "sha256": "5855f84640f425a7552bac215f4a0e69e9a4fe466d81225903a61bd95ef70ec6",
+      "bytes": 2007
+    },
+    {
+      "path": "python/sgl_jax/srt/utils/profiling_utils.py",
+      "sha256": "b998105d891819a640df511ef624c8b5a1a4ff8e837e30db3f504cbdfdd478ea",
+      "bytes": 1317
+    }
+  ]
+}

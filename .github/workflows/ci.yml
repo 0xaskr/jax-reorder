@@ -24,3 +24,6 @@ jobs:
       - run: uv run python tests/lax_inventory.py
       - run: uv run python examples/inspect_jaxpr.py
       - run: uv run python examples/bfs_reordering.py
+      - run: uv run python examples/collective_jaxpr.py --devices 4
+      - run: uv run python examples/cond_bindings.py
+      - run: uv run python examples/business_layer_cases.py --trials 1 --report /tmp/business-layer-cases.json

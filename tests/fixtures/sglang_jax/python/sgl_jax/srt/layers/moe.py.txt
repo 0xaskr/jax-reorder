@@ -1,0 +1,1014 @@
+"""GMM-based Expert-Parallel MoE layer and weight mapping utilities."""
+
+import math
+from functools import partial
+
+import jax
+from flax import nnx
+from jax import numpy as jnp
+from jax import shard_map
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
+
+from sgl_jax.srt.eplb.expert_location import get_global_expert_location_metadata
+from sgl_jax.srt.kernels.gmm.megablox_gmm_backend import gmm
+from sgl_jax.srt.kernels.sparse_core.moe_permute import (
+    moe_sc_permute_enabled_by_env,
+    sc_combine,
+    sc_dispatch_gather,
+    should_use_sparse_core,
+)
+
+# Re-export for backward compatibility: external code imports from this module.
+from sgl_jax.srt.layers.fused_moe import FusedEPMoE, FusedEPMoEV2  # noqa: F401
+from sgl_jax.srt.layers.gate import GateLogit, TopK  # noqa: F401
+from sgl_jax.srt.model_loader.weights import WeightSpec
+from sgl_jax.srt.utils.profiling_utils import named_scope
+from sgl_jax.srt.utils.quantization.quantization_utils import (
+    quantize_tensor,
+    quantize_tensor_simple,
+)
+
+
+class EPMoE(nnx.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_experts: int,
+        num_experts_per_tok: int,
+        ep_size: int,
+        mesh: Mesh,
+        intermediate_dim: int = 2048,
+        weight_dtype: jnp.dtype = jnp.bfloat16,
+        dtype: jnp.dtype = jnp.bfloat16,
+        activation: str = "silu",
+        swiglu_alpha: float = 1.702,
+        swiglu_limit: float = 7.0,
+        layer_id: int = 0,
+        quantization_config=None,
+        physical_to_logical_map: "jax.Array | None" = None,
+        pre_gather_quant_dtype=None,
+        moe_dp_size: int = 1,
+        use_sc_permute: bool | None = None,
+    ):
+        self.num_experts_per_tok = num_experts_per_tok
+        # Opt-in SparseCore permute/unpermute kernels; ``None`` defers to the env flag.
+        self.use_sc_permute = (
+            moe_sc_permute_enabled_by_env() if use_sc_permute is None else bool(use_sc_permute)
+        )
+        self.physical_to_logical_map = physical_to_logical_map
+        self.pre_gather_quant_dtype = pre_gather_quant_dtype
+        self.moe_dp_size = moe_dp_size
+        self.replicate_experts = self.moe_dp_size > 1
+
+        metadata = None if self.replicate_experts else get_global_expert_location_metadata()
+        if metadata is not None and layer_id is not None:
+            self.num_experts = metadata.num_physical_experts
+        else:
+            self.num_experts = num_experts
+
+        self.intermediate_dim = intermediate_dim
+        self.weight_dtype = weight_dtype
+        self.dtype = dtype  # original dtype
+        self.layer_id = layer_id
+        self.ep_size = ep_size
+        self.original_mesh = mesh
+        self.mesh = mesh
+        self.activation = activation
+        self.swiglu_alpha = swiglu_alpha
+        self.swiglu_limit = swiglu_limit
+        self.hidden_size = hidden_size
+
+        # Get quantization settings from config
+        self.quantized_dtype = (
+            quantization_config.get_moe_weight_dtype() if quantization_config else None
+        )
+        self.activation_quantized_dtype = (
+            quantization_config.get_moe_activation_dtype() if quantization_config else None
+        )
+        self.weight_block_size = (
+            getattr(quantization_config, "weight_block_size", None) if quantization_config else None
+        )
+
+        if self.moe_dp_size < 1:
+            raise ValueError(f"moe_dp_size must be at least 1, got {self.moe_dp_size}")
+        if self.replicate_experts and self.ep_size != 1:
+            raise ValueError(f"replicated EPMoE requires ep_size=1, got ep_size={self.ep_size}")
+        if self.replicate_experts and (
+            self.quantized_dtype is not None or self.activation_quantized_dtype is not None
+        ):
+            raise NotImplementedError(
+                "replicated EPMoE currently supports unquantized experts only"
+            )
+        if not self.replicate_experts and self.num_experts % self.ep_size != 0:
+            raise ValueError(
+                f"num_experts({self.num_experts}) must be divisible by ep_size ({self.ep_size})"
+            )
+        if self.replicate_experts:
+            if "data" not in self.mesh.axis_names or "tensor" not in self.mesh.axis_names:
+                raise ValueError(
+                    "replicated EPMoE requires a model mesh with ('data', 'tensor') axes; "
+                    f"got {self.mesh.axis_names}"
+                )
+            if self.mesh.shape["data"] != self.moe_dp_size:
+                raise ValueError(
+                    "replicated EPMoE requires moe_dp_size to match the model mesh data axis; "
+                    f"got moe_dp_size={self.moe_dp_size}, data={self.mesh.shape['data']}"
+                )
+            self.tp_size = self.mesh.shape["tensor"]
+            self.experts_per_device = self.num_experts
+            self.moe_mesh = self.mesh
+            self.updated_mesh = self.mesh.abstract_mesh
+            wi_sharding = P(None, None, "tensor")
+            wo_sharding = P(None, "tensor", None)
+        else:
+            world_size = math.prod(self.mesh.shape.values())
+            self.tp_size = world_size // self.ep_size
+            self.experts_per_device = self.num_experts // self.ep_size
+
+            devices = self.mesh.devices.flatten()
+            self.moe_mesh = jax.sharding.Mesh(
+                devices.reshape(self.ep_size, self.tp_size),
+                axis_names=("expert", "tensor"),
+                axis_types=(jax.sharding.AxisType.Explicit, jax.sharding.AxisType.Explicit),
+            )
+
+            abstract_mesh = self.mesh.abstract_mesh
+            self.updated_mesh = abstract_mesh.update(
+                axis_sizes=(self.ep_size, self.tp_size), axis_names=("expert", "tensor")
+            )
+            wi_sharding = P("expert", None, "tensor")
+            wo_sharding = P("expert", "tensor", None)
+
+        with jax.sharding.use_abstract_mesh(self.updated_mesh):
+            # MOE weights' shape is (num_experts, k, n)
+            self.wi_0 = nnx.Param(
+                jax.random.normal(
+                    jax.random.PRNGKey(0),
+                    (self.num_experts, hidden_size, intermediate_dim),
+                    dtype=weight_dtype,
+                    out_sharding=wi_sharding,
+                )
+            )
+
+            self.wi_1 = nnx.Param(
+                jax.random.normal(
+                    jax.random.PRNGKey(0),
+                    (self.num_experts, hidden_size, intermediate_dim),
+                    dtype=weight_dtype,
+                    out_sharding=wi_sharding,
+                )
+            )
+
+            self.wo = nnx.Param(
+                jax.random.normal(
+                    jax.random.PRNGKey(0),
+                    (self.num_experts, intermediate_dim, hidden_size),
+                    dtype=weight_dtype,
+                    out_sharding=wo_sharding,
+                )
+            )
+
+            # Scales are None by default - only set by quantize_weights() if quantization is enabled
+            # gmm kernel handles None scales properly (no scaling applied)
+            self.wi_0_scale = None
+            self.wi_1_scale = None
+            self.wo_scale = None
+
+    def _detect_device_capabilities(self):
+        try:
+            devices = jax.devices()
+            is_cpu_only = all(device.platform == "cpu" for device in devices)
+            can_use_ragged = not is_cpu_only and hasattr(jax.lax, "ragged_all_to_all")
+
+            device_types = [device.platform for device in devices]
+            primary_device = device_types[0] if device_types else "unknown"
+
+            return can_use_ragged, primary_device
+        except Exception as _:
+            return False, "cpu"
+
+    def _normalize_scale_for_gmm(
+        self,
+        scale: jax.Array | None,
+        weight: jax.Array,
+        *,
+        scale_name: str,
+    ) -> jax.Array | None:
+        """Normalize offline/runtime scale tensors to GMM's 4D layout.
+
+        Accepted inputs intentionally cover the layouts we see in practice:
+
+        - per-channel: ``[E, out_dim]``
+        - already-kernel-ready: ``[E, k_blocks, 1, out_dim]``
+        - sub-channel / block-channel: ``[E, out_dim, k_blocks]`` or
+          ``[E, k_blocks, out_dim]``
+        - offline 2D block quant: ``[E, out_blocks, k_blocks]``
+
+        The returned tensor always matches the GMM contract
+        ``[E, k_blocks, 1, out_dim]``.
+        """
+        if scale is None:
+            return None
+
+        # Weight layout is [E, k, n] where k=contraction dim, n=output dim.
+        num_experts, in_dim, out_dim = weight.shape
+
+        if scale.ndim == 4:
+            if scale.shape[0] != num_experts or scale.shape[2] != 1 or scale.shape[3] != out_dim:
+                raise ValueError(
+                    f"Unsupported {scale_name} shape {scale.shape} for weight shape {weight.shape}. "
+                    "Expected 4D GMM scale layout [E, k_blocks, 1, out_dim]."
+                )
+            if self.weight_block_size is None:
+                if scale.shape[1] != 1:
+                    raise ValueError(
+                        f"Unsupported {scale_name} shape {scale.shape} for weight shape {weight.shape}. "
+                        "Per-channel 4D GMM scales must have k_blocks=1."
+                    )
+            else:
+                block_size_k = int(self.weight_block_size[1])
+                expected_k_blocks = (in_dim + block_size_k - 1) // block_size_k
+                if scale.shape[1] not in (1, expected_k_blocks):
+                    raise ValueError(
+                        f"Unsupported {scale_name} shape {scale.shape} for weight shape {weight.shape}. "
+                        f"Expected k_blocks dimension to be 1 or {expected_k_blocks}."
+                    )
+            final_scale_sharding = (
+                P("expert", None, None, None)
+                if scale_name == "wo_scale"
+                else P("expert", None, None, "tensor")
+            )
+            return jax.sharding.reshard(scale, final_scale_sharding)
+
+        if scale.ndim == 2 and scale.shape == (num_experts, out_dim):
+            return scale[:, None, None, :]
+
+        if scale.ndim == 3:
+            if scale.shape == (num_experts, 1, out_dim):
+                return scale[:, :, None, :]
+
+            # Support offline 2D block quant checkpoints whose scales are stored as
+            # [num_experts, out_blocks, in_blocks]. GMM expects [E, k_blocks, 1, out_dim].
+            if (
+                self.weight_block_size is not None
+                and isinstance(self.weight_block_size, (list, tuple))
+                and len(self.weight_block_size) == 2
+            ):
+                block_size_out = int(self.weight_block_size[0])
+                block_size_k = int(self.weight_block_size[1])
+                expected_out_blocks = (out_dim + block_size_out - 1) // block_size_out
+                expected_k_blocks = (in_dim + block_size_k - 1) // block_size_k
+
+                if scale.shape == (num_experts, out_dim, expected_k_blocks):
+                    final_scale_sharding = (
+                        P("expert", None, None, None)
+                        if scale_name == "wo_scale"
+                        else P("expert", None, None, "tensor")
+                    )
+                    scale_gmm = jnp.transpose(scale, (0, 2, 1))[:, :, None, :]
+                    return jax.sharding.reshard(scale_gmm, final_scale_sharding)
+
+                if scale.shape == (num_experts, expected_out_blocks, expected_k_blocks):
+                    scale_per_out_sharding = (
+                        P("expert", None, None)
+                        if scale_name == "wo_scale"
+                        else P("expert", "tensor", None)
+                    )
+                    final_scale_sharding = (
+                        P("expert", None, None, None)
+                        if scale_name == "wo_scale"
+                        else P("expert", None, None, "tensor")
+                    )
+                    out_block_ids = jnp.arange(out_dim, dtype=jnp.int32) // block_size_out
+                    scale_per_out = scale.at[:, out_block_ids, :].get(
+                        out_sharding=scale_per_out_sharding
+                    )
+                    scale_gmm = jnp.transpose(scale_per_out, (0, 2, 1))[:, :, None, :]
+                    return jax.sharding.reshard(scale_gmm, final_scale_sharding)
+
+                if scale.shape == (num_experts, expected_k_blocks, out_dim):
+                    return scale[:, :, None, :]
+
+        raise ValueError(
+            f"Unsupported {scale_name} shape {scale.shape} for weight shape {weight.shape}. "
+            "Expected one of: [E, out_dim], [E, 1, out_dim], [E, k_blocks, 1, out_dim], "
+            "or offline block format [E, out_blocks, k_blocks]."
+        )
+
+    def quantize_weights(self, is_static: bool = False, *, abstract: bool = False):
+        """Quantize MoE weights in-place or initialize params for static loading."""
+        if self.quantized_dtype is None:
+            return
+
+        def _get_block_size_k(
+            *,
+            hidden_size: int,
+            intermediate_dim: int,
+            weight_block_size: list[int] | tuple[int, int] | None,
+        ) -> int | None:
+            """Extract the contracting-dimension block size for MoE weights.
+
+            EPMoE only block-quantizes along the GEMM ``K`` dimension, so for a
+            configured ``(block_n, block_k)`` we consume only ``block_k`` here.
+            The divisibility checks keep the later GMM scale layout well-defined.
+            """
+            if weight_block_size is None:
+                return None
+            if not (isinstance(weight_block_size, (list, tuple)) and len(weight_block_size) == 2):
+                raise ValueError(
+                    f"EPMoE weight_block_size must be a 2-element list [block_n, block_k], "
+                    f"got {weight_block_size}"
+                )
+
+            block_size_k = int(weight_block_size[1])
+            if block_size_k <= 0:
+                raise ValueError(f"EPMoE weight_block_size[1] must be > 0, got {block_size_k}")
+            if hidden_size % block_size_k != 0:
+                raise ValueError(
+                    f"EPMoE hidden_size={hidden_size} not divisible by block_size_k={block_size_k}"
+                )
+            if intermediate_dim % block_size_k != 0:
+                raise ValueError(
+                    f"EPMoE intermediate_dim={intermediate_dim} not divisible by block_size_k={block_size_k}"
+                )
+            return block_size_k
+
+        mesh_context = (
+            jax.sharding.use_abstract_mesh(self.moe_mesh.abstract_mesh)
+            if abstract
+            else jax.set_mesh(self.moe_mesh)
+        )
+        with mesh_context:
+            if is_static:
+                # Both checkpoint and dummy loaders need placeholders with the
+                # quantized dtype before loading or generating the weights.
+                for name in ("wi_0", "wi_1", "wo"):
+                    param = getattr(self, name)
+                    if isinstance(param.value, jax.ShapeDtypeStruct):
+                        param.value = jax.ShapeDtypeStruct(
+                            param.value.shape, self.quantized_dtype, sharding=param.value.sharding
+                        )
+                # Static checkpoints will load real scale tensors later, but the
+                # placeholders must already satisfy expert sharding shape rules.
+                num_experts = self.wi_0.value.shape[0]
+                # [E, k, n] layout: wi_0=[E, hidden_size, intermediate_dim],
+                #                    wo=[E, intermediate_dim, hidden_size]
+                hidden_size = self.wi_0.value.shape[1]
+                intermediate_dim = self.wo.value.shape[1]
+
+                # Compute k_blocks for block quant placeholders.
+                # weight_block_size = [hf_out_block, hf_in_block] (HF convention).
+                # EPMoE quantizes along axis=1 (k/contraction dim).
+                block_size_k = _get_block_size_k(
+                    hidden_size=hidden_size,
+                    intermediate_dim=intermediate_dim,
+                    weight_block_size=self.weight_block_size,
+                )
+                k_blocks_wi = (hidden_size // block_size_k) if block_size_k else 1
+                k_blocks_wo = (intermediate_dim // block_size_k) if block_size_k else 1
+                wi_scale_sharding = P("expert", None, None, "tensor")
+                wo_scale_sharding = P("expert", None, None, None)
+
+                if hasattr(self, "wi_0_scale"):
+                    del self.wi_0_scale
+                self.wi_0_scale = nnx.Param(
+                    jnp.zeros(
+                        (num_experts, k_blocks_wi, 1, intermediate_dim),
+                        dtype=jnp.float32,
+                        out_sharding=wi_scale_sharding,
+                    ),
+                    out_sharding=wi_scale_sharding,
+                )
+
+                if hasattr(self, "wi_1_scale"):
+                    del self.wi_1_scale
+                self.wi_1_scale = nnx.Param(
+                    jnp.zeros(
+                        (num_experts, k_blocks_wi, 1, intermediate_dim),
+                        dtype=jnp.float32,
+                        out_sharding=wi_scale_sharding,
+                    ),
+                    out_sharding=wi_scale_sharding,
+                )
+
+                if hasattr(self, "wo_scale"):
+                    del self.wo_scale
+                self.wo_scale = nnx.Param(
+                    jnp.zeros(
+                        (num_experts, k_blocks_wo, 1, hidden_size),
+                        dtype=jnp.float32,
+                        out_sharding=wo_scale_sharding,
+                    ),
+                    out_sharding=wo_scale_sharding,
+                )
+                return
+
+            # Quantize weights along k-dim (axis=1 in [g, k, n] layout)
+            # wi_0=[E, hidden_size, intermediate_dim], wo=[E, intermediate_dim, hidden_size]
+            hidden_size = self.wi_0.value.shape[1]
+            intermediate_dim = self.wo.value.shape[1]
+            block_size_k = _get_block_size_k(
+                hidden_size=hidden_size,
+                intermediate_dim=intermediate_dim,
+                weight_block_size=self.weight_block_size,
+            )
+            w0_value, w0_scale = quantize_tensor(
+                self.quantized_dtype,
+                self.wi_0.value,
+                axis=1,
+                block_size=block_size_k,
+            )
+            w1_value, w1_scale = quantize_tensor(
+                self.quantized_dtype,
+                self.wi_1.value,
+                axis=1,
+                block_size=block_size_k,
+            )
+            wo_value, wo_scale = quantize_tensor(
+                self.quantized_dtype,
+                self.wo.value,
+                axis=1,
+                block_size=block_size_k,
+            )
+
+            self.wi_0 = nnx.Param(w0_value, out_sharding=P("expert", None, "tensor"))
+            self.wi_1 = nnx.Param(w1_value, out_sharding=P("expert", None, "tensor"))
+            self.wo = nnx.Param(wo_value, out_sharding=P("expert", "tensor", None))
+
+            if block_size_k is not None:
+                # axis=1 quantization on [g, k, n] gives scale [g, k_blocks, n]
+                # → expand to [g, k_blocks, 1, n]
+                w0_scale = w0_scale[:, :, None, :]
+                w1_scale = w1_scale[:, :, None, :]
+                wo_scale = wo_scale[:, :, None, :]
+            else:
+                w0_scale = w0_scale.reshape(w0_scale.shape[0], 1, 1, w0_scale.shape[1])
+                w1_scale = w1_scale.reshape(w1_scale.shape[0], 1, 1, w1_scale.shape[1])
+                wo_scale = wo_scale.reshape(wo_scale.shape[0], 1, 1, wo_scale.shape[1])
+
+            if hasattr(self, "wi_0_scale"):
+                del self.wi_0_scale
+            self.wi_0_scale = nnx.Param(
+                w0_scale,
+                out_sharding=P("expert", None, None, "tensor"),
+            )
+
+            if hasattr(self, "wi_1_scale"):
+                del self.wi_1_scale
+            self.wi_1_scale = nnx.Param(
+                w1_scale,
+                out_sharding=P("expert", None, None, "tensor"),
+            )
+
+            if hasattr(self, "wo_scale"):
+                del self.wo_scale
+            self.wo_scale = nnx.Param(
+                wo_scale,
+                out_sharding=P("expert", None, None, None),
+            )
+
+    @named_scope
+    def __call__(
+        self,
+        hidden_states,
+        topk_weights,
+        topk_ids,
+        *,
+        out_sharding: jax.sharding.NamedSharding | None = None,
+    ) -> jax.Array:
+        if self.replicate_experts:
+            if out_sharding is None:
+                out_sharding = jax.sharding.NamedSharding(
+                    self.mesh,
+                    P("data", *([None] * (hidden_states.ndim - 1))),
+                )
+            return self._call_replicated(
+                hidden_states,
+                topk_weights,
+                topk_ids,
+                out_sharding=out_sharding,
+            )
+
+        if out_sharding is None:
+            out_sharding = jax.sharding.NamedSharding(self.mesh, P(*([None] * hidden_states.ndim)))
+
+        # Translate the caller's target sharding (on self.mesh: data,tensor)
+        # into shard_map out_specs (on self.moe_mesh: expert,tensor). Only
+        # 'tensor' is shared between the two meshes; everything else is
+        # irrelevant inside the per-expert shard_map context.
+        out_specs = P(
+            *[
+                ("tensor" if (s == "tensor" or (isinstance(s, tuple) and "tensor" in s)) else None)
+                for s in out_sharding.spec
+            ]
+        )
+        scatter_on_tensor = "tensor" in out_specs
+
+        # Run MoE computation on the expert-parallel mesh
+        with jax.sharding.use_abstract_mesh(self.updated_mesh):
+            hidden_states_reshard = jax.sharding.reshard(hidden_states, P(None))
+            topk_weights_reshard = jax.sharding.reshard(topk_weights, P(None))
+            topk_ids_reshard = jax.sharding.reshard(topk_ids, P(None))
+
+            # Normalize scales to GMM's 4D layout [E, k_blocks, 1, out_dim]
+            w0_scale = self._normalize_scale_for_gmm(
+                self.wi_0_scale.value if self.wi_0_scale is not None else None,
+                self.wi_0.value,
+                scale_name="wi_0_scale",
+            )
+            w1_scale = self._normalize_scale_for_gmm(
+                self.wi_1_scale.value if self.wi_1_scale is not None else None,
+                self.wi_1.value,
+                scale_name="wi_1_scale",
+            )
+            wo_scale = self._normalize_scale_for_gmm(
+                self.wo_scale.value if self.wo_scale is not None else None,
+                self.wo.value,
+                scale_name="wo_scale",
+            )
+
+            result = shard_map(
+                partial(self._forward, scatter_on_tensor=scatter_on_tensor),
+                mesh=self.moe_mesh,
+                in_specs=(
+                    P(None),
+                    P(None),
+                    P(None),
+                    # weights [g, k, n]
+                    P("expert", None, "tensor"),
+                    P("expert", None, "tensor"),
+                    P("expert", "tensor", None),
+                    # scales [g, 1, 1, n]
+                    P("expert", None, None, "tensor"),
+                    P("expert", None, None, "tensor"),
+                    P("expert", None, None, None),
+                    # biases [g, 1, n] (unused)
+                    P("expert", None, "tensor"),
+                    P("expert", None, "tensor"),
+                    P("expert", None, None),
+                ),
+                out_specs=out_specs,
+                check_vma=False,
+            )(
+                hidden_states_reshard,
+                topk_weights_reshard,
+                topk_ids_reshard,
+                self.wi_0.value,
+                self.wi_1.value,
+                self.wo.value,
+                w0_scale,
+                w1_scale,
+                wo_scale,
+                None,
+                None,
+                None,
+            )
+
+        # The shard_map ran under updated_mesh (expert, tensor); land back on
+        # the original mesh so downstream ops (residual add, layernorm) see a
+        # consistent context.
+        return jax.sharding.reshard(result, out_sharding)
+
+    def _call_replicated(
+        self,
+        hidden_states,
+        topk_weights,
+        topk_ids,
+        *,
+        out_sharding: jax.sharding.NamedSharding,
+    ) -> jax.Array:
+        token_spec = P("data", *([None] * (hidden_states.ndim - 1)))
+        routing_spec = P("data", *([None] * (topk_ids.ndim - 1)))
+        out_spec = out_sharding.spec
+        token_axis = out_spec[0] if len(out_spec) > 0 else None
+        token_axes = token_axis if isinstance(token_axis, tuple) else (token_axis,)
+        if self.mesh.shape["data"] > 1 and "data" not in token_axes:
+            raise ValueError(
+                "replicated EPMoE output must shard the token dimension over the data axis"
+            )
+        scatter_on_tensor = "tensor" in token_axes
+
+        with jax.sharding.use_abstract_mesh(self.updated_mesh):
+            hidden_states = jax.sharding.reshard(hidden_states, token_spec)
+            topk_weights = jax.sharding.reshard(topk_weights, routing_spec)
+            topk_ids = jax.sharding.reshard(topk_ids, routing_spec)
+            result = shard_map(
+                partial(self._forward, scatter_on_tensor=scatter_on_tensor),
+                mesh=self.moe_mesh,
+                in_specs=(
+                    token_spec,
+                    routing_spec,
+                    routing_spec,
+                    P(None, None, "tensor"),
+                    P(None, None, "tensor"),
+                    P(None, "tensor", None),
+                ),
+                out_specs=out_spec,
+                check_vma=False,
+            )(
+                hidden_states,
+                topk_weights,
+                topk_ids,
+                self.wi_0[...],
+                self.wi_1[...],
+                self.wo[...],
+            )
+
+        return jax.sharding.reshard(result, out_sharding)
+
+    def _forward(
+        self,
+        hidden_states,
+        topk_weights,
+        topk_ids,
+        w0_weights,
+        w1_weights,
+        wo_weights,
+        w0_kernel_scale=None,
+        w1_kernel_scale=None,
+        wo_kernel_scale=None,
+        w0_kernel_bias=None,
+        w1_kernel_bias=None,
+        wo_kernel_bias=None,
+        *,
+        scatter_on_tensor: bool = False,
+    ):
+        expert_shard_id = (
+            jnp.array(0, dtype=jnp.int32)
+            if self.replicate_experts
+            else jax.lax.axis_index("expert")
+        )
+
+        inputs_2d, token_indices, sorted_selected_experts, group_sizes = self._permute(
+            hidden_states, topk_ids
+        )
+
+        group_sizes = group_sizes.astype(jnp.int32)
+
+        group_offset = self._dispatch(group_sizes, expert_shard_id)
+
+        local_range = None
+        valid_mask = None
+        # Trace-time gate: small (decode-sized) batches keep the exact XLA path so
+        # their HLO is identical to the flag-off build.
+        if self.use_sc_permute and should_use_sparse_core(
+            token_indices.shape[0], inputs_2d.shape[-1], self.dtype
+        ):
+            # Sorted-row range owned by this expert shard, and which routed slots
+            # (token-major order) landed on a local expert.
+            csum = jnp.cumsum(group_sizes)
+            start = jnp.where(group_offset == 0, 0, csum[jnp.maximum(group_offset - 1, 0)])
+            end = csum[group_offset + self.experts_per_device - 1]
+            if self.ep_size > 1:
+                local_range = (start.astype(jnp.int32), end.astype(jnp.int32))
+            flat_experts = jnp.ravel(topk_ids)
+            valid_mask = (flat_experts >= group_offset) & (
+                flat_experts < group_offset + self.experts_per_device
+            )
+
+        intermediate_output = self._gmm_compute(
+            inputs_2d,
+            token_indices,
+            group_sizes,
+            w0_weights,
+            w1_weights,
+            wo_weights,
+            group_offset,
+            w0_kernel_scale,
+            w1_kernel_scale,
+            wo_kernel_scale,
+            w0_kernel_bias,
+            w1_kernel_bias,
+            wo_kernel_bias,
+            local_range=local_range,
+        )
+
+        output = self._unpermute(
+            intermediate_output,
+            sorted_selected_experts,
+            topk_weights,
+            valid_mask=valid_mask,
+        )
+
+        # Reduce on the "tensor" axis. RS (psum_scatter) when caller asked
+        # for SP layout on the token dim, AR (psum) otherwise. The matching
+        # out_specs is set in __call__ from the same source of truth.
+        if self.tp_size > 1:
+            if scatter_on_tensor:
+                output = jax.lax.psum_scatter(output, "tensor", scatter_dimension=0, tiled=True)
+            else:
+                output = jax.lax.psum(output, "tensor")
+        if self.ep_size > 1:
+            output = self._combine(output)
+
+        return output
+
+    def _gmm_compute(
+        self,
+        inputs_2d,
+        token_indices,
+        group_sizes,
+        w0_kernel,
+        w1_kernel,
+        wo_kernel,
+        group_offset,
+        w0_kernel_scale=None,
+        w1_kernel_scale=None,
+        wo_kernel_scale=None,
+        w0_kernel_bias=None,
+        w1_kernel_bias=None,
+        wo_kernel_bias=None,
+        local_range=None,
+    ):
+        if token_indices.shape[0] == 0:
+            return jnp.zeros((0, wo_kernel.shape[-1]), dtype=inputs_2d.dtype)
+
+        # indexed_gmm: gather sorted_inputs here instead of in _permute,
+        # so XLA can fuse the gather with the matmul and avoid materializing
+        # the full [M*top_k, D] sorted_inputs tensor at peak memory.
+        pre_gather_q = getattr(self, "pre_gather_quant_dtype", None)
+        if pre_gather_q is not None:
+            x_q, x_scale = quantize_tensor_simple(inputs_2d, pre_gather_q, dim=-1)
+            x = x_q[token_indices]
+            x_scale = x_scale[token_indices]
+            x = (x.astype(jnp.float32) * x_scale).astype(self.dtype)
+        elif local_range is not None:
+            # SparseCore ragged gather: only rows [start, end) (local experts) are
+            # materialized; gmm never reads the others thanks to group_offset.
+            x = sc_dispatch_gather(inputs_2d, token_indices, *local_range).astype(self.dtype)
+        else:
+            x = inputs_2d[token_indices].astype(self.dtype)
+
+        # NOTE: do NOT pad LHS / bump group_sizes here. The megablox backend
+        # ``gmm`` (sgl_jax/srt/kernels/gmm/megablox_gmm_backend.py:67-73)
+        # already pads ``lhs`` to its required alignment (32 for v2, 128 for
+        # v1), bumps ``group_sizes[-1]`` accordingly, and slices the output
+        # back to the original ``m`` afterwards. An outer pre-pad is at best
+        # redundant; in practice the previous workaround pre-padded to a
+        # hard-coded ``128`` which forced v2 (alignment=32) into a 4x larger
+        # tile, hit a kernel auto-tiler edge case at decode bs=8 / top_k=8
+        # (m=64 -> 128) and triggered an on-device SparseCore halt.
+        group_sizes = group_sizes.astype(jnp.int32)
+        act_q_dtype = self.activation_quantized_dtype
+
+        gmm_kwargs = dict(
+            group_sizes=group_sizes,
+            preferred_element_type=self.dtype,
+            group_offset=group_offset,
+            maybe_quantize_lhs=act_q_dtype is not None,
+            acc_dtype=jnp.float32,
+        )
+
+        # === GEMM1: x @ w0 and x @ w1 ===
+        layer_w0 = gmm(
+            lhs=x,
+            rhs=w0_kernel,
+            rhs_scale=w0_kernel_scale,
+            rhs_bias=w0_kernel_bias,
+            zero_initialize=False,
+            activation_quantized_dtype=act_q_dtype,
+            **gmm_kwargs,
+        )
+        layer_w1 = gmm(
+            lhs=x,
+            rhs=w1_kernel,
+            rhs_scale=w1_kernel_scale,
+            rhs_bias=w1_kernel_bias,
+            zero_initialize=False,
+            activation_quantized_dtype=act_q_dtype,
+            **gmm_kwargs,
+        )
+
+        # === Activation ===
+        if self.activation == "silu":
+            intermediate_layer = jax.nn.silu(layer_w0) * layer_w1
+        elif self.activation == "gelu":
+            intermediate_layer = jax.nn.gelu(layer_w0) * layer_w1
+        elif self.activation == "swigluoai":
+            gate = jnp.clip(layer_w0, max=self.swiglu_limit)
+            up = jnp.clip(layer_w1, -self.swiglu_limit, self.swiglu_limit)
+            intermediate_layer = (up + 1.0) * gate * jax.nn.sigmoid(gate * self.swiglu_alpha)
+        else:
+            raise ValueError(f"Unsupported activation function {self.activation}")
+
+        # === GEMM2: intermediate @ wo ===
+        return gmm(
+            lhs=intermediate_layer,
+            rhs=wo_kernel,
+            rhs_scale=wo_kernel_scale,
+            rhs_bias=wo_kernel_bias,
+            zero_initialize=True,
+            activation_quantized_dtype=act_q_dtype,
+            **gmm_kwargs,
+        )
+
+    def _dispatch(self, group_sizes, expert_shard_id):
+        if self.ep_size <= 1:
+            return jnp.array(0, dtype=jnp.int32)
+        group_offset = jnp.array(expert_shard_id * self.experts_per_device, dtype=jnp.int32)
+        return group_offset
+
+    def _get_all_to_all_params(
+        self,
+        tokens_group: jax.Array,
+        shard_id: jax.Array,
+        start_idx: jax.Array,
+        *,
+        ep_size: int,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        input_offsets = jnp.full(ep_size, start_idx, dtype=tokens_group.dtype)
+        send_sizes = jnp.repeat(tokens_group[shard_id], ep_size)
+        output_offset = jnp.concatenate(
+            (jnp.array([0], dtype=tokens_group.dtype), jnp.cumsum(tokens_group[:-1]))
+        )[shard_id]
+        output_offsets = jnp.repeat(output_offset, ep_size)
+        recv_sizes = tokens_group
+
+        return input_offsets, send_sizes, output_offsets, recv_sizes
+
+    def _combine(self, data):
+        return jax.lax.psum(data, "expert")
+
+    def _permute(self, inputs, top_k_indices):
+        if inputs.ndim != 2:
+            raise ValueError(
+                "EPMoE._permute expects 2-D hidden states [tokens, hidden], "
+                f"got shape {inputs.shape}"
+            )
+
+        expected_indices_shape = (inputs.shape[0], self.num_experts_per_tok)
+        if top_k_indices.shape != expected_indices_shape:
+            raise ValueError(
+                "EPMoE._permute expects routing indices with shape "
+                f"{expected_indices_shape}, got shape {top_k_indices.shape}"
+            )
+
+        flatten_selected_experts = jnp.ravel(top_k_indices)
+        sorted_selected_experts = jnp.argsort(flatten_selected_experts, stable=True)
+        # token_indices: maps each sorted position to the original token index.
+        # Pass to _gmm_compute so the gather happens there (indexed_gmm pattern),
+        # avoiding a full [M*top_k, D] materialization in _permute.
+        token_indices = sorted_selected_experts // self.num_experts_per_tok
+
+        group_sizes = jnp.bincount(flatten_selected_experts, length=self.num_experts)
+
+        return (
+            inputs,
+            token_indices,
+            sorted_selected_experts,
+            group_sizes,
+        )
+
+    def _unpermute(self, intermediate, sorted_selected_experts, weights, valid_mask=None):
+        top_k = self.num_experts_per_tok
+        if weights.ndim != 2 or weights.shape[1] != top_k:
+            raise ValueError(
+                "EPMoE._unpermute expects 2-D routing weights "
+                f"[tokens, {top_k}], got shape {weights.shape}"
+            )
+
+        expected_tokens = weights.shape[0] * top_k
+        if sorted_selected_experts.ndim != 1 or sorted_selected_experts.shape[0] != expected_tokens:
+            raise ValueError(
+                "EPMoE._unpermute expects 1-D sorted routing indices with "
+                f"{expected_tokens} entries, got shape {sorted_selected_experts.shape}"
+            )
+
+        actual_tokens = intermediate.shape[0]
+
+        if actual_tokens != expected_tokens:
+            if actual_tokens > expected_tokens:
+                intermediate = intermediate[:expected_tokens]
+            else:
+                padding_size = expected_tokens - actual_tokens
+                padding = jnp.zeros((padding_size, intermediate.shape[1]), dtype=intermediate.dtype)
+                intermediate = jnp.concatenate([intermediate, padding], axis=0)
+
+        argsort_indices = (
+            jnp.zeros(expected_tokens, dtype=jnp.int32)
+            .at[sorted_selected_experts]
+            .set(jnp.arange(expected_tokens, dtype=jnp.int32))
+        )
+        if self.use_sc_permute and valid_mask is not None:
+            # SparseCore fused gather + top-k weighted reduce (falls back to XLA when
+            # SparseCore is absent or the problem is too small to benefit).
+            return sc_combine(
+                intermediate,
+                argsort_indices,
+                jnp.reshape(weights, (-1,)),
+                valid_mask,
+                self.num_experts_per_tok,
+            ).astype(self.dtype)
+
+        weights_fp32 = weights.astype(jnp.float32)
+
+        # Static token-count branch: small (decode) batches avoid the unrolled
+        # per-k gather overhead; large (prefill) batches avoid the fp32
+        # (tokens, top_k, hidden) intermediate. Benchmarks in the PR description.
+        if weights.shape[0] <= 256:
+            unsort_intermediate = jnp.take(intermediate, indices=argsort_indices, axis=0)
+            reshaped_intermediate = jnp.reshape(
+                unsort_intermediate,
+                (weights.shape[0], top_k, -1),
+            )
+            output = jnp.einsum(
+                "BKE,BK -> BE",
+                reshaped_intermediate.astype(jnp.float32),
+                weights_fp32,
+            )
+        else:
+            grouped_indices = jnp.reshape(argsort_indices, (weights.shape[0], top_k))
+            output = None
+            for k in range(top_k):
+                contribution = (
+                    jnp.take(intermediate, indices=grouped_indices[:, k], axis=0).astype(
+                        jnp.float32
+                    )
+                    * weights_fp32[:, k, None]
+                )
+                output = contribution if output is None else output + contribution
+
+        final_output = output.astype(self.dtype)
+
+        return final_output
+
+
+# create_moe_weights_mapping is utility function to generate weight mapping for MOE layers
+def create_moe_weights_mapping(
+    prefix: str,
+    target_prefix: str,
+    num_experts: int,  # num logical experts
+    expert_type_names: tuple[str, str, str] = (
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ),  # expert source names [gate, up, down]
+    expert_concat_axis_map: dict[
+        str, int
+    ] = None,  # Map from source weight name to its concatenation axis (default is None)
+    moe_backend: str = "epmoe",
+    moe_path: str = "mlp",
+    source_expert_pattern: str = "experts.{i}",
+    physical_to_logical_map=None,  # np.ndarray shape (num_physical,) or None
+) -> dict:
+    """Generate a unified mapping dictionary for MoE layer expert weights."""
+    if moe_backend == "epmoe":
+        expert_type_map = {
+            expert_type_names[0]: "wi_0",
+            expert_type_names[1]: "wi_1",
+            expert_type_names[2]: "wo",
+        }
+    elif moe_backend in ("fused", "fused_v2"):
+        expert_type_map = {
+            expert_type_names[0]: "w1",
+            expert_type_names[1]: "w3",
+            expert_type_names[2]: "w2",
+        }
+    else:
+        raise ValueError(f"Unsupported MoE backend: {moe_backend}")
+
+    if expert_concat_axis_map is None:
+        expert_concat_axis_map = {}
+
+    mappings = {}
+    for source_name, target_name in expert_type_map.items():
+        # Target path for JAX model parameters (matching EPMoE internal variables)
+        target_path_base = f"{target_prefix}.{moe_path}.{target_name}"
+
+        # Source weight paths for logical experts only
+        expert_keys = [
+            f"{prefix}.{moe_path}.{source_expert_pattern.format(i=i)}.{source_name}.weight"
+            for i in range(num_experts)
+        ]
+
+        if moe_backend == "epmoe":
+            # Weights are transposed from HF [n, k] to [k, n], stacked to [g, k, n].
+            # wi_0/wi_1: [g, hidden_size, intermediate_dim] -> P("expert", None, "tensor")
+            # wo:        [g, intermediate_dim, hidden_size] -> P("expert", "tensor", None)
+            sharding = (
+                ("expert", "tensor", None) if target_name == "wo" else ("expert", None, "tensor")
+            )
+            transpose = True
+        elif moe_backend in ("fused", "fused_v2"):
+            # Fused MoE kernel shards experts across the full EP mesh, i.e. the
+            # product of ("data", "tensor"). Shard expert dim (axis=0) across
+            # both mesh axes so each device owns a disjoint expert slice.
+            sharding = (("data", "tensor"), None, None)
+            transpose = True
+        else:
+            raise ValueError(f"Unsupported MoE backend: {moe_backend}")
+
+        concat_axis = expert_concat_axis_map.get(source_name)
+
+        # Use  prefix to indicate aggregated MoE weight loading
+        mappings[f"{target_path_base}"] = WeightSpec(
+            target_path=target_path_base,
+            sources=tuple(expert_keys),
+            sharding=sharding,
+            transpose=transpose,
+            concat_axis=concat_axis,
+            physical_to_logical_map=physical_to_logical_map,
+        )
+
+    return mappings

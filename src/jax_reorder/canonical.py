@@ -2,7 +2,8 @@
 
 本模块维护两种顺序：规范结构中的节点按 BFS 编号存放，可执行 jaxpr
 中的方程按（依赖深度，BFS 编号）存放。BFS 访问顺序不能直接作为执行顺序。
-整个过程保留操作数位置、结果端口和共享关系，不应用交换律或结合律。
+保留普通运算的操作数位置、结果端口和共享关系，不应用交换律或结合律。
+cond 的内部实参和所有分支形参允许同步置换，外部函数输入顺序保持不变。
 """
 
 import dataclasses
@@ -72,7 +73,8 @@ class Issue:
 class Node:
     """一个方程的规范表示；相同算子的两次调用仍是两个独立节点。
 
-    inputs 是按操作数位置排列的值引用，outputs 是按结果端口排列的抽象值。
+    inputs 是按操作数位置排列的值引用（cond 内部绑定先同步规范化），
+    outputs 是按结果端口排列的抽象值。
     params、effects、context 保存编码后的语义信息；order_after 保存
     张量使用关系之外的顺序前驱，其编号使用 BFS 编号而非原方程索引。
     """
@@ -187,24 +189,83 @@ class _Normalizer:
         self.primitives = supported_primitive_identities()
         # cache 复用共享子图的处理结果；active 仅记录当前递归路径，用于检测环。
         # 缓存不跨公开调用复用，避免再次调用时沿用已经改变的常量或图内容。
-        self.cache: dict[int, Canonicalized] = {}
-        self.active: set[int] = set()
+        # 同步置换会创建临时分支图。缓存持有图对象，避免释放后 id 被其他图复用。
+        self.cache: dict[core.Jaxpr, Canonicalized] = {}
+        self.active: set[core.Jaxpr] = set()
 
     def normalize(self, graph: core.Jaxpr, path: str) -> Canonicalized:
         """处理一个区域，复用共享子图，但拒绝递归引用自身的嵌套图。"""
-        if id(graph) in self.active:
+        if not isinstance(graph, core.Jaxpr):
+            raise InvalidJaxprError(path, "expected a jaxpr including its bound constants")
+        if graph in self.active:
             raise InvalidJaxprError(path, "cyclic nested jaxpr")
-        if id(graph) in self.cache:
-            return self.cache[id(graph)]
-        self.active.add(id(graph))
+        if graph in self.cache:
+            return self.cache[graph]
+        self.active.add(graph)
         try:
             result = self._normalize(graph, path)
-            self.cache[id(graph)] = result
+            self.cache[graph] = result
             # 参数编码引用规范结构，参数替换引用新 jaxpr；两种图对象指向同一结果。
-            self.cache[id(result.jaxpr)] = result
+            self.cache[result.jaxpr] = result
             return result
         finally:
-            self.active.remove(id(graph))
+            self.active.remove(graph)
+
+    def _cond_bindings(self, eq, path, issues):
+        """按分支中的实际使用顺序，同步置换 cond 实参与全部分支形参。
+
+        置换只改变内部槽位名称，变量引用不变。不能只排序实参，也不能各分支
+        独立排序，否则可能把原本传错参数的计算误判为等价。
+        """
+        unknown = eq.params.keys() - {"branches", "branches_platforms"}
+        if unknown:
+            raise UnsupportedJaxprError(path, f"unsupported cond parameters {sorted(unknown)}")
+        branches = eq.params.get("branches")
+        if (
+            type(branches) is not tuple
+            or not branches
+            or any(not isinstance(branch, core.Jaxpr) for branch in branches)
+            or not eq.invars
+            or any(len(branch.invars) != len(eq.invars) - 1 for branch in branches)
+        ):
+            raise InvalidJaxprError(path, "invalid cond branches or operand count")
+
+        # 子分支先处理，保证嵌套 cond 的捕获顺序不会影响本层参数首次使用位置。
+        normalized = [
+            self.normalize(branch, f"{path}.params.branches[{i}]")
+            for i, branch in enumerate(branches)
+        ]
+        slots: dict[int, None] = {}
+
+        def discover(ref):
+            if ref[0] == "input":
+                slots.setdefault(ref[1], None)
+
+        for result in normalized:
+            for ref in result.graph.outputs:
+                discover(ref)
+            # nodes 已按 BFS 存放；输入引用的编号仍对应该分支原来的形参槽位。
+            for node in result.graph.nodes:
+                for ref in node.inputs:
+                    discover(ref)
+        unused = [i for i in range(len(eq.invars) - 1) if i not in slots]
+        if len(unused) > 1:
+            issues.append(Issue(path, "unused cond operands retain their original relative order"))
+        order = (*slots, *unused)
+        rebound = []
+        for result in normalized:
+            branch = result.jaxpr
+            if order != tuple(range(len(branch.invars))):
+                debug = branch.debug_info
+                if debug.arg_names is not None:
+                    names = debug.safe_arg_names(len(branch.invars))
+                    debug = debug._replace(arg_names=tuple(names[i] for i in order))
+                branch = branch.replace(invars=[branch.invars[i] for i in order], debug_info=debug)
+            rebound.append(branch)
+        return eq.replace(
+            invars=[eq.invars[0], *(eq.invars[i + 1] for i in order)],
+            params={**eq.params, "branches": tuple(rebound)},
+        )
 
     def _params(self, eq, eq_path, encoder):
         """编码全部参数；仅对已核对语义的特定参数采用专门适配。"""
@@ -233,7 +294,7 @@ class _Normalizer:
     def _normalize(self, graph: core.Jaxpr, path: str) -> Canonicalized:
         """依次建立依赖、BFS 编号、处理子图、计算深度并构造完整比较表示。"""
         _validate(graph, path)
-        equations = graph.eqns
+        equations = list(graph.eqns)
         # 1. 原 Var 只用于查表。多结果方程还必须记录结果端口，不能只记生产者。
         producers = {
             v: (i, port) for i, eq in enumerate(equations) for port, v in enumerate(eq.outvars)
@@ -273,6 +334,10 @@ class _Normalizer:
                 if previous_ordered is not None:
                     extra_predecessors[i] = [previous_ordered]
                 previous_ordered = i
+            if eq.primitive is lax.cond_p:
+                # 必须先改变父图看到的输入顺序，再编号其生产者；末尾只改比较键
+                # 会留下由原捕获顺序决定的父图 BFS 编号，仍然造成误判。
+                equations[i] = self._cond_bindings(eq, f"{path}.eqns[{i}]", issues)
 
         def visit(index):
             """节点第一次入队时分配编号，使共享前驱只出现一次。"""
@@ -367,7 +432,7 @@ class _Normalizer:
             frozen_params.append(tuple(encoded_params))
             # 编码过程已递归处理子图；此处只把参数中的子图替换成对应的新 jaxpr。
             # 没有需要替换的子图时，复用原方程对象，不修改原输入图。
-            params = replace_nested(eq.params, lambda child: self.cache[id(child)].jaxpr)
+            params = replace_nested(eq.params, lambda child: self.cache[child].jaxpr)
             new_equations.append(eq if params is eq.params else eq.replace(params=params))
 
         # 5. 原图已通过定义顺序检查，因此从前向后一次计算即可得到所有前驱深度。
