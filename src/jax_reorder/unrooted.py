@@ -18,6 +18,7 @@ DEFAULT_SEARCH_BUDGET = 10_000
 
 def _variables(value, transform):
     """只改当前区域的编码变量引用，子 Graph 保持自身的局部命名空间。"""
+    # ready=False 展开子项，ready=True 收集合成；不进入子 Graph 的局部变量空间。
     pending, values = [(False, value)], []
     while pending:
         ready, item = pending.pop()
@@ -50,6 +51,7 @@ def order_key(value):
     类型/Primitive/PRNG 实现原本按身份区分，最后的身份项仅打破同名对象
     的平局。这是进程内规范表示，不是可跨环境持久化的序列化格式。
     """
+    # 工作栈先处理子键再合成父键；无序集合排序，有序元组维持原元素位置。
     pending, values, cache = [("key", value)], [], {}
     while pending:
         action, item = pending.pop()
@@ -119,17 +121,22 @@ def _key_template(value):
 def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEARCH_BUDGET):
     """返回旧节点/常量索引的规范排列；预算耗尽时显式失败。"""
     n, nc = len(graph.nodes), len(graph.constants)
+    # 搜索中把常量绑定也当作顶点：计算节点占 [0, n)，常量占 [n, n + nc)。
+    # 输入端口和字面量保留在标签里，不能像内部顶点一样自由重新编号。
     labels, outgoing, incoming = [], [[] for _ in range(n + nc)], [[] for _ in range(n + nc)]
     has_parameter_references = False
 
     def anonymous(ref):
         nonlocal has_parameter_references
         if ref[0] in {"result", "constant"}:
+            # 初始标签去掉临时编号；完整候选生成后仍会核对参数内引用的真实连接。
             has_parameter_references = True
             return (ref[0], "unbound", *ref[2:])
         return ref
 
     def edge(source, target, label):
+        # 此处边从消费者指向生产者，与执行时的数据流方向相反。
+        # label 保留操作数位置、生产者结果端口或附加顺序边位置。
         outgoing[source].append((label, target))
         incoming[target].append((label, source))
 
@@ -146,6 +153,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
                 inputs.append(ref)
         for position, predecessor in enumerate(node.order_after):
             edge(i, predecessor, (2, position))
+        # 可达节点把已有 BFS 编号写进标签，搜索过程中始终固定这些外部锚点。
         labels.append(
             (
                 "node",
@@ -167,6 +175,8 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
     initial = tuple(ranks[key] for key in keys)
 
     def refine(colors):
+        # color 是候选类别编号。用双向邻接不断细分；同色只表示尚无法区分，
+        # 不能据此宣称两个节点等价，未拆开的类别还需精确搜索。
         while True:
             signatures = tuple(
                 (
@@ -184,6 +194,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
 
     pending, best, best_order, visited = [initial], None, None, 0
     while pending:
+        # 预算按探索状态计数；超限时整体失败，不返回已经找到的某个候选排列。
         visited += 1
         if visited > budget:
             raise UnsupportedJaxprError(
@@ -197,6 +208,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
             cells[color].append(i)
         ambiguous = next((cell for _, cell in sorted(cells.items()) if len(cell) > 1), None)
         if ambiguous is None:
+            # 每个顶点已有唯一编号，才能构造包含全部标签和连接的完整比较证书。
             order = tuple(sorted(range(len(labels)), key=lambda i: colors[i]))
             numbers = {v: i for i, v in enumerate(order)}
 
@@ -228,12 +240,15 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
         twins = set()
         for chosen in ambiguous:
             twin = (tuple(sorted(outgoing[chosen])), tuple(sorted(incoming[chosen])))
+            # 参数中存在变量引用时，邻接表没有表达全部连接，因此禁用孪生剪枝。
             if twin in twins and not has_parameter_references:
                 continue
             twins.add(twin)
+            # 逐个尝试将同色类中的一个顶点单独分出，再继续细化与搜索。
             split = tuple((color, int(i != chosen)) for i, color in enumerate(colors))
             ranks = {sig: rank for rank, sig in enumerate(sorted(set(split)))}
             pending.append(tuple(ranks[sig] for sig in split))
+    # 返回“新位置 → 旧索引”；可达前缀不变，常量编号从统一顶点编号还原。
     nodes = (*range(rooted_nodes), *(i for i in best_order if rooted_nodes <= i < n))
     constants = (
         *range(rooted_constants),
@@ -244,6 +259,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
 
 def reorder_form(graph, nodes, constants):
     """将完整图中的连接统一改编号，保持结果端口和共享次数。"""
+    # 反转排列得到“旧索引 → 新编号”，所有值引用和顺序边必须一起改编号。
     node_ids = {old: new for new, old in enumerate(nodes)}
     constant_ids = {old: new for new, old in enumerate(constants)}
 

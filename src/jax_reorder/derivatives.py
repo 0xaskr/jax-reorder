@@ -18,6 +18,7 @@ from .errors import InvalidJaxprError, UnsupportedJaxprError
 
 CUSTOM_PRIMITIVES = frozenset((cd.custom_jvp_call_p, cd.custom_vjp_call_p))
 MAX_RULE_CASES = 64
+# 仅用于识别已审查的 JAX 延迟追踪包装，不用 code 对象身份比较用户求导规则。
 _MEMOIZED_CODE = pe._memoize(lambda: None).__code__
 
 
@@ -34,6 +35,8 @@ def _differentiable(aval):
 
 
 def _activations(avals, symbolic):
+    # active=True 表示传入动态切线/余切，False 表示符号零；不检查样本数值是否为零。
+    # symbolic 模式枚举非空激活组合，整数等不可微叶子始终不激活。
     indices = [i for i, aval in enumerate(avals) if _differentiable(aval)]
     if not indices:
         return ()
@@ -72,6 +75,7 @@ def _constant_bindings(constants, equation, parent):
                 raise UnsupportedJaxprError(
                     "derivative", "rule captures a dynamic value outside the custom call operands"
                 )
+            # 记录调用操作数位置，而非当时 tracer 的值，让捕获随实际输入变化。
             result.append(("input", positions[source]))
         elif isinstance(value, core.Tracer):
             raise UnsupportedJaxprError(
@@ -116,9 +120,11 @@ def _check_rule_order(rules):
 
 def _jvp_rules(params, equation, parent):
     primal = params["call_jaxpr"]
+    # num_consts 是调用输入中的捕获前缀；求导激活掩码只对应后面的普通参数。
     avals = primal.in_avals[params["num_consts"] :]
     result = []
     for active in _activations(avals, params["symbolic_zeros"]):
+        # JAX thunk 接收“是否为符号零”，与这里 active 的含义相反。
         graph, constants, out_zeros = params["jvp_jaxpr_fun"].call_wrapped(*(not a for a in active))
         bindings = _constant_bindings(constants, equation, parent)
         n = len(primal.invars)
@@ -126,6 +132,7 @@ def _jvp_rules(params, equation, parent):
             raise InvalidJaxprError("derivative", "invalid custom JVP rule input count")
 
         def connected(*xs, graph=graph, bindings=bindings, n=n):
+            # 包装图接收 [完整 primal 实参, 活跃切线]，再按规则接口补入捕获值。
             return tuple(
                 core.eval_jaxpr(
                     graph,
@@ -138,6 +145,7 @@ def _jvp_rules(params, equation, parent):
         inputs = tuple(_abstract(aval) for aval in primal.in_avals) + tuple(
             _abstract(aval.to_tangent_aval()) for aval, nz in zip(avals, active, strict=True) if nz
         )
+        # 规则会省略符号零输出；out_zeros 也是接口语义，必须和实际输出图一起比较。
         result.append((active, tuple(out_zeros), jax.make_jaxpr(connected)(*inputs)))
     return tuple(result)
 
@@ -147,6 +155,7 @@ def _vjp_rules(params, equation, parent):
     nc = params["num_consts"]
     activations = _activations(primal.in_avals[nc:], params["symbolic_zeros"])
     cotangents = _activations(primal.out_avals, params["symbolic_zeros"])
+    # VJP 规则同时受输入激活模式和输出余切模式影响，需要验证两者的组合。
     if len(activations) * len(cotangents) > MAX_RULE_CASES:
         raise UnsupportedJaxprError(
             "derivative", "combined input/cotangent symbolic-zero rule budget exceeded"
@@ -170,6 +179,8 @@ def _vjp_rules(params, equation, parent):
         if len(graph.invars) != len(constants) + len(primal.invars) - nc:
             raise InvalidJaxprError("derivative", "invalid custom VJP forward input count")
         out_tree, residual_tree, forwards = params["out_trees"]()
+        # forwards 每项对应一个逻辑残差槽：整数表示直接透传某个 primal 输入，
+        # None 表示从 fwd 的实际输出中依次取值；二者共同组成 bwd 接收的残差。
         forwards = tuple(forwards)
         if len(forwards) != residual_tree.num_leaves or out_tree.num_leaves != len(primal.outvars):
             raise InvalidJaxprError("derivative", "invalid custom VJP result or residual interface")
@@ -178,6 +189,7 @@ def _vjp_rules(params, equation, parent):
             for f in forwards
         ):
             raise InvalidJaxprError("derivative", "invalid residual input forwarding")
+        # 物化 fwd 的输出为 [非透传残差, primal 输出]，残差总数不一定等于 nr。
         nr = sum(f is None for f in forwards)
         if len(graph.outvars) != nr + len(primal.outvars):
             raise InvalidJaxprError("derivative", "invalid custom VJP forward result count")
@@ -194,6 +206,7 @@ def _vjp_rules(params, equation, parent):
             nr_full = len(forwards)
 
             def backward(*xs, ct_active=ct_active, params=params, nr_full=nr_full):
+                # 图输入只携带活跃余切，调用用户 bwd 前按原输出端口补回 SymbolicZero。
                 residuals, nonzero_cts = xs[:nr_full], iter(xs[nr_full:])
                 cts = tuple(
                     next(nonzero_cts) if nz else cd.SymbolicZero(aval.to_ct_aval())
@@ -220,6 +233,8 @@ def _vjp_rules(params, equation, parent):
                 *(tuple(_abstract(aval) for aval in residual_avals) + seeds)
             )
             backward_bindings = _constant_bindings(backward_graph.consts, equation, parent)
+            # bwd 还可能直接捕获调用输入；先建立紧凑的捕获前缀，再把原位置映射过去。
+            # 这些边独立于 residual，不能把捕获值冻结成某次追踪的常量。
             captured_inputs = tuple(
                 sorted({value for kind, value in backward_bindings if kind == "input"})
             )
@@ -245,6 +260,7 @@ def _vjp_rules(params, equation, parent):
                 primals, seeds = xs[: len(primal.invars)], xs[len(primal.invars) :]
                 forwarded = fwd(*primals)
                 residual_values = iter(forwarded[:nr])
+                # 连接实际 fwd 输出、透传输入和 bwd 捕获；分别比较两个函数体会漏掉接错线。
                 residuals = tuple(
                     next(residual_values) if f is None else primals[f] for f in forwards
                 )
@@ -281,6 +297,8 @@ def semantic_parameters(equation, *, scope="all", parent=None):
         or len(p["call_jaxpr"].outvars) != len(equation.outvars)
     ):
         raise InvalidJaxprError("derivative", "invalid custom derivative interface")
+    # 返回的是比较视图，不改 equation.params。all 展开注册的一阶规则；primal
+    # 只比较当前调用的前向语义，供已经显式展开 JVP/VJP 的函数模式等路径使用。
     result = {name: p[name] for name in ("call_jaxpr", "num_consts", "symbolic_zeros")}
     if scope == "all":
         try:

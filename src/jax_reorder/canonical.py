@@ -30,6 +30,8 @@ from .support import supported_primitive_identities
 from .unrooted import DEFAULT_SEARCH_BUDGET, canonical_order, order_key, reorder_form
 
 
+# 阅读主线：compare_jaxprs → canonicalize → _Normalizer.normalize → _normalize。
+# 本模块负责生成规范表示；原图之间的对应关系由 correspondence 模块独立复核。
 class _AmbiguousSlots(Exception):
     """把真正无锚点的内部槽位交给整张图的有界选择搜索。"""
 
@@ -43,6 +45,7 @@ class _UsePath:
 
     slot: int
     parent: "_UsePath | None" = None
+    # 这里是到有序根的最短回溯距离，与保证可执行性的最长依赖深度不同。
     depth: int = 0
 
     def __lt__(self, other):
@@ -51,6 +54,7 @@ class _UsePath:
         a, b = self, other
         result = False
         # 同深度时按根到使用点的端口序列比较，不按算子名或原始方程索引。
+        # 链表从使用点指向根；持续覆盖 result，让更靠近根的首个差异决定结果。
         while a is not b:
             if a.slot != b.slot:
                 result = a.slot < b.slot
@@ -113,6 +117,8 @@ class Node:
     """
 
     primitive: core.Primitive
+    # 例如 ("input", 0) 引用函数第一个输入，("result", 2, 1) 引用节点 2 的第二个结果。
+    # 操作数所在位置和引用中的结果端口分别表达“怎么用”和“从哪里来”。
     inputs: tuple
     outputs: tuple
     params: tuple
@@ -159,6 +165,9 @@ class Canonicalized:
     unused_constants: tuple[int, ...]
     issues: tuple[Issue, ...]
     value_references: Mapping[core.Var, tuple] = field(compare=False, repr=False)
+    # lineage：中间图 →（原图，中间图每个方程对应的原方程索引）。
+    # regions：各子图的规范化结果；semantic_views：方程用于比较的完整语义参数。
+    # 后者可包含物化后的求导规则，不能拿它替换可执行方程里的原始 Python 回调。
     lineage: Mapping = field(default_factory=dict, compare=False, repr=False)
     regions: Mapping = field(default_factory=dict, compare=False, repr=False)
     semantic_views: Mapping = field(default_factory=dict, compare=False, repr=False)
@@ -229,10 +238,12 @@ class _Normalizer:
         # 缓存不跨公开调用复用，避免再次调用时沿用已经改变的常量或图内容。
         # 同步置换会创建临时分支图。缓存持有图对象，避免释放后 id 被其他图复用。
         self.cache: dict[core.Jaxpr, Canonicalized] = {}
+        # 同一子图按 all/primal 范围比较时，求导规则是否参与不同，必须分开缓存。
         self.scoped_cache = {}
         self.semantic_views = {}
         self.derivative_scope = derivative_scope
         self.search_budget = search_budget
+        # decisions 是外层搜索已选定的槽位置换前缀；遇到下一个歧义点时暂停并分叉。
         self.decisions = decisions
         self.choice_index = 0
         self.active: set[core.Jaxpr] = set()
@@ -273,6 +284,8 @@ class _Normalizer:
         push(graph, path)
         value = None
         try:
+            # 子生成器 yield（子图，路径）提出请求，return 交回 Canonicalized。
+            # send 把子图结果送回父生成器；显式栈使深层 cond 不占用 Python 调用栈。
             while stack:
                 current, current_path, worker = stack[-1]
                 try:
@@ -359,6 +372,8 @@ class _Normalizer:
             if type(params[name]) is not tuple or len(params[name]) != len(eq.outvars):
                 raise InvalidJaxprError(path, f"invalid jit {name}")
             params[name] = tuple(params[name][i] for i in output_order)
+        # 先由调用结果的使用位置固定子图输出，再从子图内部使用位置确定输入顺序。
+        # 父图实参、子图形参及逐端口元数据必须采用同一置换，才能保持调用语义。
         child = self._rebind_outputs(child, output_order)
         normalized = yield child, f"{path}.params.jaxpr"
         input_order = self._capture_order(normalized, len(eq.invars), path, issues)
@@ -374,6 +389,8 @@ class _Normalizer:
     def _capture_order(self, result, count, path, issues, start=0):
         """按规范子图的首次使用位置排列捕获前缀，不能顺带改变 carry 位置。"""
         slots = {}
+        # 直接返回的形参也是有序根，优先于节点中的使用；只移动指定角色区间。
+        # 完全未使用的槽位没有使用路径，交给完整搜索，而不是按旧编号打破平局。
         for ref in result.graph.outputs:
             if ref[0] == "input" and start <= ref[1] < start + count:
                 slots.setdefault(ref[1], None)
@@ -462,6 +479,8 @@ class _Normalizer:
             ):
                 raise InvalidJaxprError(path, "invalid scan operand or result count")
             nc, nk = len(constants), len(carry)
+            # scan 输入为 [捕获常量, carry, xs]，输出为 [新 carry, ys]。
+            # carry 的输入、输出构成跨迭代反馈边；换序时两端必须一起移动。
             carry_order = self._output_order(eq, range(nk), uses, f"{path}.carry")
             ys_order = self._output_order(eq, range(nk, len(eq.outvars)), uses, f"{path}.ys")
             out_order = (*carry_order, *ys_order)
@@ -489,6 +508,8 @@ class _Normalizer:
                 params=params,
             )
 
+        # while 父图实参为 [condition 捕获, body 捕获, carry]。
+        # 两个子图各自只接收自己的捕获和同一组 carry，因此偏移量分别为 nc、nb。
         nc, nb = params["cond_nconsts"], params["body_nconsts"]
         condition, body = params["cond_jaxpr"], params["body_jaxpr"]
         carry_count = len(eq.outvars)
@@ -565,6 +586,7 @@ class _Normalizer:
             if ref[0] == "input":
                 slots.setdefault(ref[1], None)
 
+        # 分支顺序对应 selector 的取值，不能改变；所有分支共同确定唯一的形参顺序。
         for result in normalized:
             for ref in result.graph.outputs:
                 discover(ref)
@@ -577,6 +599,7 @@ class _Normalizer:
         rebound = []
         for result in normalized:
             rebound.append(self._rebind_inputs(result.jaxpr, order))
+        # selector 只属于父 cond 的第 0 个操作数，不属于任何分支的形参列表。
         return eq.replace(
             invars=[eq.invars[0], *(eq.invars[i + 1] for i in order)],
             outvars=[eq.outvars[i] for i in output_order],
@@ -732,8 +755,8 @@ class _Normalizer:
                 visit(predecessor)
         bfs_order = tuple(identifiers)
         rooted_constants = len(constant_ids)
-        # 3. BFS 不可达的纯方程继续保留，并明确标记部分完成。
-        # 保留原相对顺序且放在可达部分之后，仍满足原 SSA 图的依赖约束。
+        # 3. 保留 BFS 不可达的纯方程，先按原顺序补临时编号。
+        # 后续 canonical_order 对这部分做完整搜索，不能把临时编号当作最终规范顺序。
         unused = tuple(i for i in range(len(equations)) if i not in identifiers)
         for index in unused:
             identifiers[index] = len(identifiers)
@@ -871,6 +894,8 @@ class _Normalizer:
             graph.is_high,
         )
         if unused or unused_constants:
+            # 可达前缀已有外部输出提供的锚点；搜索只能重命名剩余节点和常量。
+            # 搜索返回“新位置 → 旧编号”，下方再合成“原图索引 → 新编号”。
             node_order, const_order = canonical_order(
                 form, len(bfs_order), rooted_constants, budget=self.search_budget
             )
@@ -927,6 +952,8 @@ def canonicalize(
             raise ValueError("derivative_scope must be all or primal")
         if type(search_budget) is not int or search_budget < 1:
             raise ValueError("search_budget must be a positive integer")
+        # 每个待办项是一段内部槽位选择。重跑到下一处歧义时枚举所有选择，
+        # 最后取完整图编码最小者；不能把首次成功的候选当作规范结果。
         pending, attempts, best, best_key = [()], 0, None, None
         while pending:
             decisions = pending.pop()
@@ -941,6 +968,8 @@ def canonicalize(
             try:
                 result = normalizer.normalize(jaxpr, "jaxpr")
             except _AmbiguousSlots as choice:
+                # 先估算阶乘数量，再生成置换，避免仅枚举候选就耗尽内存。
+                # 预算不足必须拒绝；已找到的局部最优仍不能证明规范化完成。
                 options = 1
                 for size in range(2, len(choice.ports) + 1):
                     options *= size
@@ -982,6 +1011,7 @@ def _difference(left: Any, right: Any) -> str | None:
     不比较哈希或打印摘要。栈中倒序加入字段/元素，使取出时按声明顺序检查，
     保证报告位置稳定；编码后的叶子采用其已明确语义的精确相等比较。
     """
+    # 差异路径定位的是规范 Graph，例如 nodes[0] 不一定是源 jaxpr 的第一个方程。
     pending = [("graph", left, right)]
     seen = set()
     while pending:
@@ -1040,6 +1070,8 @@ def compare_jaxprs(
     difference = _difference(a.graph, b.graph)
     correspondence = None
     if difference is None:
+        # 规范表示相同只是第一道检查；还需回到两份原图验证逐节点双射和绑定。
+        # 证据构造或复核失败说明无法确认等价，不能把它改报为程序不等价。
         try:
             correspondence = build_correspondence(left, right, a, b)
             verify_correspondence(left, right, correspondence, derivative_scope=derivative_scope)

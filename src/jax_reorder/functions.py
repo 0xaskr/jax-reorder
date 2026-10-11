@@ -54,6 +54,7 @@ class FunctionSignature:
     input_tree: Frozen
     static_arguments: Frozen
     output_tree: Frozen
+    # 编号针对展平后的动态输入叶子，不是原函数的 argnums，也不包含切线/余切种子。
     differentiated_leaves: tuple[int, ...]
     transforms: tuple[str, ...]
 
@@ -64,6 +65,7 @@ class FunctionTrace:
     signature: FunctionSignature
     context: Frozen
     jaxpr: core.Jaxpr = field(compare=False, repr=False)
+    # 物化图的全部动态输入签名；求导模式还包括种子，供可选的编译检查使用。
     abstract_inputs: tuple = field(compare=False, repr=False)
 
 
@@ -84,10 +86,12 @@ class FunctionComparison:
     status: Status
     modes: tuple[ModeComparison, ...]
     unverified_modes: tuple[str, ...]
+    # 仅在请求编译且各模式两侧都编译成功时为 True，不表示已执行数值验证。
     cpu_compiled: bool
 
 
 def _context():
+    # 每次追踪重新记录环境；版本、设备或精度配置不同的图不能直接合并比较结论。
     encoder = _encoder()
     values = jax.config.values
     return encoder.encode(
@@ -144,11 +148,13 @@ def _prepare(function, args, kwargs, static_argnums, static_argnames, argnums):
     dynamic_positions = tuple(i for i in range(len(args)) if i not in static)
     dynamic_args = tuple(args[i] for i in dynamic_positions)
     dynamic_kwargs = {k: v for k, v in kwargs.items() if k not in static_names}
+    # 静态参数可能只影响 Python 分支、不会成为图输入，仍需记录其位置和完整值。
     static_values = tuple(("arg", i, args[i]) for i in sorted(static)) + tuple(
         ("keyword", name, bound.arguments[name])
         for name in sorted(static_names)
         if name not in positional or positional.index(name) >= len(args)
     )
+    # jaxpr 只看到展平的叶子；单独保留 tree，才能区分 tuple/list/dict 等接口差异。
     leaves, tree = jax.tree.flatten((dynamic_args, dynamic_kwargs))
 
     def run(*flat):
@@ -171,6 +177,7 @@ def _prepare(function, args, kwargs, static_argnums, static_argnames, argnums):
             selected.add(index)
         offset = 0
         differentiated = []
+        # 一个原始参数可能包含多个叶子，用累计偏移把 argnums 转成展平输入索引。
         for index, value in zip(dynamic_positions, dynamic_args, strict=True):
             part = jax.tree.leaves(value)
             if index in selected:
@@ -211,6 +218,8 @@ def trace_function(
             raise ValueError(f"unsupported transformation {transform!r}")
     mode_inputs = abstract
     if mode != "forward":
+        # JVP 的种子对应选中的输入叶子；VJP 的种子对应全部输出叶子。
+        # 都作为动态参数追踪，使比较覆盖任意种子，而不是某个固定投影的结果。
         if mode == "jvp":
             seeds = tuple(_abstract(abstract[i], cotangent=True) for i in differentiated)
         else:
@@ -223,6 +232,7 @@ def trace_function(
             selected = tuple(primals[i] for i in differentiated)
 
             def selected_function(*values):
+                # 未被选中求导的输入仍是外层图的动态输入，仅在本次 AD 中视为固定。
                 full = list(primals)
                 for index, value in zip(differentiated, values, strict=True):
                     full[index] = value
@@ -230,6 +240,7 @@ def trace_function(
 
             if mode == "jvp":
                 return jax.jvp(selected_function, selected, seed_values)
+            # 同一次调用产生 primal 和 pullback，保留前向残差与反向计算的实际连接。
             primal, pullback = jax.vjp(selected_function, *selected)
             return primal, pullback(jax.tree.unflatten(output_tree, seed_values))
 
@@ -237,6 +248,7 @@ def trace_function(
         mode_inputs = (*abstract, *seeds)
     else:
         mode_run = run
+    # return_shape 同时提供输出 pytree；图输出叶子相同不代表 Python 返回结构相同。
     graph, output_shape = jax.make_jaxpr(mode_run, return_shape=True)(*mode_inputs)
     # custom_vjp 的非法 JVP 可能先追踪出 custom_lin，直到执行时才抛错。
     # 这是 JAX 自身拒绝的变换，不应记录成比较器尚未支持一个普通原语。
@@ -269,6 +281,7 @@ def trace_function(
 
 def compare_function_traces(left: FunctionTrace, right: FunctionTrace) -> ModeComparison:
     """先核对完整函数范围，再比较图；不能把不同上下文的追踪结果混为一谈。"""
+    # 上下文不同意味着比较前提不一致，归为 unknown；同一前提下的接口差异才报 different。
     if left.mode != right.mode or left.context != right.context:
         return ModeComparison(
             left.mode,
@@ -328,6 +341,7 @@ def compare_functions(
     results = []
     compiled = check_cpu
     for mode in modes:
+        # 各模式独立记录两侧的失败证据；某个模式失败后仍检查其余请求模式。
         traces, issues = [], []
         failure_kind = None
         for side, function, positional, keywords in (
@@ -370,6 +384,7 @@ def compare_functions(
                     def evaluate(*flat, graph=traced.jaxpr):
                         return core.eval_jaxpr(graph, graph.consts, *flat)
 
+                    # lower/compile 检查后端能否接受物化图，不实际调用编译产物。
                     jax.jit(evaluate).lower(*traced.abstract_inputs).compile()
                 except (
                     TypeError,
@@ -394,6 +409,7 @@ def compare_functions(
             )
         else:
             results.append(compare_function_traces(*traces))
+    # 汇总优先报告未完成的检查；已发现的结构差异仍保留在对应 ModeComparison 中。
     statuses = {result.status for result in results}
     status = (
         Status.UNKNOWN

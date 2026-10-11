@@ -25,6 +25,7 @@ class EquationCorrespondence:
 
     right: int
     children: tuple[tuple[str, "GraphCorrespondence"], ...] = ()
+    # outputs[p] = q 表示左侧结果端口 p 对应右侧端口 q，与方程在列表中的位置无关。
     outputs: tuple[int, ...] = ()
 
 
@@ -60,6 +61,7 @@ def _parameter_view(
     regions = {}
 
     def nested(graph, path):
+        # 父参数只记录子图所在位置，内容随后逐区域核对；占位不意味着忽略子图。
         regions[path] = graph
         return SimpleNamespace(graph=("region", path))
 
@@ -118,6 +120,8 @@ def build_correspondence(left, right, left_normalized, right_normalized):
         return tuple(result)
 
     def build(a, b, an, bn):
+        # a/b 是原区域，an/bn 是规范化后的可执行区域；不能混用这两套索引。
+        # 来源表把可执行列表位置还原到原方程位置，规范节点编号不直接用于证据。
         source_a, order_a = left_normalized.lineage[an]
         source_b, order_b = right_normalized.lineage[bn]
         if source_a is not a or source_b is not b:
@@ -207,6 +211,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
             raise CorrespondenceError(path, reason)
 
     def permutation(indices, left_size, right_size, path):
+        # 必须覆盖双方每个位置一次；只验证已匹配子集会漏掉多余节点或共享变化。
         require(
             type(indices) is tuple
             and len(indices) == left_size == right_size
@@ -314,6 +319,8 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                 path,
                 "external output order changed",
             )
+        # 先为全部定义建立左 Var → 右 Var 映射，再检查每条使用边。
+        # 两侧原方程顺序可以不同，不能一边扫描配对方程一边假定对方已遇到生产者。
         values = {v: b.invars[mapping.inputs[i]] for i, v in enumerate(a.invars)}
         values.update({v: b.constvars[mapping.constants[i]] for i, v in enumerate(a.constvars)})
         for i, equation in enumerate(a.eqns):
@@ -336,6 +343,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                 (v, other.outvars[eqmap.outputs[p]]) for p, v in enumerate(equation.outvars)
             )
         require(len(values) == len(set(values.values())), path, "value sharing is not bijective")
+        # 参数和抽象值也可能引用 Var；统一映射到右侧命名空间后，才能精确比较。
         ae = Encoder(reject_nested, lambda v, values=values: values[v])
         be = Encoder(reject_nested, lambda v: v)
 
@@ -440,6 +448,8 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
             ):
                 """结合子图形参映射复核父节点实际绑定，不使用规范化后的实参。"""
                 child = children[key]
+                # a_slots/b_slots 将子图形参位置投影到父方程操作数位置。
+                # 例如 cond 的子图形参 0 对应父操作数 1，父操作数 0 是 selector。
                 permutation(child.inputs, len(a_slots), len(b_slots), where)
                 require(
                     child.outputs
@@ -480,6 +490,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                     where,
                     "scan result role changed",
                 )
+                # 单次 body 匹配还不够：第 i 个新 carry 必须反馈到对应的下一轮输入。
                 require(
                     all(child.inputs[nc + i] == nc + eqmap.outputs[i] for i in range(nk)),
                     where,
@@ -501,6 +512,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                         where,
                         "while operand role changed",
                     )
+                    # condition 与 body 捕获数量可以不同，但 carry 必须服从同一映射。
                     require(
                         all(
                             child.inputs[count + i] == count + eqmap.outputs[i]
@@ -510,6 +522,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                         "while feedback binding differs",
                     )
             else:
+                # 未专门适配的接口坚持逐操作数比较，不推断交换律或任意子图端口换序。
                 for av, bv in zip(equation.invars, other.invars, strict=True):
                     same_value(av, bv, where)
                 for child in children.values():

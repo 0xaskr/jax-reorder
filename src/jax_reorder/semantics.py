@@ -37,6 +37,8 @@ def encoded_equal(left, right):
         return left == right
     except RecursionError:
         pass
+    # 两侧共用内容编号表：容器类型和全部子项编号完全相同，才会得到同一编号。
+    # cache 仅避免重复展开共享对象；跨两侧的相等依据仍是完整内容，而非对象 id。
     interned, cache = {}, {}
 
     def number(root):
@@ -108,10 +110,13 @@ class Encoder:
     def encode(self, value: Any, path: str) -> Frozen:
         """显式遍历嵌套描述符，检查当前路径上的环，不消耗 Python 递归深度。"""
         if self.scheduling:
+            # _encode/fields 中的递归调用只登记子任务，由外层工作栈统一展开。
             return _EncodeRequest(value, path)
         pending = [("encode", value, path)]
         values = []
         try:
+            # encode 生成一层模板，resolve 展开子任务，join 收集结果，leave 退出路径。
+            # active 只保留当前祖先；合法的共享参数可被重复访问，只有祖先回边才算环。
             while pending:
                 action, item, location = pending.pop()
                 if action == "encode":
@@ -138,6 +143,7 @@ class Encoder:
                         values.append(item)
                 else:
                     kind, count = item
+                    # count 为 0 时不能使用 values[-0:]，否则会误取走此前的全部结果。
                     children = values[-count:] if count else ()
                     if count:
                         del values[-count:]
@@ -348,6 +354,7 @@ def replace_nested(value: Any, replace: Callable) -> Any:
     迭代处理 tuple/namedtuple、list 和 dict 中的值，其他描述符原样保留。
     调用前须先完成语义编码和环检查；本函数只负责重建必要的运行时参数容器。
     """
+    # 先展开再回填，避免深层参数递归；只替换已编码检查过的子图，不重新解释语义。
     pending, values = [(False, value)], []
     while pending:
         ready, item = pending.pop()
@@ -363,6 +370,7 @@ def replace_nested(value: Any, replace: Callable) -> Any:
             changed = values[-count:] if count else []
             if count:
                 del values[-count:]
+            # 子项均未替换时保留原容器身份，避免制造无意义的新参数和方程对象。
             if all(a is b for a, b in zip(children, changed, strict=True)):
                 result = item
             elif type(item) is dict:
