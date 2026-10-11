@@ -6,7 +6,6 @@
 | --- | --- |
 | [AGENTS.md](../AGENTS.md) | Agent 规则、命令与技能入口 |
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | 项目架构与比较契约 |
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | 开发、审查与验证流程 |
 | [AI_WORKFLOW.md](AI_WORKFLOW.md) | AI 的使用方式和现有工具 |
 | [design-docs](design-docs/index.md) | 跨功能设计决定与核心原则 |
 | [development-docs](development-docs/index.md) | 具体算法或工具的设计、实验与验证 |
@@ -15,10 +14,7 @@
 | [执行计划](exec-plans/active/) | 进行中的工作 |
 | [已完成计划](exec-plans/completed/) | 完成记录与验证证据 |
 | [技术债](exec-plans/tech-debt-tracker.md) | 已知缺口及状态 |
-| [DESIGN.md](DESIGN.md) | 实现取舍与代码风格 |
-| [QUALITY_SCORE.md](QUALITY_SCORE.md) | 质量状态与证据 |
-| [RELIABILITY.md](RELIABILITY.md) | 正确性与失败语义 |
-| [SECURITY.md](SECURITY.md) | 代码执行、凭据与外部工具边界 |
+| [系统验证矩阵](development-docs/verification-matrix.md) | 覆盖、失败分类、CI 与版本升级证据 |
 
 ## 维护规则
 
@@ -27,4 +23,4 @@
 - 复杂任务维护计划，完成后归档；未解决问题进入技术债记录。
 - README 面向使用者，中英文同步；内部设计和计划默认使用中文。
 - 标明规划、实现和验证状态。上游实验记录保留其项目、版本和设备上下文。
-- 能由确定性检查保障的约束放入脚本、lint 或测试。文档修改运行 `uv run python scripts/check_docs.py` 和 `git diff --check`。
+- 能由确定性检查保障的约束放入脚本、lint 或测试。文档修改运行 `uv run python tools/check_docs.py --changed` 和 `git diff --check`。

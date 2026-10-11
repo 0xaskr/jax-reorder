@@ -4,7 +4,7 @@
 
 Compare AI-generated or rewritten JAX code with the original through structural canonicalization of jaxprs.
 
-The first round of graph comparison is implemented: assign IDs using reverse BFS from outputs, then reorder independent equations by dependency depth. Ordinary operator operand positions, parameters, constants, dtypes, shapes, sharing, and nested regions are preserved. Commutativity, associativity, and other algebraic transformations are not applied.
+The implementation supports complete graph comparison, function contracts, and separately traced first-order JVP/VJP modes. It assigns IDs using reverse BFS from outputs and reorders independent equations by dependency depth, synchronizing private region captures, returns, and loop feedback. Ordinary operator operand positions, parameters, constants, dtypes, shapes, sharing, and nested regions are preserved. Commutativity, associativity, and other algebraic transformations are not applied.
 
 ## Developer Quickstart
 
@@ -35,6 +35,9 @@ uv run python examples/cond_bindings.py --show-jaxpr
 
 # Replay AI rewrites of selected layers across all registered SGLang-JAX models
 uv run python -m examples.sglang_layers.runner --report /tmp/sglang-layers.json
+
+# Check original complete attention/blocks, derivatives, indexers, and backend boundaries
+uv run python -m examples.full_layers.runner --supplemental --report /tmp/full-layers.json
 ```
 
 `uv sync` creates a local `.venv` and installs development dependencies. If the default cache is not writable, set `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`.
@@ -87,11 +90,30 @@ result = compare_jaxprs(left, right)
 print(result.status.value)  # equivalent
 ```
 
-Results are `equivalent` (matching graphs), `different` (different graphs), or `unknown` (inconclusive). `different` includes a difference location, but does not prove mathematical inequivalence. Unused branches or unsupported semantics produce `unknown` with a reason.
+Results are `equivalent` (matching graphs), `different` (different graphs), or `unknown` (inconclusive). `different` includes a difference location, but does not prove mathematical inequivalence. Unused computations and constants remain part of the complete graph. Unsupported semantics or exhausted exact-search budgets produce `unknown` with a reason. Every equivalent result carries an independently checked correspondence between the original graphs.
 
-Use `canonicalize(jaxpr)` to obtain the reordered jaxpr, canonical structure, IDs, depths, and variable references. Callers must keep tracing contexts consistent and check function input/output pytrees; this interface accepts flattened jaxprs only.
+Use `canonicalize(jaxpr)` to obtain the reordered jaxpr, canonical structure, IDs, depths, and variable references. The low-level interface accepts flattened jaxprs, so callers must check function contracts. Alternatively, use the function interface:
 
-For `cond` / `lax.switch`, internal arguments and all branch parameters are permuted together, while external function argument order stays fixed. This recognizes closure capture changes caused by reordered independent computations and still detects incorrect bindings. Multiple operands unused by every branch currently produce `unknown`. See the [binding rules and regression tests](docs/development-docs/cond-bindings.md).
+```python
+from jax_reorder import compare_functions
+
+report = compare_functions(
+    original,
+    candidate,
+    signature,
+    signature,
+    modes=("forward", "jvp", "vjp"),
+    check_cpu=True,
+)
+for mode in report.modes:
+    print(mode.mode, mode.status.value, mode.difference, mode.failure_kind)
+```
+
+The function interface checks input/output pytrees, static arguments, abstract signatures, and tracing context. JVP/VJP use full dynamic tangent/cotangent inputs; unrequested modes are explicitly unverified. Low-level `compare_jaxprs` materializes and compares registered first-order `custom_jvp_call` / `custom_vjp_call` rules by default, while the function interface compares the actual requested transformed programs. Matching forward graphs do not imply matching derivative graphs: a different gradient accumulation order produces a VJP graph difference. See the [function and derivative contract](docs/development-docs/function-and-derivative-contract.md).
+
+Audited private interfaces for `cond` / `lax.switch`, `jit`, `scan`, `while_loop`, and `shard_map` support synchronized permutations. External inputs/outputs and ordinary operand positions stay fixed. Ambiguous unused slots and unrooted subgraphs use bounded exact search with a default `search_budget=10000`; exhaustion yields `unknown`. See [region bindings](docs/development-docs/region-bindings.md) and [complete graphs](docs/development-docs/complete-graph.md).
+
+Original GLM5 MHA, Llama GQA, CLIP encoder, and Flux joint attention have complete-layer positive and negative cases. Pallas kernels, CPU rejections, and unverified configurations are listed separately in [complete-layer coverage](docs/development-docs/full-attention.md). Conclusions apply to the declared signature, pure-function assumption, locked CPU environment, and requested modes; they do not prove general Python equivalence or bitwise floating-point equality across compilation environments.
 
 ## Validation and Documentation
 
@@ -100,9 +122,13 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pytest
 uv run python tests/lax_inventory.py
+uv run python tests/adapter_inventory.py
+uv run python tools/check_docs.py --changed
 ```
 
 Tests cover public lax primitives, independent branch combinations, nested graphs, 19 dtypes and several shapes, and 18 saved AI-labelled examples with numerical evidence. Collective tests default to two logical CPU devices. Finite samples neither restrict the legal parameter domain nor exhaust all combinations.
+
+The [system validation matrix](docs/development-docs/verification-matrix.md) lists additional complete-graph, derivative, region, convolution/dot/linear-algebra, and stress cases. CI separates quick, business, stress, and two/four-device jobs. Unaudited JAX/jaxlib versions yield `unknown`; upgrades are inspected in an isolated workflow.
 
 - [Architecture and comparison contract](ARCHITECTURE.md)
 - [BFS design and review](docs/development-docs/bfs-reordering.md)

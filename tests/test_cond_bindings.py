@@ -225,7 +225,7 @@ def test_wrong_binding_is_different_with_witness(candidate):
     assert float(binding_original(*args)) != float(candidate(*args))
 
 
-def test_partially_unused_branches_still_report_unknown():
+def test_unused_branch_computations_are_fully_compared():
     def unused(flag, x, y):
         def selected():
             lax.sin(y)
@@ -236,21 +236,21 @@ def test_partially_unused_branches_still_report_unknown():
     args = (jnp.bool_(True), jnp.float32(3), jnp.float32(1))
     graph = jax.make_jaxpr(unused)(*args)
     result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert any("unused equations" in issue.reason for issue in result.issues)
+    assert result.status == Status.EQUIVALENT
+    normalized = next(eq for eq in result.left.jaxpr.eqns if eq.primitive is lax.cond_p)
+    assert sum(len(branch.eqns) for branch in normalized.params["branches"]) == 1
 
 
-def test_multiple_unused_slots_are_retained_and_reported():
+def test_multiple_unused_slots_are_retained_and_matched():
     def unused(flag, x, y, z):
         return lax.cond(flag, lambda a, b, c: a, lambda a, b, c: -a, x, y, z)
 
     args = (jnp.bool_(True), jnp.float32(3), jnp.float32(1), jnp.float32(2))
     graph = jax.make_jaxpr(unused)(*args)
     result = canonicalize(graph)
-    assert not result.complete
-    assert any("unused cond operands" in issue.reason for issue in result.issues)
+    assert result.complete
     assert len(result.graph.nodes[0].inputs) == 4
-    assert compare_jaxprs(graph, graph).status == Status.UNKNOWN
+    assert compare_jaxprs(graph, graph).status == Status.EQUIVALENT
 
 
 @pytest.mark.parametrize("corruption", ["arity", "branches", "parameter", "cycle"])

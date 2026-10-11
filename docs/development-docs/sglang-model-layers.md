@@ -1,5 +1,7 @@
 # SGLang-JAX 全模型层级对抗验证
 
+本文记录 36 个选定层的原有覆盖。后续增加的完整 GLM5/Llama Attention、CLIP encoder、Flux joint attention、求导、索引器和后端拒绝路径，单独见[完整层验证](full-attention.md)，不混入下列历史统计。
+
 ## 范围与验收
 
 目标是固定上游版本中每个支持模型至少一个真实层的比较验证，不等同于完整模型推理或全部模型配置通过。固定提交为 `c98ced4a7a64e83261f6672937ce41f0095828ba`，通过 GitHub API 于 2026-10-11 核实为当时 main。

@@ -27,6 +27,56 @@ from .errors import UnsupportedJaxprError
 type Frozen = Any
 
 
+def encoded_equal(left, right):
+    """原图校验使用的值相等检查，深层容器不依赖 Python 递归比较。
+
+    常规浅描述符使用内建精确比较；深容器回退到联合内容编号。哈希仅用于
+    字典查找，字典仍比较完整键；不把哈希碰撞当成相等。
+    """
+    try:
+        return left == right
+    except RecursionError:
+        pass
+    interned, cache = {}, {}
+
+    def number(root):
+        pending = [(False, root)]
+        while pending:
+            ready, value = pending.pop()
+            if id(value) in cache:
+                continue
+            if type(value) in (tuple, frozenset):
+                children = tuple(value)
+                kind = type(value)
+            elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+                children = tuple(
+                    getattr(value, f.name) for f in dataclasses.fields(value) if f.compare
+                )
+                kind = type(value)
+            else:
+                signature = ("leaf", type(value), value)
+                cache[id(value)] = interned.setdefault(signature, len(interned))
+                continue
+            if not ready:
+                pending.append((True, value))
+                pending.extend((False, child) for child in reversed(children))
+                continue
+            ids = tuple(cache[id(child)] for child in children)
+            signature = ("container", kind, frozenset(ids) if kind is frozenset else ids)
+            cache[id(value)] = interned.setdefault(signature, len(interned))
+        return cache[id(root)]
+
+    return number(left) == number(right)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _EncodeRequest:
+    """描述编码的一个子任务；实际处理由显式栈完成。"""
+
+    value: Any
+    path: str
+
+
 class Encoder:
     """由当前图提供引用解析规则的语义编码器。
 
@@ -38,6 +88,7 @@ class Encoder:
         self.nested = nested
         self.variable = variable
         self.active: set[int] = set()
+        self.scheduling = False
 
     def fields(self, obj: Any, names: tuple[str, ...], path: str) -> Frozen:
         """保存对象实际类型及指定字段，字段顺序由已核对的类型适配规则确定。"""
@@ -55,18 +106,67 @@ class Encoder:
         return self.encode(value, path)
 
     def encode(self, value: Any, path: str) -> Frozen:
-        """编码单个值，并检查当前递归路径上是否出现循环参数容器。"""
-        # 只检测当前路径，不永久标记对象；同一对象出现在两个独立参数中是合法共享。
-        if id(value) in self.active:
-            raise UnsupportedJaxprError(path, "cyclic parameter container")
-        self.active.add(id(value))
+        """显式遍历嵌套描述符，检查当前路径上的环，不消耗 Python 递归深度。"""
+        if self.scheduling:
+            return _EncodeRequest(value, path)
+        pending = [("encode", value, path)]
+        values = []
         try:
-            return self._encode(value, path)
+            while pending:
+                action, item, location = pending.pop()
+                if action == "encode":
+                    if id(item) in self.active:
+                        raise UnsupportedJaxprError(location, "cyclic parameter container")
+                    self.active.add(id(item))
+                    self.scheduling = True
+                    try:
+                        template = self._encode(item, location)
+                    finally:
+                        self.scheduling = False
+                    pending.append(("leave", item, None))
+                    pending.append(("resolve", template, None))
+                elif action == "leave":
+                    self.active.remove(id(item))
+                elif action == "resolve":
+                    if isinstance(item, _EncodeRequest):
+                        pending.append(("encode", item.value, item.path))
+                    elif type(item) in (tuple, frozenset):
+                        parts = tuple(item)
+                        pending.append(("join", (type(item), len(parts)), None))
+                        pending.extend(("resolve", child, None) for child in reversed(parts))
+                    else:
+                        values.append(item)
+                else:
+                    kind, count = item
+                    children = values[-count:] if count else ()
+                    if count:
+                        del values[-count:]
+                    values.append(kind(children))
+            return values[0]
         finally:
-            self.active.remove(id(value))
+            self.scheduling = False
+            self.active.clear()
 
     def _encode(self, value: Any, path: str) -> Frozen:
         """按语义类别分派；特殊类型须先于其通用容器或数组类型处理。"""
+        # 已审查描述符的子类可能新增语义字段，不能只编码基类已知字段。
+        exact_types = (
+            core.JaxprEqnContext,
+            core.ShapedArray,
+            core.AbstractToken,
+            core.ManualAxisType,
+            mesh.AbstractMesh,
+            mesh.Mesh,
+            jax.sharding.NamedSharding,
+            jax.sharding.SingleDeviceSharding,
+            jax.sharding.PartitionSpec,
+            layout.Layout,
+            HashableArray,
+            NoDCEEffect,
+        )
+        for known in exact_types:
+            if isinstance(value, known) and type(value) is not known:
+                raise UnsupportedJaxprError(path, f"unreviewed descriptor subclass {type(value)}")
         # 图、变量、原语不能按字符串比较：分别使用规范子图、规范引用和原语身份。
         if isinstance(value, core.Jaxpr):
             return ("jaxpr", self.nested(value, path).graph)
@@ -245,22 +345,33 @@ class Encoder:
 def replace_nested(value: Any, replace: Callable) -> Any:
     """替换参数容器里的子 jaxpr，保留容器类型及其余对象。
 
-    当前递归处理 tuple/namedtuple、list 和 dict 中的值，其他描述符原样保留。
+    迭代处理 tuple/namedtuple、list 和 dict 中的值，其他描述符原样保留。
     调用前须先完成语义编码和环检查；本函数只负责重建必要的运行时参数容器。
     """
-    if isinstance(value, core.Jaxpr):
-        return replace(value)
-    if isinstance(value, tuple):
-        new = tuple(replace_nested(v, replace) for v in value)
-        # 用身份判断是否真的需要重建，避免无关数组触发逐元素相等比较。
-        if all(a is b for a, b in zip(value, new, strict=True)):
-            return value
-        # namedtuple 构造函数接收位置参数，普通 tuple 接收可迭代对象。
-        return type(value)(*new) if hasattr(value, "_fields") else type(value)(new)
-    if type(value) is list:
-        new = [replace_nested(v, replace) for v in value]
-        return value if all(a is b for a, b in zip(value, new, strict=True)) else new
-    if type(value) is dict:
-        new = {k: replace_nested(v, replace) for k, v in value.items()}
-        return value if all(value[k] is v for k, v in new.items()) else new
-    return value
+    pending, values = [(False, value)], []
+    while pending:
+        ready, item = pending.pop()
+        if isinstance(item, core.Jaxpr):
+            values.append(replace(item))
+        elif isinstance(item, tuple) or type(item) in (list, dict):
+            children = tuple(item.values()) if type(item) is dict else tuple(item)
+            if not ready:
+                pending.append((True, item))
+                pending.extend((False, child) for child in reversed(children))
+                continue
+            count = len(children)
+            changed = values[-count:] if count else []
+            if count:
+                del values[-count:]
+            if all(a is b for a, b in zip(children, changed, strict=True)):
+                result = item
+            elif type(item) is dict:
+                result = dict(zip(item, changed, strict=True))
+            elif hasattr(item, "_fields"):
+                result = type(item)(*changed)
+            else:
+                result = type(item)(changed)
+            values.append(result)
+        else:
+            values.append(item)
+    return values[0]

@@ -5,8 +5,12 @@ on:
 permissions:
   contents: read
 jobs:
-  checks:
+  tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [quick, business, stress]
     env:
       JAX_PLATFORMS: cpu
       XLA_FLAGS: --xla_force_host_platform_device_count=2
@@ -18,12 +22,47 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pytest
-      - run: uv run python tests/lax_inventory.py
-      - run: uv run python examples/inspect_jaxpr.py
-      - run: uv run python examples/bfs_reordering.py
-      - run: uv run python examples/collective_jaxpr.py --devices 4
-      - run: uv run python examples/cond_bindings.py
-      - run: uv run python examples/business_layer_cases.py --trials 1 --report /tmp/business-layer-cases.json
+      - if: matrix.suite == 'quick'
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run python tools/check_docs.py
+          uv run pytest -m 'not business and not stress'
+          uv run python tests/adapter_inventory.py --report /tmp/adapter-inventory.json
+          uv run python tests/lax_inventory.py
+          uv run python examples/inspect_jaxpr.py
+          uv run python examples/bfs_reordering.py
+          uv run python examples/cond_bindings.py
+      - if: matrix.suite == 'business'
+        run: |
+          uv run pytest -m business
+          uv run python examples/business_layer_cases.py --trials 1 --report /tmp/business-layer-cases.json
+          uv run python -m examples.full_layers.runner --supplemental --report /tmp/full-layers.json
+      - if: matrix.suite == 'stress'
+        run: uv run pytest -m stress
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.suite != 'stress'
+        with:
+          name: cpu-${{ matrix.suite }}-evidence
+          path: |
+            /tmp/adapter-inventory.json
+            /tmp/business-layer-cases.json
+            /tmp/full-layers.json
+          if-no-files-found: warn
+  collectives:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        devices: [2, 4]
+    env:
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.9"
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run python examples/collective_jaxpr.py --devices ${{ matrix.devices }}

@@ -199,11 +199,11 @@ def cases(mesh, *, check_vma=True):
     )
 
     def unused(x, y):
-        """未使用通信不应被规范化器静默删除；本轮返回 unknown。"""
+        """未使用通信仍是完整图的一部分，节点数量变化必须判为图不同。"""
         lax.psum(y, AXIS)
         return x
 
-    add("未使用的通信", lambda x, y: x, unused, Status.UNKNOWN, True, sum_name)
+    add("未使用的通信", lambda x, y: x, unused, Status.DIFFERENT, True, sum_name)
 
     def scan(body):
         """所有设备固定执行三轮；通信保持在 scan 区域内。"""

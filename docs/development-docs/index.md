@@ -1,11 +1,17 @@
 # 开发文档索引
 
-规范化算法、比较实现和辅助工具的具体设计、实验与验证放在本目录。当前已实现第一轮 BFS 图规范化与比较；以 [比较契约](../../ARCHITECTURE.md) 为起点。
+规范化算法、比较实现和辅助工具的具体设计、实验与验证放在本目录。当前已实现完整图比较及函数/一阶求导契约；以 [比较契约](../../ARCHITECTURE.md) 为起点。BFS 第一轮记录保留历史范围，当前状态见系统验证矩阵。
 
 | 主题 | 文档 |
 | --- | --- |
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
 | cond 闭包捕获与实参/形参同步规范化 | [cond-bindings.md](cond-bindings.md) |
+| 循环与调用区域的接口绑定规范化 | [region-bindings.md](region-bindings.md) |
+| 原始图对应证据、独立校验与同构论证 | [original-correspondence.md](original-correspondence.md) |
+| 函数契约、自定义求导及模式范围 | [function-and-derivative-contract.md](function-and-derivative-contract.md) |
+| 完整图、对称接口与深度压力 | [complete-graph.md](complete-graph.md) |
+| 完整 Attention/block、索引器、求导与原始后端边界 | [full-attention.md](full-attention.md) |
+| 系统验证矩阵、CI 分组与版本升级检查 | [verification-matrix.md](verification-matrix.md) |
 | CPU lax 逐项原语清单与验证绑定 | [lax-coverage.md](lax-coverage.md) |
 | AI 组合判断、反例与模型提取来源 | [bfs-cases.md](bfs-cases.md) |
 | 通信组合、参数反例与 CPU 多设备验证 | [collective-jaxpr.md](collective-jaxpr.md) |

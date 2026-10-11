@@ -21,3 +21,7 @@ class InvalidJaxprError(JaxprError):
 
 class UnsupportedJaxprError(JaxprError):
     """输入包含当前尚不能完整解释的语义，不意味着 JAX 自身一定不支持。"""
+
+
+class CorrespondenceError(JaxprError):
+    """原始图对应证据不完整或不保持语义，不能据此报告等价。"""

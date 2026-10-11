@@ -22,15 +22,13 @@ AI 根据仓库内的契约和证据完成设计、实现、验证与维护。�
 
 ```bash
 uv run python examples/inspect_jaxpr.py
-uv run python scripts/check_docs.py
+uv run python tools/check_docs.py --changed
 ```
 
 执行 Python 模块、追踪函数或运行候选实现时，先明确输入代码与执行范围。
 
-独立辅助工具保存在 `scripts/`。通过 `uv sync --locked --group ai-tools` 安装额外依赖，运行时使用 `uv run --group ai-tools`；支持范围以各脚本的说明为准，回归命令见 [贡献指引](../CONTRIBUTING.md)。
+依赖通过 `uv sync --locked` 安装；当前没有 `ai-tools` 依赖组。AI 候选保存在 `examples/`，由 AI 直接编写并 hardcode；运行器只生成输入和收集证据，不生成候选改写。回归入口见 [系统验证矩阵](development-docs/verification-matrix.md)。
 
 ## 自动维护
 
-GitHub 工作流位于 [.github/workflow-templates](../.github/workflow-templates/)，当前不会自动执行。
-
-`scripts/pm_agent.py` 是确定性的 Plane 自动化工具，可扫描过期任务、催更、汇总周报和分配任务；它本身不调用大模型。实际外部写入需要明确配置目标，并使用 `--apply`。
+GitHub 工作流位于 [.github/workflows](../.github/workflows/)，推送和 PR 触发锁定 CPU 验证；候选 JAX 升级检查需手动触发。当前未配置 Plane/Falcon 自动维护或外部消息发送。

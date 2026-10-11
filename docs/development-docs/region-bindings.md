@@ -1,0 +1,33 @@
+# 区域接口与循环捕获规范化
+
+## 目标与阶段
+
+[执行计划](../exec-plans/completed/graph-equivalence-validation.md)要求同时保留图语义并消除内部槽位换序导致的漏认。这里逐项记录区域适配；尚未实现的区域不因出现在设计中就算支持。
+
+已接入 scan/while 捕获、jit/cond/shard_map 私有端口以及循环反馈接口。示例位于 [region_bindings.py](../../examples/region_bindings.py)、[call_bindings.py](../../examples/call_bindings.py) 和 [feedback_bindings.py](../../examples/feedback_bindings.py)，正反例全部由 AI 手写。
+
+## 捕获槽位规则
+
+父图 BFS 前，先规范化循环子区域，按子图有序输出及规范节点操作数的首次使用顺序给捕获形参编号。捕获常量、carry、扫描数据各在自己的角色组内排列。同步置换父节点对应实参与子图形参，保留变量对象及普通算子的引用。
+
+JAX 0.11.2 的 scan 参数为 reverse、length、jaxpr、ft_in、ft_out、unroll；ft_in 将输入划分为常量、carry、扫描数据。捕获槽位置换时 ft_in 的相应叶子也须同步移动，其他树结构和元数据保留。while 则分别用 cond_nconsts、body_nconsts 划分两组捕获参数；condition 与 body 的捕获接口各自调整，共享外部变量仍保持共享。
+
+未知区域参数不能假定与位置无关，应拒绝适配。多个未使用捕获槽位通过[完整图有界搜索](complete-graph.md)解决。
+
+## 调用结果与循环反馈
+
+沿父图反向拓扑传播到有序根的最短使用路径，据此排列内部调用结果。jit 的输入/输出 sharding、layout、donation，shard_map 的 in_specs/out_specs，cond 的全部分支结果同步置换。普通算子的结果端口固定，外部函数输出顺序固定。
+
+while 的 carry 初始化值、condition/body 形参、body 返回和父节点结果使用同一个映射。scan 同时保留 carry 与 xs/ys 的角色，并同步 ft_in/ft_out 的叶子元数据。原始图校验器额外检查反馈映射，不能只分别核对两张子图后漏掉循环连接。
+
+这也消除 jit 或 cond 求导残差返回槽位变化造成的漏认。求导后若实际累加顺序改变，则仍按[求导契约](function-and-derivative-contract.md)报告图差异。
+
+## 正确性要点
+
+置换前后，每个内部 Var 仍收到对应的外部值；普通结果端口、反馈连接、循环长度和停止条件保持。因此一次 body/condition 调用的计算保持，循环各步的对应关系随之保持。这项规则不接受只换实参或只换形参的改写，不涉及代数等价。
+
+独立计算可能改变闭包捕获顺序，也可能改变父图生产者的编号，因此调整接口必须发生在父图 BFS 之前。子区域需先完成对应的嵌套适配，原图保持不变。
+
+## 验证
+
+[回归测试](../../tests/test_region_bindings.py)覆盖零/一/多次循环、FP32/BF16、标量/矩阵、父图生产者、scan 中的 cond、while 的 condition/body 双区域、错误实际输入、未知参数及缺失实参。正例分别检查图比较、IR 校验、执行、幂等和原图不变；实际负例保留不同数值输出。

@@ -13,7 +13,7 @@
 
 ## 当前形态与目录
 
-项目通过 jaxpr 结构规范化比较 AI 生成的 JAX 代码与原始代码。当前已实现第一轮 BFS 计算图规范化与比较；支持状态和边界见架构与开发记录。
+项目通过 jaxpr 结构规范化比较 AI 生成的 JAX 代码与原始代码。已实现完整图比较、函数契约与一阶求导检查；支持状态和边界见架构与开发记录。
 
 | 路径 | 用途 |
 | --- | --- |
@@ -68,5 +68,5 @@ uv run python tests/lax_inventory.py
 - README 面向使用者，中英文同步；AGENTS 保持导航和必要规则。
 - 比较契约在架构文档中维护，具体设计与实验进入 development-docs，长期决策进入 design-docs。
 - 复杂工作的 active 计划完成后移到 completed；未解决问题进入技术债记录。
-- 新增、移动或删除文档时更新索引与引用，检查本次变更的本地链接并运行 `git diff --check`；原文档检查脚本当前缺失。
+- 新增、移动或删除文档时更新索引与引用，运行 `uv run python tools/check_docs.py --changed` 与 `git diff --check`。
 - 上游快照保留原项目上下文，本项目的当前状态与验证结论独立记录。

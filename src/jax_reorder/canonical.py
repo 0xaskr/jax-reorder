@@ -3,7 +3,7 @@
 本模块维护两种顺序：规范结构中的节点按 BFS 编号存放，可执行 jaxpr
 中的方程按（依赖深度，BFS 编号）存放。BFS 访问顺序不能直接作为执行顺序。
 保留普通运算的操作数位置、结果端口和共享关系，不应用交换律或结合律。
-cond 的内部实参和所有分支形参允许同步置换，外部函数输入顺序保持不变。
+cond 的内部实参和循环捕获形参允许同步置换，外部函数输入顺序保持不变。
 """
 
 import dataclasses
@@ -12,17 +12,50 @@ from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import StrEnum
-from types import MappingProxyType
+from itertools import permutations
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import jax
+import jaxlib
 from jax import lax
-from jax._src import config, core, pjit, shard_map
+from jax._src import config, core, flattree, pjit, shard_map
 from jax._src.lax.lax import NoDCEEffect
 
+from .correspondence import GraphCorrespondence, build_correspondence, verify_correspondence
+from .derivatives import semantic_parameters
 from .errors import InvalidJaxprError, JaxprError, UnsupportedJaxprError
 from .semantics import Encoder, Frozen, replace_nested
 from .support import supported_primitive_identities
+from .unrooted import DEFAULT_SEARCH_BUDGET, canonical_order, order_key, reorder_form
+
+
+class _AmbiguousSlots(Exception):
+    """把真正无锚点的内部槽位交给整张图的有界选择搜索。"""
+
+    def __init__(self, ports, path):
+        self.ports, self.path = tuple(ports), path
+
+
+@dataclass(frozen=True, eq=False)
+class _UsePath:
+    """从外部有序根到一次使用的路径；共享前缀，避免长链复制整个路径元组。"""
+
+    slot: int
+    parent: "_UsePath | None" = None
+    depth: int = 0
+
+    def __lt__(self, other):
+        if self.depth != other.depth:
+            return self.depth < other.depth
+        a, b = self, other
+        result = False
+        # 同深度时按根到使用点的端口序列比较，不按算子名或原始方程索引。
+        while a is not b:
+            if a.slot != b.slot:
+                result = a.slot < b.slot
+            a, b = a.parent, b.parent
+        return result
 
 
 def _ordered_equation(equation):
@@ -94,7 +127,7 @@ class Graph:
 
     inputs 保存有序输入的抽象值，outputs 保存有序输出的值引用。
     constants 按首次使用顺序记录（抽象值，常量内容），nodes 按规范编号存放。
-    未使用部分也会保留，但包含它们的结果不能宣称已获得完整规范形式。
+    未使用部分也参与精确搜索，只有搜索完成且语义全部可解释才报告完整。
     """
 
     inputs: tuple
@@ -126,6 +159,10 @@ class Canonicalized:
     unused_constants: tuple[int, ...]
     issues: tuple[Issue, ...]
     value_references: Mapping[core.Var, tuple] = field(compare=False, repr=False)
+    lineage: Mapping = field(default_factory=dict, compare=False, repr=False)
+    regions: Mapping = field(default_factory=dict, compare=False, repr=False)
+    semantic_views: Mapping = field(default_factory=dict, compare=False, repr=False)
+    derivative_scope: str = "all"
 
     @property
     def complete(self) -> bool:
@@ -146,6 +183,7 @@ class Comparison:
     difference: str | None = None
     left: Canonicalized | None = field(default=None, compare=False, repr=False)
     right: Canonicalized | None = field(default=None, compare=False, repr=False)
+    correspondence: GraphCorrespondence | None = field(default=None, compare=False, repr=False)
 
 
 def _validate(graph: core.Jaxpr, path: str) -> None:
@@ -185,33 +223,311 @@ def _validate(graph: core.Jaxpr, path: str) -> None:
 class _Normalizer:
     """一次规范化调用的内部状态，供同一次调用中的所有嵌套子图共享。"""
 
-    def __init__(self):
+    def __init__(self, derivative_scope="all", search_budget=DEFAULT_SEARCH_BUDGET, decisions=()):
         self.primitives = supported_primitive_identities()
-        # cache 复用共享子图的处理结果；active 仅记录当前递归路径，用于检测环。
+        # cache 复用共享子图的处理结果；active 记录当前工作栈路径，用于检测环。
         # 缓存不跨公开调用复用，避免再次调用时沿用已经改变的常量或图内容。
         # 同步置换会创建临时分支图。缓存持有图对象，避免释放后 id 被其他图复用。
         self.cache: dict[core.Jaxpr, Canonicalized] = {}
+        self.scoped_cache = {}
+        self.semantic_views = {}
+        self.derivative_scope = derivative_scope
+        self.search_budget = search_budget
+        self.decisions = decisions
+        self.choice_index = 0
         self.active: set[core.Jaxpr] = set()
+        # 每张中间图的方程追溯到原始区域，供独立校验器检查原始图对应关系。
+        self.lineage: dict[core.Jaxpr, tuple[core.Jaxpr, tuple[int, ...]]] = {}
+
+    def _scope(self, path):
+        # 本轮只验证一阶规则；规则内部普通调用不自动递归证明高阶求导。
+        return "primal" if ".params.rules[" in path else self.derivative_scope
+
+    def _free_slots(self, ports, path):
+        """无使用路径可排序时探索完整置换，不用原始位置作为语义平局规则。"""
+        ports = tuple(ports)
+        if len(ports) < 2:
+            return ports
+        if self.choice_index == len(self.decisions):
+            raise _AmbiguousSlots(ports, path)
+        selected = self.decisions[self.choice_index]
+        self.choice_index += 1
+        if sorted(selected) != sorted(ports):
+            raise InvalidJaxprError(path, "inconsistent internal slot search")
+        return selected
 
     def normalize(self, graph: core.Jaxpr, path: str) -> Canonicalized:
-        """处理一个区域，复用共享子图，但拒绝递归引用自身的嵌套图。"""
-        if not isinstance(graph, core.Jaxpr):
-            raise InvalidJaxprError(path, "expected a jaxpr including its bound constants")
-        if graph in self.active:
-            raise InvalidJaxprError(path, "cyclic nested jaxpr")
-        if graph in self.cache:
-            return self.cache[graph]
-        self.active.add(graph)
-        try:
-            result = self._normalize(graph, path)
-            self.cache[graph] = result
-            # 参数编码引用规范结构，参数替换引用新 jaxpr；两种图对象指向同一结果。
-            self.cache[result.jaxpr] = result
-            return result
-        finally:
-            self.active.remove(graph)
+        """显式驱动区域生成器栈；子区域完成后将结果送回父区域。"""
+        stack = []
 
-    def _cond_bindings(self, eq, path, issues):
+        def push(child, child_path):
+            if not isinstance(child, core.Jaxpr):
+                raise InvalidJaxprError(
+                    child_path, "expected a jaxpr including its bound constants"
+                )
+            if child in self.active:
+                raise InvalidJaxprError(child_path, "cyclic nested jaxpr")
+            self.active.add(child)
+            stack.append((child, child_path, self._normalize(child, child_path)))
+
+        push(graph, path)
+        value = None
+        try:
+            while stack:
+                current, current_path, worker = stack[-1]
+                try:
+                    child, child_path = worker.send(value)
+                except StopIteration as finished:
+                    result = finished.value
+                    self.cache[current] = self.cache[result.jaxpr] = result
+                    scope = self._scope(current_path)
+                    self.scoped_cache[(current, scope)] = result
+                    self.scoped_cache[(result.jaxpr, scope)] = result
+                    self.active.remove(current)
+                    stack.pop()
+                    value = result
+                    continue
+                if child in self.active:
+                    raise InvalidJaxprError(child_path, "cyclic nested jaxpr")
+                key = (child, self._scope(child_path))
+                value = self.scoped_cache.get(key)
+                if value is None:
+                    push(child, child_path)
+            return value
+        finally:
+            # 逆序关闭生成器，恢复跨 yield 保持的 mesh/轴配置上下文。
+            for _, _, worker in reversed(stack):
+                worker.close()
+            self.active.clear()
+
+    def _rebind_inputs(self, graph, order):
+        """只调整形参槽位，变量及其引用保持不变，调试名称跟随变量移动。"""
+        if tuple(order) == tuple(range(len(graph.invars))):
+            return graph
+        debug = graph.debug_info
+        if debug.arg_names is not None:
+            names = debug.safe_arg_names(len(graph.invars))
+            debug = debug._replace(arg_names=tuple(names[i] for i in order))
+        rebound = graph.replace(invars=[graph.invars[i] for i in order], debug_info=debug)
+        self.lineage[rebound] = self.lineage.get(graph, (graph, tuple(range(len(graph.eqns)))))
+        return rebound
+
+    def _rebind_outputs(self, graph, order):
+        """同步调用输出槽位时保留原子引用，并记录方程来源供独立校验。"""
+        if tuple(order) == tuple(range(len(graph.outvars))):
+            return graph
+        debug = graph.debug_info
+        if debug.result_paths is not None:
+            paths = debug.safe_result_paths(len(graph.outvars))
+            debug = debug._replace(result_paths=tuple(paths[i] for i in order))
+        rebound = graph.replace(outvars=[graph.outvars[i] for i in order], debug_info=debug)
+        self.lineage[rebound] = self.lineage.get(graph, (graph, tuple(range(len(graph.eqns)))))
+        return rebound
+
+    def _jit_bindings(self, eq, output_order, path, issues):
+        """调用输入、输出和分片/布局/donation 描述同步置换，调用边界仍保留。"""
+        expected = {
+            "jaxpr",
+            "in_shardings",
+            "out_shardings",
+            "in_layouts",
+            "out_layouts",
+            "donated_invars",
+            "ctx_mesh",
+            "name",
+            "keep_unused",
+            "inline",
+            "compiler_options_kvs",
+        }
+        unknown = eq.params.keys() - expected
+        if unknown:
+            raise UnsupportedJaxprError(path, f"unsupported jit parameters {sorted(unknown)}")
+        if expected - eq.params.keys():
+            raise InvalidJaxprError(path, "missing jit parameters")
+        child = eq.params["jaxpr"]
+        if (
+            not isinstance(child, core.Jaxpr)
+            or len(child.invars) != len(eq.invars)
+            or len(child.outvars) != len(eq.outvars)
+        ):
+            raise InvalidJaxprError(path, "invalid jit interface")
+        params = dict(eq.params)
+        for name in ("in_shardings", "in_layouts", "donated_invars"):
+            if type(params[name]) is not tuple or len(params[name]) != len(eq.invars):
+                raise InvalidJaxprError(path, f"invalid jit {name}")
+        for name in ("out_shardings", "out_layouts"):
+            if type(params[name]) is not tuple or len(params[name]) != len(eq.outvars):
+                raise InvalidJaxprError(path, f"invalid jit {name}")
+            params[name] = tuple(params[name][i] for i in output_order)
+        child = self._rebind_outputs(child, output_order)
+        normalized = yield child, f"{path}.params.jaxpr"
+        input_order = self._capture_order(normalized, len(eq.invars), path, issues)
+        params["jaxpr"] = self._rebind_inputs(normalized.jaxpr, input_order)
+        for name in ("in_shardings", "in_layouts", "donated_invars"):
+            params[name] = tuple(params[name][i] for i in input_order)
+        return eq.replace(
+            invars=[eq.invars[i] for i in input_order],
+            outvars=[eq.outvars[i] for i in output_order],
+            params=params,
+        )
+
+    def _capture_order(self, result, count, path, issues, start=0):
+        """按规范子图的首次使用位置排列捕获前缀，不能顺带改变 carry 位置。"""
+        slots = {}
+        for ref in result.graph.outputs:
+            if ref[0] == "input" and start <= ref[1] < start + count:
+                slots.setdefault(ref[1], None)
+        for node in result.graph.nodes:
+            for ref in node.inputs:
+                if ref[0] == "input" and start <= ref[1] < start + count:
+                    slots.setdefault(ref[1], None)
+        unused = [i for i in range(start, start + count) if i not in slots]
+        return (*slots, *self._free_slots(unused, path))
+
+    def _output_order(self, eq, ports, uses, path):
+        used = [i for i in ports if eq.outvars[i] in uses]
+        used.sort(key=lambda i: uses[eq.outvars[i]])
+        unused = [i for i in ports if eq.outvars[i] not in uses]
+        return (*used, *self._free_slots(unused, path))
+
+    def _shard_bindings(self, eq, output_order, path, issues):
+        """分片边界的私有端口同步置换，轴环境和逐位置 spec 都保持绑定。"""
+        expected = {"jaxpr", "mesh", "in_specs", "out_specs", "check_vma", "newly_manual_axes"}
+        if eq.params.keys() != expected:
+            raise UnsupportedJaxprError(path, "shard_map parameter schema changed")
+        params = dict(eq.params)
+        child = params["jaxpr"]
+        if (
+            not isinstance(child, core.Jaxpr)
+            or len(child.invars) != len(eq.invars)
+            or len(child.outvars) != len(eq.outvars)
+            or type(params["in_specs"]) is not tuple
+            or type(params["out_specs"]) is not tuple
+            or len(params["in_specs"]) != len(eq.invars)
+            or len(params["out_specs"]) != len(eq.outvars)
+        ):
+            raise InvalidJaxprError(path, "invalid shard_map interface")
+        child = self._rebind_outputs(child, output_order)
+        with (
+            shard_map._extend_axis_env(params["mesh"], params["newly_manual_axes"]),
+            config._check_vma(params["check_vma"]),
+        ):
+            normalized = yield child, f"{path}.params.jaxpr"
+        inputs = self._capture_order(normalized, len(eq.invars), path, issues)
+        params["jaxpr"] = self._rebind_inputs(normalized.jaxpr, inputs)
+        params["in_specs"] = tuple(params["in_specs"][i] for i in inputs)
+        params["out_specs"] = tuple(params["out_specs"][i] for i in output_order)
+        return eq.replace(
+            invars=[eq.invars[i] for i in inputs],
+            outvars=[eq.outvars[i] for i in output_order],
+            params=params,
+        )
+
+    def _loop_bindings(self, eq, path, issues, uses):
+        """同步循环捕获接口，分别处理 scan 的角色树与 while 的两组常量。
+
+        反馈端口的初始化、body 形参、body 返回、condition 形参和最终结果
+        必须联动；角色组之间不允许置换，也不合并任何共享绑定。
+        """
+        if eq.primitive is lax.scan_p:
+            expected = {"reverse", "length", "jaxpr", "ft_in", "ft_out", "unroll"}
+        else:
+            expected = {"cond_nconsts", "body_nconsts", "cond_jaxpr", "body_jaxpr"}
+        unknown = eq.params.keys() - expected
+        if unknown:
+            raise UnsupportedJaxprError(
+                path, f"unsupported {eq.primitive} parameters {sorted(unknown)}"
+            )
+        if expected - eq.params.keys():
+            raise InvalidJaxprError(path, f"missing {eq.primitive} parameters")
+        params = dict(eq.params)
+
+        if eq.primitive is lax.scan_p:
+            body, ft_in, ft_out = params["jaxpr"], params["ft_in"], params["ft_out"]
+            if not isinstance(body, core.Jaxpr) or not all(
+                isinstance(tree, flattree.FlatTree) for tree in (ft_in, ft_out)
+            ):
+                raise InvalidJaxprError(path, "invalid scan body or interface trees")
+            try:
+                constants, carry, _ = ft_in.unpack()
+                returned_carry, _ = ft_out.unpack()
+            except (TypeError, ValueError, AssertionError) as exc:
+                raise InvalidJaxprError(path, "invalid scan interface groups") from exc
+            if (
+                len(body.invars) != len(eq.invars)
+                or len(ft_in) != len(eq.invars)
+                or len(ft_out) != len(eq.outvars)
+                or len(body.outvars) != len(eq.outvars)
+                or len(carry) != len(returned_carry)
+            ):
+                raise InvalidJaxprError(path, "invalid scan operand or result count")
+            nc, nk = len(constants), len(carry)
+            carry_order = self._output_order(eq, range(nk), uses, f"{path}.carry")
+            ys_order = self._output_order(eq, range(nk, len(eq.outvars)), uses, f"{path}.ys")
+            out_order = (*carry_order, *ys_order)
+            initial_order = (
+                *range(nc),
+                *(nc + i for i in carry_order),
+                *range(nc + nk, len(eq.invars)),
+            )
+            body = self._rebind_outputs(self._rebind_inputs(body, initial_order), out_order)
+            normalized = yield body, f"{path}.params.jaxpr"
+            captures = self._capture_order(normalized, nc, path, issues)
+            xs_order = self._capture_order(
+                normalized, len(eq.invars) - nc - nk, path, issues, start=nc + nk
+            )
+            order = (*captures, *(nc + i for i in carry_order), *xs_order)
+            # body 的 carry 已调整一次，因此这里只再排列捕获与 xs。
+            body_order = (*captures, *range(nc, nc + nk), *xs_order)
+            params["jaxpr"] = self._rebind_inputs(normalized.jaxpr, body_order)
+            # 附在叶子上的元数据与实际参数同步移动，carry/xs 的树结构完全保留。
+            params["ft_in"] = ft_in.update(ft_in.vals[i] for i in order)
+            params["ft_out"] = ft_out.update(ft_out.vals[i] for i in out_order)
+            return eq.replace(
+                invars=[eq.invars[i] for i in order],
+                outvars=[eq.outvars[i] for i in out_order],
+                params=params,
+            )
+
+        nc, nb = params["cond_nconsts"], params["body_nconsts"]
+        condition, body = params["cond_jaxpr"], params["body_jaxpr"]
+        carry_count = len(eq.outvars)
+        if (
+            type(nc) is not int
+            or type(nb) is not int
+            or nc < 0
+            or nb < 0
+            or not isinstance(condition, core.Jaxpr)
+            or not isinstance(body, core.Jaxpr)
+            or len(eq.invars) != nc + nb + carry_count
+            or len(condition.invars) != nc + carry_count
+            or len(body.invars) != nb + carry_count
+            or len(condition.outvars) != 1
+            or len(body.outvars) != carry_count
+        ):
+            raise InvalidJaxprError(path, "invalid while regions or operand count")
+        carry_order = self._output_order(eq, range(carry_count), uses, f"{path}.carry")
+        condition = self._rebind_inputs(condition, (*range(nc), *(nc + i for i in carry_order)))
+        body = self._rebind_inputs(body, (*range(nb), *(nb + i for i in carry_order)))
+        body = self._rebind_outputs(body, carry_order)
+        normalized_cond = yield condition, f"{path}.params.cond_jaxpr"
+        normalized_body = yield body, f"{path}.params.body_jaxpr"
+        cond_order = self._capture_order(normalized_cond, nc, f"{path}.condition", issues)
+        body_order = self._capture_order(normalized_body, nb, f"{path}.body", issues)
+        params["cond_jaxpr"] = self._rebind_inputs(
+            normalized_cond.jaxpr, (*cond_order, *range(nc, nc + carry_count))
+        )
+        params["body_jaxpr"] = self._rebind_inputs(
+            normalized_body.jaxpr, (*body_order, *range(nb, nb + carry_count))
+        )
+        order = (*cond_order, *(nc + i for i in body_order), *(nc + nb + i for i in carry_order))
+        return eq.replace(
+            invars=[eq.invars[i] for i in order],
+            outvars=[eq.outvars[i] for i in carry_order],
+            params=params,
+        )
+
+    def _cond_bindings(self, eq, path, issues, output_order=None):
         """按分支中的实际使用顺序，同步置换 cond 实参与全部分支形参。
 
         置换只改变内部槽位名称，变量引用不变。不能只排序实参，也不能各分支
@@ -230,11 +546,19 @@ class _Normalizer:
         ):
             raise InvalidJaxprError(path, "invalid cond branches or operand count")
 
+        if output_order is None:
+            output_order = tuple(range(len(eq.outvars)))
+        if any(len(branch.outvars) != len(eq.outvars) for branch in branches):
+            raise InvalidJaxprError(path, "invalid cond result count")
+
         # 子分支先处理，保证嵌套 cond 的捕获顺序不会影响本层参数首次使用位置。
-        normalized = [
-            self.normalize(branch, f"{path}.params.branches[{i}]")
-            for i, branch in enumerate(branches)
-        ]
+        normalized = []
+        for i, branch in enumerate(branches):
+            result = yield (
+                self._rebind_outputs(branch, output_order),
+                f"{path}.params.branches[{i}]",
+            )
+            normalized.append(result)
         slots: dict[int, None] = {}
 
         def discover(ref):
@@ -249,29 +573,25 @@ class _Normalizer:
                 for ref in node.inputs:
                     discover(ref)
         unused = [i for i in range(len(eq.invars) - 1) if i not in slots]
-        if len(unused) > 1:
-            issues.append(Issue(path, "unused cond operands retain their original relative order"))
-        order = (*slots, *unused)
+        order = (*slots, *self._free_slots(unused, path))
         rebound = []
         for result in normalized:
-            branch = result.jaxpr
-            if order != tuple(range(len(branch.invars))):
-                debug = branch.debug_info
-                if debug.arg_names is not None:
-                    names = debug.safe_arg_names(len(branch.invars))
-                    debug = debug._replace(arg_names=tuple(names[i] for i in order))
-                branch = branch.replace(invars=[branch.invars[i] for i in order], debug_info=debug)
-            rebound.append(branch)
+            rebound.append(self._rebind_inputs(result.jaxpr, order))
         return eq.replace(
             invars=[eq.invars[0], *(eq.invars[i + 1] for i in order)],
+            outvars=[eq.outvars[i] for i in output_order],
             params={**eq.params, "branches": tuple(rebound)},
         )
 
-    def _params(self, eq, eq_path, encoder):
+    def _params(self, eq, eq_path, encoder, parent):
         """编码全部参数；仅对已核对语义的特定参数采用专门适配。"""
         encoded_params = []
         # 参数按名称取序，消除字典插入顺序差异；这不是按算子名称排列计算节点。
-        for name, value in sorted(eq.params.items()):
+        params = self.semantic_views.get(eq)
+        if params is None:
+            params = semantic_parameters(eq, scope=self._scope(eq_path), parent=parent)
+        self.semantic_views[eq] = params
+        for name, value in sorted(params.items()):
             # jit 的函数名只用于诊断；比较键中排除它，返回的方程仍保留原参数。
             if eq.primitive is pjit.jit_p and name == "name":
                 continue
@@ -315,7 +635,7 @@ class _Normalizer:
         # 这里只接受已适配的这两类；未知 effect 即使出现在未使用分支也要拒绝。
         def check_effects(effects, where):
             for effect in effects:
-                if not isinstance(effect, (core.NamedAxisEffect, NoDCEEffect)):
+                if type(effect) not in (core.NamedAxisEffect, NoDCEEffect):
                     raise UnsupportedJaxprError(
                         where, f"unsupported effect {type(effect).__qualname__}"
                     )
@@ -334,10 +654,54 @@ class _Normalizer:
                 if previous_ordered is not None:
                     extra_predecessors[i] = [previous_ordered]
                 previous_ordered = i
-            if eq.primitive is lax.cond_p:
-                # 必须先改变父图看到的输入顺序，再编号其生产者；末尾只改比较键
-                # 会留下由原捕获顺序决定的父图 BFS 编号，仍然造成误判。
-                equations[i] = self._cond_bindings(eq, f"{path}.eqns[{i}]", issues)
+        # 消费者先处理，其输入槽位确定生产者的结果使用顺序。沿原图反向拓扑
+        # 传播最短有序使用路径；不依赖无关计算在原方程列表中的排列。
+        uses: dict[core.Var, _UsePath] = {}
+        node_paths: dict[int, _UsePath] = {}
+
+        def mark(atom, use_path):
+            if isinstance(atom, core.Var) and atom in producers:
+                if atom not in uses or use_path < uses[atom]:
+                    uses[atom] = use_path
+                producer = producers[atom][0]
+                if producer not in node_paths or use_path < node_paths[producer]:
+                    node_paths[producer] = use_path
+
+        for index, atom in enumerate(graph.outvars):
+            mark(atom, _UsePath(index))
+        for index, equation_index in enumerate(effect_roots):
+            use_path = _UsePath(len(graph.outvars) + index)
+            if equation_index not in node_paths or use_path < node_paths[equation_index]:
+                node_paths[equation_index] = use_path
+        for i in reversed(range(len(equations))):
+            eq = equations[i]
+            if eq.primitive in (pjit.jit_p, lax.cond_p, shard_map.shard_map_p):
+                output_order = self._output_order(
+                    eq, range(len(eq.outvars)), uses, f"{path}.eqns[{i}].results"
+                )
+                if eq.primitive is pjit.jit_p:
+                    eq = yield from self._jit_bindings(
+                        eq, output_order, f"{path}.eqns[{i}]", issues
+                    )
+                elif eq.primitive is shard_map.shard_map_p:
+                    eq = yield from self._shard_bindings(
+                        eq, output_order, f"{path}.eqns[{i}]", issues
+                    )
+                else:
+                    eq = yield from self._cond_bindings(
+                        eq, f"{path}.eqns[{i}]", issues, output_order
+                    )
+            elif eq.primitive in (lax.scan_p, lax.while_p):
+                eq = yield from self._loop_bindings(eq, f"{path}.eqns[{i}]", issues, uses)
+            equations[i] = eq
+            if i in node_paths:
+                parent_path = node_paths[i]
+                for port, atom in enumerate(eq.invars):
+                    mark(atom, _UsePath(port, parent_path, parent_path.depth + 1))
+        # 调用结果端口可能已经同步换序，引用必须使用新端口而非旧位置。
+        producers = {
+            v: (i, port) for i, eq in enumerate(equations) for port, v in enumerate(eq.outvars)
+        }
 
         def visit(index):
             """节点第一次入队时分配编号，使共享前驱只出现一次。"""
@@ -367,13 +731,10 @@ class _Normalizer:
             for predecessor in extra_predecessors.get(index, ()):
                 visit(predecessor)
         bfs_order = tuple(identifiers)
+        rooted_constants = len(constant_ids)
         # 3. BFS 不可达的纯方程继续保留，并明确标记部分完成。
         # 保留原相对顺序且放在可达部分之后，仍满足原 SSA 图的依赖约束。
         unused = tuple(i for i in range(len(equations)) if i not in identifiers)
-        if unused:
-            issues.append(
-                Issue(path, f"{len(unused)} unused equations retain their original relative order")
-            )
         for index in unused:
             identifiers[index] = len(identifiers)
             for atom in equations[index].invars:
@@ -381,8 +742,6 @@ class _Normalizer:
                     old = constants[atom]
                     constant_ids.setdefault(old, len(constant_ids))
         unused_constants = tuple(i for i in range(len(graph.constvars)) if i not in constant_ids)
-        if unused_constants:
-            issues.append(Issue(path, f"{len(unused_constants)} unused constant bindings"))
         for index in unused_constants:
             constant_ids[index] = len(constant_ids)
 
@@ -407,7 +766,7 @@ class _Normalizer:
 
         def nested(child, child_path):
             """在子图边界内独立规范化；子图部分完成会使整个比较也不完整。"""
-            result = self.normalize(child, child_path)
+            result = self.scoped_cache[(child, self._scope(child_path))]
             issues.extend(result.issues)
             return result
 
@@ -428,12 +787,41 @@ class _Normalizer:
                         )
                     )
                     scope.enter_context(config._check_vma(eq.params["check_vma"]))
-                encoded_params = self._params(eq, eq_path, encoder)
+                children = []
+
+                def discover_child(child, child_path, children=children):
+                    children.append((child, child_path))
+                    return SimpleNamespace(graph=None)
+
+                # 先发现参数里的所有区域，再通过显式栈完成它们。同步编码器
+                # 随后只读取缓存，避免参数编码递归调用区域规范化器。
+                self._params(eq, eq_path, Encoder(discover_child, reference), graph)
+                # 驱动器会 send 回处理结果，list 迭代器不支持 send，不能用 yield from。
+                for child, child_path in children:  # noqa: UP028
+                    yield child, child_path
+                encoded_params = self._params(eq, eq_path, encoder, graph)
             frozen_params.append(tuple(encoded_params))
-            # 编码过程已递归处理子图；此处只把参数中的子图替换成对应的新 jaxpr。
+            # 子图已由工作栈处理；此处只把参数中的子图替换成对应的新 jaxpr。
             # 没有需要替换的子图时，复用原方程对象，不修改原输入图。
-            params = replace_nested(eq.params, lambda child: self.cache[child].jaxpr)
-            new_equations.append(eq if params is eq.params else eq.replace(params=params))
+            params = replace_nested(
+                eq.params,
+                lambda child, eq_path=eq_path: (
+                    self.scoped_cache[(child, self._scope(eq_path))].jaxpr
+                ),
+            )
+            new_eq = eq if params is eq.params else eq.replace(params=params)
+            new_equations.append(new_eq)
+            self.semantic_views[new_eq] = {
+                key: replace_nested(
+                    value,
+                    lambda child, key=key, eq_path=eq_path: (
+                        self.scoped_cache[
+                            (child, "primal" if key == "rules" else self._scope(eq_path))
+                        ].jaxpr
+                    ),
+                )
+                for key, value in self.semantic_views[eq].items()
+            }
 
         # 5. 原图已通过定义顺序检查，因此从前向后一次计算即可得到所有前驱深度。
         # 输入与常量深度视作 0，无计算前驱的节点深度为 1；附加顺序边同样计入。
@@ -482,8 +870,22 @@ class _Normalizer:
             encoder.encode(graph.effects, f"{path}.effects"),
             graph.is_high,
         )
+        if unused or unused_constants:
+            node_order, const_order = canonical_order(
+                form, len(bfs_order), rooted_constants, budget=self.search_budget
+            )
+            form = reorder_form(form, node_order, const_order)
+            original_nodes, original_constants = tuple(identifiers), tuple(constant_ids)
+            identifiers = {original_nodes[old]: new for new, old in enumerate(node_order)}
+            constant_ids = {original_constants[old]: new for new, old in enumerate(const_order)}
+            # 可达部分不变；孤立部分也必须保持定义顺序，不能按搜索编号直接执行。
+            order = tuple(sorted(bfs_order, key=lambda i: (depths[i], identifiers[i]))) + tuple(
+                sorted(unused, key=lambda i: (depths[i], identifiers[i]))
+            )
         # 只替换方程列表；输入、输出、常量绑定、调试信息等仍由原 jaxpr 保留。
         reordered = graph.replace(eqns=[new_equations[i] for i in order])
+        source, source_order = self.lineage.get(graph, (graph, tuple(range(len(graph.eqns)))))
+        self.lineage[reordered] = (source, tuple(source_order[i] for i in order))
         # 先完成嵌套结构与环检查，再交给 JAX 做最终类型/参数检查，避免 JAX 先递归溢出。
         try:
             core.check_jaxpr(reordered)
@@ -502,18 +904,72 @@ class _Normalizer:
         )
 
 
-def canonicalize(jaxpr: core.Jaxpr) -> Canonicalized:
+def canonicalize(
+    jaxpr: core.Jaxpr, *, derivative_scope="all", search_budget=DEFAULT_SEARCH_BUDGET
+) -> Canonicalized:
     """规范化一个包含常量绑定的 CPU jaxpr，保留操作及其依赖关系。
 
     返回 Canonicalized，可分别查看可执行图、规范结构、编号和未完成原因。
-    未使用纯分支保留并标记部分完成；非法图抛出 InvalidJaxprError，未知语义
+    未使用纯分支参与完整比较；非法图抛出 InvalidJaxprError，未知语义
     抛出 UnsupportedJaxprError。本函数不执行 CPU 编译，也不证明数值等价。
 
     调用方需保持追踪上下文一致，并另行核对展平前的函数输入输出 pytree。
-    普通依赖链采用迭代遍历，嵌套区域与参数的递归仍受 Python 深度限制。
+    依赖链、嵌套区域和参数使用显式栈；JAX 自身的检查仍可能受其资源限制。
     """
     try:
-        return _Normalizer().normalize(jaxpr, "jaxpr")
+        if (jax.__version__, jaxlib.__version__) != ("0.11.2", "0.11.2"):
+            raise UnsupportedJaxprError(
+                "environment",
+                "IR adapter requires audited JAX/jaxlib 0.11.2; "
+                "run the version upgrade validation before extending support",
+            )
+        if derivative_scope not in ("all", "primal"):
+            raise ValueError("derivative_scope must be all or primal")
+        if type(search_budget) is not int or search_budget < 1:
+            raise ValueError("search_budget must be a positive integer")
+        pending, attempts, best, best_key = [()], 0, None, None
+        while pending:
+            decisions = pending.pop()
+            attempts += 1
+            if attempts > search_budget:
+                raise UnsupportedJaxprError(
+                    "jaxpr.search",
+                    f"internal interface search budget exceeded: {attempts} states, "
+                    f"limit {search_budget}",
+                )
+            normalizer = _Normalizer(derivative_scope, search_budget, decisions)
+            try:
+                result = normalizer.normalize(jaxpr, "jaxpr")
+            except _AmbiguousSlots as choice:
+                options = 1
+                for size in range(2, len(choice.ports) + 1):
+                    options *= size
+                    if options > search_budget:
+                        break
+                if options + len(pending) + attempts > search_budget:
+                    raise UnsupportedJaxprError(
+                        choice.path,
+                        f"internal interface search budget exceeded: {len(choice.ports)} "
+                        f"ambiguous slots, at least {options} alternatives, limit {search_budget}",
+                    ) from None
+                pending.extend((*decisions, option) for option in permutations(choice.ports))
+                continue
+            candidate = dataclasses.replace(
+                result,
+                lineage=MappingProxyType(dict(normalizer.lineage)),
+                regions=MappingProxyType(dict(normalizer.cache)),
+                semantic_views=MappingProxyType(dict(normalizer.semantic_views)),
+                derivative_scope=derivative_scope,
+            )
+            if best is None:
+                best = candidate
+            else:
+                if best_key is None:
+                    best_key = order_key(best.graph)
+                key = order_key(candidate.graph)
+                if key < best_key:
+                    best, best_key = candidate, key
+        return best
     except RecursionError as exc:
         raise UnsupportedJaxprError(
             "jaxpr", "nested graphs or parameters exceed the Python recursion limit"
@@ -527,10 +983,17 @@ def _difference(left: Any, right: Any) -> str | None:
     保证报告位置稳定；编码后的叶子采用其已明确语义的精确相等比较。
     """
     pending = [("graph", left, right)]
+    seen = set()
     while pending:
         path, a, b = pending.pop()
+        if a is b:
+            continue
         if type(a) is not type(b):
             return path
+        pair = (id(a), id(b))
+        if pair in seen:
+            continue
+        seen.add(pair)
         if dataclasses.is_dataclass(a) and not isinstance(a, type):
             pending.extend(
                 (f"{path}.{f.name}", getattr(a, f.name), getattr(b, f.name))
@@ -545,18 +1008,26 @@ def _difference(left: Any, right: Any) -> str | None:
     return None
 
 
-def compare_jaxprs(left: core.Jaxpr, right: core.Jaxpr) -> Comparison:
+def compare_jaxprs(
+    left: core.Jaxpr,
+    right: core.Jaxpr,
+    *,
+    derivative_scope="all",
+    search_budget=DEFAULT_SEARCH_BUDGET,
+) -> Comparison:
     """比较两个完整计算图，返回 equivalent、different 或 unknown。
 
     两侧分别规范化，不使用对方的信息决定编号。只有两侧都完成处理后才比较
-    完整规范结构；非法图、不支持语义、未使用分支等情况归为带原因的 unknown。
+    完整规范结构；非法图、不支持语义或搜索预算不足归为带原因的 unknown。
     different 只说明图中存在差异，不推出公式或一般 Python 函数不等价。
     """
     normalized = []
     issues = []
     for side, graph in (("left", left), ("right", right)):
         try:
-            result = canonicalize(graph)
+            result = canonicalize(
+                graph, derivative_scope=derivative_scope, search_budget=search_budget
+            )
             normalized.append(result)
             issues.extend(Issue(f"{side}.{i.path}", i.reason) for i in result.issues)
         except JaxprError as exc:
@@ -567,9 +1038,17 @@ def compare_jaxprs(left: core.Jaxpr, right: core.Jaxpr) -> Comparison:
     if issues:
         return Comparison(Status.UNKNOWN, tuple(issues), left=a, right=b)
     difference = _difference(a.graph, b.graph)
+    correspondence = None
+    if difference is None:
+        try:
+            correspondence = build_correspondence(left, right, a, b)
+            verify_correspondence(left, right, correspondence, derivative_scope=derivative_scope)
+        except JaxprError as exc:
+            return Comparison(Status.UNKNOWN, (Issue(exc.path, exc.reason),), left=a, right=b)
     return Comparison(
         Status.DIFFERENT if difference else Status.EQUIVALENT,
         difference=difference,
         left=a,
         right=b,
+        correspondence=correspondence,
     )

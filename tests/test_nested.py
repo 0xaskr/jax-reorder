@@ -69,7 +69,7 @@ def test_nested_equivalent_and_changed(kind):
             np.testing.assert_array_equal(a, b)
 
 
-def test_nested_unused_work_propagates_partial_status():
+def test_nested_unused_work_is_preserved_and_compared():
     @jax.jit
     def body(x):
         lax.cos(x)
@@ -77,8 +77,8 @@ def test_nested_unused_work_propagates_partial_status():
 
     graph = jax.make_jaxpr(body)(jnp.float32(1))
     result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert any("params.jaxpr" in issue.path for issue in result.issues)
+    assert result.status == Status.EQUIVALENT
+    assert len(result.left.jaxpr.eqns[0].params["jaxpr"].eqns) == 2
 
 
 def test_branch_positions_and_scan_parameters_are_semantic():

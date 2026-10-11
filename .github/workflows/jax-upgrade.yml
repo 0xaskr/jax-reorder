@@ -1,0 +1,33 @@
+name: JAX upgrade audit
+on:
+  workflow_dispatch:
+    inputs:
+      jax_version:
+        description: Candidate JAX version to inspect (does not update the lock or allowlist)
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    env:
+      JAX_PLATFORMS: cpu
+      CANDIDATE_JAX: ${{ inputs.jax_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.9"
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run python tests/adapter_inventory.py --report /tmp/baseline-inventory.json
+      - name: Inspect candidate without changing the locked environment
+        run: >-
+          uv run --isolated --with "jax[cpu]==${CANDIDATE_JAX}"
+          python tests/adapter_inventory.py --candidate --report /tmp/candidate-inventory.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jax-upgrade-audit
+          path: /tmp/*-inventory.json

@@ -2,6 +2,8 @@
 
 对应[执行计划](../exec-plans/completed/bfs-reordering.md)。第一轮实现与自审已完成。下文区分目标支持域、逐项验证证据和明确的后续工作。
 
+本文保留第一轮验收时的范围和数字。后续已补齐完整无根图、函数契约、注册一阶求导与深层迭代；当前状态以[系统验证矩阵](verification-matrix.md)和[架构](../../ARCHITECTURE.md)为准，下文的“未实现”不代表这些功能的最新状态。
+
 ## 接口与边界
 
 - `canonicalize(jaxpr)` 返回新 jaxpr、规范结构、BFS 与最终方程索引、深度及未完成部分。输入必须是 JAX 0.11.2 的有效 jaxpr，常量绑定随图传入。

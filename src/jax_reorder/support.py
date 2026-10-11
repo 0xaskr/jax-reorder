@@ -8,9 +8,11 @@
 import sys
 
 from jax import lax
+from jax._src import ad_util, pjit, shard_map
 from jax._src import core as jax_core
-from jax._src import pjit, shard_map
 from jax.extend import core
+
+from .derivatives import CUSTOM_PRIMITIVES
 
 
 def public_primitives() -> dict[core.Primitive, tuple[str, ...]]:
@@ -45,4 +47,8 @@ def supported_primitive_identities() -> frozenset[core.Primitive]:
     # check_vma=True 的通信组合会插入 pvary，改变手动轴的变化类型。
     # 它定义在 core，未被上面的 lax 模块扫描发现；仍保留节点、axes 和抽象值。
     result.add(jax_core.pvary_p)
+    # 一阶自动求导用 add_any 累加余切向量。它没有隐藏参数，操作数顺序仍保留。
+    # 高级自定义抽象类型依旧必须通过 Encoder 的独立审查。
+    result.add(ad_util.add_jaxvals_p)
+    result.update(CUSTOM_PRIMITIVES)
     return frozenset(result)

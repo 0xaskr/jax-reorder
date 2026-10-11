@@ -145,18 +145,20 @@ def test_multiple_results_repeated_outputs_and_ports():
     assert canonicalize(repeated).graph.outputs == (("result", 0, 0),) * 2
 
 
-def test_unused_equations_are_retained_and_prevent_false_match():
+def test_unused_equations_are_retained_and_fully_compared():
     def fn(x, y):
         lax.cos(y)
         return lax.sin(x)
 
     graph = trace(fn, 1.0, 2.0)
     result = canonicalize(graph)
-    assert not result.complete
+    assert result.complete
     assert result.unused_equations == (0,)
     assert result.equation_order == (1, 0)
     assert_preserved(graph, result, 1.0, 2.0)
-    assert compare_jaxprs(graph, graph).status == Status.UNKNOWN
+    assert compare_jaxprs(graph, graph).status == Status.EQUIVALENT
+    without_unused = trace(lambda x, y: lax.sin(x), 1.0, 2.0)
+    assert compare_jaxprs(graph, without_unused).status == Status.DIFFERENT
 
 
 @pytest.mark.parametrize("fn", [lambda x: x, lambda x: 3, lambda x: (), lambda x: (x, x)])
