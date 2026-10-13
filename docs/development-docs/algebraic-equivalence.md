@@ -1,6 +1,6 @@
 # 索引乘加与有限求和的代数比较
 
-状态：实施中；完成证据随测试记录更新。[执行计划](../exec-plans/active/algebraic-equivalence.md)保存范围与验收要求。
+状态：实现与全量 1600 项测试已通过，[执行计划](../exec-plans/completed/algebraic-equivalence.md)已归档。用户要求不修改受保护文档，这些入口的同步记录为 [DOC-002](../exec-plans/tech-debt-tracker.md)；本文记录本功能当前行为。
 
 ## 比较与数值契约
 
@@ -28,11 +28,35 @@
 
 固定 jit、cond、scan、while 区域保留调用边界、参数、输出槽位和反馈关系，在对应区域内部应用代数规则。JVP/VJP 只检查实际追踪出的程序，前向证明不替代求导证明。
 
+## 接口与实现入口
+
+`compare_functions` 和 `compare_function_traces` 默认采用 `equivalence="auto"`，可显式指定 `"structural"`；每个模式的 `algebra_budget` 默认为 10,000。汇总和单模式结果用 `equivalence_kind` 区分 `structural`、`algebraic` 和未证明。单模式的 `comparison` 保留原结构报告，`algebra` 保存规则、前提、警告、证明、工作量和失败原因。
+
+底层 `compare_algebraic_jaxprs(left, right)` 只覆盖已经物化的前向图；JVP/VJP 须先由函数入口分别追踪。`verify_algebraic_proof(left, right, proof)` 从原图复核证据，成功返回 `None`，篡改或无效证据抛出 `CorrespondenceError`。证明是进程内对象，未定义跨进程持久化格式。
+
+| 实现 | 职责 |
+| --- | --- |
+| [algebra.py](../../src/jax_reorder/algebra.py) | 结构证据直通、代数比较和结果分类 |
+| [algebra_ir.py](../../src/jax_reorder/algebra_ir.py) | 不可变 DAG、项表、精确系数和预算 |
+| [algebra_lower.py](../../src/jax_reorder/algebra_lower.py) | 原语语义、索引映射与固定区域转换 |
+| [algebra_normalize.py](../../src/jax_reorder/algebra_normalize.py) | 展开、项收集和绑定索引规范化搜索 |
+| [algebra_proof.py](../../src/jax_reorder/algebra_proof.py) | 原图对应和局部推导的独立复核 |
+
+## 当前边界
+
+- 新增规则用于实数浮点的理想实数解释。整数、布尔、复数、显式转换、特殊精度、布局和分片保留原边界；结构等价仍可直接通过。
+- 代数转换要求静态 shape 和有限独立矩形求和域。一般 reshape、动态索引域、对角读取以及其他未经适配的索引变换不新增恒等式规则。
+- token、有序操作和未适配的嵌套原语不进入代数展开；原结构层能够证明的图仍通过结构证据接受。公开原语清单中的 27 个此类用例有明确拒绝断言，没有因转换失败而跳过检查。
+- 区域边界、调用参数、反馈与返回接口保持固定。JAX 求导若改变 jit 的残差接口或区域结构，可能返回 `unknown`；前向局部改写不保证任意变换后的区域接口仍相同。动态 while 的 VJP 由锁定 JAX 拒绝，单独记为 `trace_rejected`。
+- 并非任意数学恒等式的完备判定。多项式展开、同色索引搜索和深度均可能触发明确停止；`unknown` 不能解释为数学不等价。真实模型的新代数改写和 GPU/TPU 执行不在本期验收内。
+
 ## 验证策略
 
 正例覆盖逐元素展开、矩阵结合与分配、广播乘加互认、多轴归约、单位/空轴、嵌套区域和独立求导模式。反例覆盖输入输出位置、索引连接、捕获、精度、类型与反馈。证明测试篡改常量、局部推导、轴映射和原图来源，并禁止校验器调用规范化器。压力测试验证预算拒绝、大维度保持符号和原图不变。
 
-数值实验单独保存实数等价但浮点不同的见证，不作为证明替代品。最终运行全量 pytest、Ruff、格式、tracing 示例和文档检查，实际结果完成后补录。
+数值实验单独保存实数等价但浮点不同的见证，不作为证明替代品。[结构蕴含回归](../../tests/test_algebra_structural.py)把原有 182 组公开原语 IR 与其结构规范化结果成对送入代数入口，全部要求等价；其中 155 组另外直接通过转换、展开和独立证明，其余 27 组明确断言适配边界。加上预算直通、函数三模式和篡改证据，共 371 项通过。
+
+最终全量 pytest 为 **1600 passed，1 warning，426.75 秒**；Ruff、格式、tracing/BFS/cond 示例、原语及适配清单、双/四 CPU 各 22 组通信验证均通过。唯一 warning 来自保留的上游 Pallas 弃用接口。具体命令记录在执行计划中。[代数示例](../../examples/algebraic_equivalence.py)的分配律、矩阵与乘加归约均通过 forward/JVP/VJP 证明、独立复核及 CPU 编译。
 
 ## 实施中发现并修复的前置问题
 

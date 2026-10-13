@@ -15,7 +15,7 @@
 | BFS-001 | 未参与输出的纯子图、常量及对称结构已加入完整图细化与精确搜索；预算不足仍明确 unknown | P2 | 已解决 | [完整图设计及测试](../development-docs/complete-graph.md) |
 | BFS-002 | 已增加函数级 pytree、静态签名、环境及分模式比较；纯函数与未声明 Python 行为仍由调用方约定 | P2 | 已解决 | [函数契约](../development-docs/function-and-derivative-contract.md) |
 | BFS-003 | 升级时仍需审核私有 IR 与 reduce callable 例外；现已固定字段快照、版本拒绝及独立候选检查 | P2 | 进行中 | [升级审核](../development-docs/verification-matrix.md#jax-升级审核) |
-| BFS-004 | 深层迭代与共享区域复用已完成；持久化跨进程格式、代数规则仍未实现，且不在本轮契约内 | P2 | 待处理 | [深度证据](../development-docs/complete-graph.md)、[架构](../../ARCHITECTURE.md) |
+| BFS-004 | 深层迭代与共享区域复用已完成；持久化跨进程格式仍未实现。索引代数规则现已另行实现，见 ALG-001/002 的后续边界 | P2 | 待处理 | [深度证据](../development-docs/complete-graph.md)、[代数设计](../development-docs/algebraic-equivalence.md) |
 | BFS-005 | cond 未使用槽位、scan/while 捕获与反馈、jit/shard_map 私有输入输出已联合规范化 | P1 | 已解决 | [区域绑定](../development-docs/region-bindings.md)、[系统验证计划](completed/graph-equivalence-validation.md) |
 | BFS-006 | custom JVP/VJP 注册一阶规则、残差、透传、symbolic zeros 已适配；剩余边界见 AD-001/002 | P1 | 已解决 | [求导契约与测试](../development-docs/function-and-derivative-contract.md) |
 
@@ -25,8 +25,11 @@
 | --- | --- | --- | --- | --- |
 | AD-001 | 仅存在于求导规则、没有对应原调用实参的动态捕获，底层注册规则物化仍 unknown；函数入口显式变换可另行比较 | P2 | 待处理 | [规则绑定说明](../development-docs/function-and-derivative-contract.md)、[回归](../../tests/test_custom_derivatives.py) |
 | AD-002 | 延迟求导规则新增有序操作、反向日志及未解释 effects 需专用适配；当前明确拒绝，不能从普通父图推断求导顺序 | P2 | 待处理 | [规则边界](../development-docs/function-and-derivative-contract.md) |
-| AD-003 | 高阶求导及任意变换组合没有整体保证；前向等价也可能因 add_any 顺序改变而 VJP 图不同 | P2 | 待处理 | [反馈用例](../../tests/test_feedback_bindings.py)、[完整层求导](../development-docs/full-attention.md#求导与未使用索引器) |
+| AD-003 | 高阶求导及任意变换组合没有整体保证；add_any 累加换序的 VJP 图差异可由默认代数模式单独证明，区域接口改变仍可能 unknown | P2 | 待处理 | [反馈用例](../../tests/test_feedback_bindings.py)、[代数边界](../development-docs/algebraic-equivalence.md#当前边界) |
 | LAYER-001 | Pallas 内核语义未解释：GLM5 absorbed/Decoder、Wan 交叉注意力 CPU lowering 拒绝；EPMoE CPU interpret 可执行但比较仍 unknown | P2 | 待处理 | [实际后端边界](../development-docs/full-attention.md#已确认的拒绝与未支持) |
 | LAYER-002 | 原 FluxSingleTransformerBlock Explicit sharding 与 GLM5 单 head 配置被锁定 JAX 追踪拒绝；未篡改原计算绕过 | P2 | 待处理 | [原始拒绝回归](../../tests/test_full_attention.py) |
 | LAYER-003 | GLM5 稀疏 DSA、完整 MoE Decoder、其他配置和多主机/GPU/TPU 未验证 | P2 | 待处理 | [完整层范围](../development-docs/full-attention.md) |
 | DOC-001 | `.agents/README.md` 仍有 scaffold 旧描述；当前工作区该目录只读，本轮以 AGENTS/架构/开发文档为当前事实来源 | P2 | 待处理 | [项目入口](../../AGENTS.md)、[当前架构](../../ARCHITECTURE.md) |
+| DOC-002 | 代数功能已实现，受保护的 README、ARCHITECTURE、AGENTS 和 docs/PLANS 部分说明及完成索引尚未同步；用户明确要求不修改，待后续具体授权 | P2 | 待处理 | [当前功能设计](../development-docs/algebraic-equivalence.md)、[验收归档](completed/algebraic-equivalence.md) |
+| ALG-001 | 动态索引域、一般 reshape/对角读取的代数展开、额外嵌套原语及特殊精度/分片尚无新增规则；结构等价仍接受 | P2 | 待处理 | [代数边界与原语回归](../development-docs/algebraic-equivalence.md#当前边界)、[结构蕴含测试](../../tests/test_algebra_structural.py) |
+| ALG-002 | 代数比较保留固定区域接口；求导改变 jit 残差接口、跨区域内联或控制流重写不在当前证明范围，真实模型新代数改写未验收 | P2 | 待处理 | [代数设计](../development-docs/algebraic-equivalence.md#当前边界) |

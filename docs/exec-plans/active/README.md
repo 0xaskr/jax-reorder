@@ -1,8 +1,8 @@
 # 进行中的计划
 
-## 验收中
+当前没有进行中的执行计划。
 
-- [JAX 函数代数等价比较](algebraic-equivalence.md)：统一索引表达式、独立证明、固定区域及默认自动模式已实现，正在完成全量回归和契约文档同步。
+[JAX 函数代数等价比较](../completed/algebraic-equivalence.md)已完成并归档：全量 1600 项通过，受保护文档按用户要求保持原状。
 
 [计算图等价比较的完善与系统验证](../completed/graph-equivalence-validation.md)已完成并归档。
 
