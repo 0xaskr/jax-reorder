@@ -13,6 +13,7 @@ from jax._src.random.prng import KeyTy
 
 from .errors import UnsupportedJaxprError
 
+# 搜索预算按候选状态计数；达到预算也不能以当前最优候选代替完整结论。
 DEFAULT_SEARCH_BUDGET = 10_000
 
 
@@ -23,6 +24,7 @@ def _variables(value, transform):
     while pending:
         ready, item = pending.pop()
         if type(item) is tuple and len(item) == 2 and item[0] == "variable":
+            # 这是 Encoder 为参数内 Var 生成的标签；普通字符串和数组内容不重写。
             values.append(("variable", transform(item[1])))
         elif type(item) in (tuple, frozenset):
             parts = tuple(item)
@@ -42,6 +44,8 @@ def _variables(value, transform):
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class _KeyRequest:
+    """排序键的子任务占位符，让模板只展开一层，由工作栈继续计算子键。"""
+
     value: object
 
 
@@ -76,6 +80,7 @@ def order_key(value):
             else:
                 values.append(item)
         else:
+            # join 保持原顺序，sort 只用于无序集合；空容器不能取 values[-0:]。
             parts = values[-item:] if item else ()
             if item:
                 del values[-item:]
@@ -85,6 +90,7 @@ def order_key(value):
 
 def _key_template(value):
     """只描述一层，子值由 order_key 的工作栈展开。"""
+    # 首项数字区分类型类别，使不同 Python 类型也能稳定比较排序键。
     if value is None:
         return (0,)
     if type(value) in (bool, int, str, bytes):
@@ -96,6 +102,7 @@ def _key_template(value):
     if isinstance(value, np.dtype):
         return (4, value.name, value.str, _KeyRequest(value.descr))
     if isinstance(value, KeyTy):
+        # PRNG 名称相同仍可能实现不同，函数成员以身份区分，其余成员继续编码。
         return (
             5,
             tuple(
@@ -119,7 +126,12 @@ def _key_template(value):
 
 
 def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEARCH_BUDGET):
-    """返回旧节点/常量索引的规范排列；预算耗尽时显式失败。"""
+    """返回旧节点/常量索引的规范排列；预算耗尽时显式失败。
+
+    rooted_nodes/rooted_constants 是已固定前缀的长度。搜索先按语义标签分组，
+    再用连接细化；仍有歧义时逐个拆分候选组，选取完整证书最小的排列。
+    返回两组“新位置 → 旧索引”，分别对应计算节点和常量绑定。
+    """
     n, nc = len(graph.nodes), len(graph.constants)
     # 搜索中把常量绑定也当作顶点：计算节点占 [0, n)，常量占 [n, n + nc)。
     # 输入端口和字面量保留在标签里，不能像内部顶点一样自由重新编号。
@@ -127,6 +139,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
     has_parameter_references = False
 
     def anonymous(ref):
+        """从初始标签去掉可重编号的目标索引，同时保留引用种类和结果端口。"""
         nonlocal has_parameter_references
         if ref[0] in {"result", "constant"}:
             # 初始标签去掉临时编号；完整候选生成后仍会核对参数内引用的真实连接。
@@ -135,6 +148,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
         return ref
 
     def edge(source, target, label):
+        """同时登记正反邻接，供细化使用消费者和生产者两侧的信息。"""
         # 此处边从消费者指向生产者，与执行时的数据流方向相反。
         # label 保留操作数位置、生产者结果端口或附加顺序边位置。
         outgoing[source].append((label, target))
@@ -170,11 +184,13 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
         ("constant", i if i < rooted_constants else None, value)
         for i, value in enumerate(graph.constants)
     )
+    # 完整标签相同才分到同一初始颜色；哈希集合用于去重，不把摘要当证据。
     keys = tuple(order_key(label) for label in labels)
     ranks = {key: rank for rank, key in enumerate(sorted(set(keys)))}
     initial = tuple(ranks[key] for key in keys)
 
     def refine(colors):
+        """反复按双向带标签邻接细分颜色，直到当前分组不再变化。"""
         # color 是候选类别编号。用双向邻接不断细分；同色只表示尚无法区分，
         # 不能据此宣称两个节点等价，未拆开的类别还需精确搜索。
         while True:
@@ -188,6 +204,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
             )
             ranks = {sig: rank for rank, sig in enumerate(sorted(set(signatures)))}
             refined = tuple(ranks[sig] for sig in signatures)
+            # 新签名含旧颜色，因此已有分组不会被合并；编号稳定时达到不动点。
             if refined == colors:
                 return colors
             colors = refined
@@ -206,6 +223,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
         cells = defaultdict(list)
         for i, color in enumerate(colors):
             cells[color].append(i)
+        # 按颜色选择下一组歧义，而不是按原方程列表中最早出现的节点选择。
         ambiguous = next((cell for _, cell in sorted(cells.items()) if len(cell) > 1), None)
         if ambiguous is None:
             # 每个顶点已有唯一编号，才能构造包含全部标签和连接的完整比较证书。
@@ -213,6 +231,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
             numbers = {v: i for i, v in enumerate(order)}
 
             def renamed(ref, numbers=numbers):
+                """把参数引用投影到当前候选的统一顶点编号，供完整证书比较。"""
                 if ref[0] == "result":
                     return ("result", numbers[ref[1]], ref[2])
                 if ref[0] == "constant":
@@ -225,6 +244,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
                     parameter_keys[i] = order_key(
                         _variables((node.outputs, node.params, node.effects, node.context), renamed)
                     )
+            # 证书包含初始语义标签、全部依赖和参数内引用；颜色相同本身不是证据。
             certificate = tuple(
                 (
                     keys[i],
@@ -264,6 +284,7 @@ def reorder_form(graph, nodes, constants):
     constant_ids = {old: new for new, old in enumerate(constants)}
 
     def reference(ref):
+        """按最终排列重写节点或常量引用，外部输入位置和结果端口保持不变。"""
         if ref[0] == "result":
             return ("result", node_ids[ref[1]], ref[2])
         if ref[0] == "constant":

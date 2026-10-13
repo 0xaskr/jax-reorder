@@ -49,7 +49,7 @@ def test_call_input_and_output_permutations(candidate, dtype):
 @pytest.mark.parametrize("candidate", [call_bindings.wrong_input, call_bindings.wrong_output])
 def test_call_wrong_binding_has_a_numerical_witness(candidate):
     args = (jnp.float32(0.7), jnp.float32(-0.3))
-    report = compare_functions(call_bindings.original, candidate, *args)
+    report = compare_functions(call_bindings.original, candidate, *args, equivalence="structural")
     assert report.status == Status.DIFFERENT, report
     assert call_bindings.original(*args)[0] != candidate(*args)[0]
 

@@ -15,10 +15,12 @@ report = compare_functions(
     check_cpu=True,
 )
 for mode in report.modes:
-    print(mode.mode, mode.status, mode.failure_kind, mode.difference)
+    print(mode.mode, mode.status, mode.equivalence_kind, mode.failure_kind)
 ```
 
 `static_argnums`/`static_argnames` 指定静态接口，`argnums` 选择原函数的可微位置参数；默认对动态浮点、复数叶子求导。整数等叶子仍是普通输入。`transforms` 中的 `jit`/`vmap` 顺序有意义，它们先作用于原函数，再应用所请求的一阶求导；其他变换顺序应显式包装后单独验证。
+
+默认 `equivalence="auto"` 在结构不同后尝试理想实数代数证明；`equivalence="structural"` 保留原完整图结果。`ModeComparison.comparison` 始终保存原结构报告，`algebra` 单独保存代数规则、假设、浮点警告、证明和停止原因；`equivalence_kind` 区分 `structural`、`algebraic` 与未证明。`algebra_budget=10000` 按模式分别计数。输入签名在追踪前保留完整抽象属性，包括 memory_space 与 manual_axis_type；不能忠实还原时报告 `unknown`。
 
 JVP 的全部切向量和 VJP 的每个输出余切向量作为独立动态输入。VJP 在同一个程序里连接前向和 pullback，不固定原始输入，不将余切向量固定为全 1。只有全部请求模式完成且等价才报告整体等价；未请求模式列入 `unverified_modes`。
 
@@ -44,9 +46,9 @@ JAX 的延迟 VJP thunk 缓存图而不恢复 `out_trees` 的辅助状态。不�
 
 ## 梯度累加顺序的边界
 
-不能从前向图匹配推断每种求导后图也匹配。[反馈回归](../../tests/test_feedback_bindings.py)有一个实例：同步交换 scan 的返回槽位，前向及 JVP 保持同图，但 JAX 转置按原槽位顺序累加余切向量，VJP 的 `add_any` 连接发生变化。此时分别返回 `equivalent`、`equivalent`、`different`。本项目不交换或重组 `add_any`，也不把数值抽样接近当成图匹配。
+不能从前向图匹配推断每种求导后图也匹配。[反馈回归](../../tests/test_feedback_bindings.py)有一个实例：同步交换 scan 的返回槽位，前向及 JVP 保持同图，但 JAX 转置按原槽位顺序累加余切向量，VJP 的 `add_any` 连接发生变化。结构模式分别返回 `equivalent`、`equivalent`、`different`；默认自动模式可以通过独立代数证明接受这次实数加法换序，并保留结构差异与浮点警告。数值抽样接近仍不能代替任何一层证明。
 
-这一边界也出现在[四类完整业务层](full-attention.md)的独立投影换序中。报告明确求导参数与模式：目前这组完整层证据只对 hidden states 求导，权重仍为动态输入，但没有宣称权重梯度及高阶模式都已验证。
+这一边界也出现在[四类完整业务层](full-attention.md)的独立投影换序中。该组历史证据显式使用结构模式，继续保留原验证范围：只对 hidden states 求导，权重仍为动态输入，没有宣称权重梯度及高阶模式都已验证。
 
 ## 实现与测试
 

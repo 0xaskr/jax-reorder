@@ -1,0 +1,19 @@
+# 项目文档保护：更改权限边界必须由用户决定。
+# 需要支持 permission profiles 的 Codex；不要混用 sandbox_mode / --sandbox。
+default_permissions = "protected-docs"
+approval_policy = "on-request"
+approvals_reviewer = "user"
+
+[permissions.protected-docs]
+description = "允许开发代码，核心文档只读；越界操作交给用户审批。"
+# 继承 .git、.codex、.agents 等默认保护以及工作区和临时目录的写权限。
+extends = ":workspace"
+
+[permissions.protected-docs.filesystem.":workspace_roots"]
+"README.md" = "read"
+"AGENTS.md" = "read"
+"CLAUDE.md" = "read"
+"ARCHITECTURE.md" = "read"
+"docs/index.md" = "read"
+"docs/PLANS.md" = "read"
+"docs/design-docs" = "read"

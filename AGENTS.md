@@ -4,11 +4,10 @@
 
 ## 从这里开始
 
-- 项目介绍与运行方式：[中文 README](README.zh.md)、[英文 README](README.md)。
+- 项目介绍与运行方式：[中文 README](README.md)。
 - 架构与比较契约：[ARCHITECTURE.md](ARCHITECTURE.md)。
 - 算法设计、审查与验证：[BFS 开发记录](docs/development-docs/bfs-reordering.md)。
 - 文档知识库：[docs/index.md](docs/index.md)。
-- AI 工作闭环与工具：[docs/AI_WORKFLOW.md](docs/AI_WORKFLOW.md)。
 - 执行计划与技术债：[docs/PLANS.md](docs/PLANS.md)。
 
 ## 当前形态与目录
@@ -32,6 +31,14 @@
 - 比较仅针对追踪输入、静态参数和执行环境，并包含函数输入输出 pytree；不宣称一般 Python 等价性。
 - IR 语法校验、抽样数值验证和性能数据分别报告，不能替代规范化表示的精确比较。
 - 保留用户已有改动，限定任务范围；不提交凭据、环境或生成产物。Git 提交、推送和外部写入按用户授权执行。
+
+## 受保护文档
+
+- 默认只读：`README.md`、`AGENTS.md`、`CLAUDE.md`、`ARCHITECTURE.md`、`docs/index.md`、`docs/PLANS.md` 与 `docs/design-docs/` 整个目录。
+- 未经用户明确授权具体文件和修改范围，不得修改、删除、移动、重命名或替换这些文档。“实现功能”“整理代码”“同步文档”等泛化要求不构成授权；发现需要调整时先给出建议改动，再请求授权。已有明确授权时按授权范围执行。
+- 日常设计、实验和任务进展写入 `docs/development-docs/` 与 `docs/exec-plans/`；受保护文档的同步遵循上述授权要求。
+- Codex 使用 [.codex/config.toml](.codex/config.toml) 中的 `protected-docs` 权限配置，继承工作区默认保护，核心文档只读，越界审批交给用户。AI 不得自行放宽配置、切换到更宽权限或绕过保护。
+- 新会话需加载该权限配置；不要混用旧 `sandbox_mode` / `--sandbox`，或用 Full Access 覆盖它。其他 AI 客户端也须遵守本节规则，其文件写入拦截需在对应客户端另行配置。
 
 ## 工作方式
 
@@ -65,7 +72,7 @@ uv run python tests/lax_inventory.py
 
 ## 文档维护
 
-- README 面向使用者，中英文同步；AGENTS 保持导航和必要规则。
+- README 面向使用者；AGENTS 保持导航和必要规则。
 - 比较契约在架构文档中维护，具体设计与实验进入 development-docs，长期决策进入 design-docs。
 - 复杂工作的 active 计划完成后移到 completed；未解决问题进入技术债记录。
 - 新增、移动或删除文档时更新索引与引用，运行 `uv run python tools/check_docs.py --changed` 与 `git diff --check`。

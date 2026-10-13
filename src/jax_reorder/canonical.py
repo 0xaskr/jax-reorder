@@ -36,6 +36,7 @@ class _AmbiguousSlots(Exception):
     """把真正无锚点的内部槽位交给整张图的有界选择搜索。"""
 
     def __init__(self, ports, path):
+        """携带待排列的槽位和位置，由外层搜索展开，不直接作为用户错误报告。"""
         self.ports, self.path = tuple(ports), path
 
 
@@ -49,6 +50,7 @@ class _UsePath:
     depth: int = 0
 
     def __lt__(self, other):
+        """先比较到有序根的距离，再比较同距离路径上从根开始的端口序列。"""
         if self.depth != other.depth:
             return self.depth < other.depth
         a, b = self, other
@@ -93,6 +95,7 @@ def _ordered_equation(equation):
 class Status(StrEnum):
     """本轮图比较结果；DIFFERENT 不表示数学公式已经被证明不等价。"""
 
+    # 使用字符串枚举，调用方可以直接以 .value 写入结构化报告。
     EQUIVALENT = "equivalent"
     DIFFERENT = "different"
     UNKNOWN = "unknown"
@@ -110,7 +113,7 @@ class Issue:
 class Node:
     """一个方程的规范表示；相同算子的两次调用仍是两个独立节点。
 
-    inputs 是按操作数位置排列的值引用（cond 内部绑定先同步规范化），
+    inputs 是按操作数位置排列的值引用（已适配的内部接口先同步规范化），
     outputs 是按结果端口排列的抽象值。
     params、effects、context 保存编码后的语义信息；order_after 保存
     张量使用关系之外的顺序前驱，其编号使用 BFS 编号而非原方程索引。
@@ -121,6 +124,7 @@ class Node:
     # 操作数所在位置和引用中的结果端口分别表达“怎么用”和“从哪里来”。
     inputs: tuple
     outputs: tuple
+    # 参数按名称排序；effects/context 则保存编码器产生的完整语义结构。
     params: tuple
     effects: Frozen
     context: Frozen
@@ -132,7 +136,8 @@ class Graph:
     """用于精确比较的图，不保存原始变量名或调试源位置。
 
     inputs 保存有序输入的抽象值，outputs 保存有序输出的值引用。
-    constants 按首次使用顺序记录（抽象值，常量内容），nodes 按规范编号存放。
+    constants 记录（抽象值，常量内容），其可达前缀按首次使用顺序编号；
+    nodes 的可达前缀按 BFS 编号，剩余常量和节点由完整图搜索确定顺序。
     未使用部分也参与精确搜索，只有搜索完成且语义全部可解释才报告完整。
     """
 
@@ -141,6 +146,7 @@ class Graph:
     outputs: tuple
     nodes: tuple[Node, ...]
     effects: Frozen
+    # JAX 的高层/低层 IR 标记也属于比较条件，不能混用两个抽象层级。
     is_high: bool
 
 
@@ -171,6 +177,7 @@ class Canonicalized:
     lineage: Mapping = field(default_factory=dict, compare=False, repr=False)
     regions: Mapping = field(default_factory=dict, compare=False, repr=False)
     semantic_views: Mapping = field(default_factory=dict, compare=False, repr=False)
+    # 记录这份结果是否包含注册的一阶规则；供诊断区分完整规则与仅前向范围。
     derivative_scope: str = "all"
 
     @property
@@ -216,6 +223,7 @@ def _validate(graph: core.Jaxpr, path: str) -> None:
         if not isinstance(v, core.Literal) and (not isinstance(v, core.Var) or v not in defined):
             raise InvalidJaxprError(where, "undefined value or dependency cycle")
 
+    # 常量也有独立定义位置，绑定数量不一致时不能仅编码已有的那一部分。
     if len(graph.constvars) != len(graph.consts):
         raise InvalidJaxprError(path, "constant binders and values must have equal lengths")
     for i, v in enumerate((*graph.constvars, *graph.invars)):
@@ -233,6 +241,7 @@ class _Normalizer:
     """一次规范化调用的内部状态，供同一次调用中的所有嵌套子图共享。"""
 
     def __init__(self, derivative_scope="all", search_budget=DEFAULT_SEARCH_BUDGET, decisions=()):
+        """初始化一次候选规范化的共享状态；每条槽位搜索分支使用独立实例。"""
         self.primitives = supported_primitive_identities()
         # cache 复用共享子图的处理结果；active 记录当前工作栈路径，用于检测环。
         # 缓存不跨公开调用复用，避免再次调用时沿用已经改变的常量或图内容。
@@ -251,6 +260,7 @@ class _Normalizer:
         self.lineage: dict[core.Jaxpr, tuple[core.Jaxpr, tuple[int, ...]]] = {}
 
     def _scope(self, path):
+        """按参数路径识别物化规则内部区域，限制自定义求导的展开层数。"""
         # 本轮只验证一阶规则；规则内部普通调用不自动递归证明高阶求导。
         return "primal" if ".params.rules[" in path else self.derivative_scope
 
@@ -272,6 +282,7 @@ class _Normalizer:
         stack = []
 
         def push(child, child_path):
+            """登记当前路径并压入区域任务；共享子图可缓存，祖先回边则是环。"""
             if not isinstance(child, core.Jaxpr):
                 raise InvalidJaxprError(
                     child_path, "expected a jaxpr including its bound constants"
@@ -293,6 +304,7 @@ class _Normalizer:
                 except StopIteration as finished:
                     result = finished.value
                     self.cache[current] = self.cache[result.jaxpr] = result
+                    # 原图与返回图均指向同一次结果，后续同步换序会继续引用这些对象。
                     scope = self._scope(current_path)
                     self.scoped_cache[(current, scope)] = result
                     self.scoped_cache[(result.jaxpr, scope)] = result
@@ -302,6 +314,7 @@ class _Normalizer:
                     continue
                 if child in self.active:
                     raise InvalidJaxprError(child_path, "cyclic nested jaxpr")
+                # 同一对象进入不同求导范围时不可共用结果，避免漏比或多比规则。
                 key = (child, self._scope(child_path))
                 value = self.scoped_cache.get(key)
                 if value is None:
@@ -315,6 +328,7 @@ class _Normalizer:
 
     def _rebind_inputs(self, graph, order):
         """只调整形参槽位，变量及其引用保持不变，调试名称跟随变量移动。"""
+        # order 为“新位置 → 旧位置”；恒等置换直接复用对象及已有缓存。
         if tuple(order) == tuple(range(len(graph.invars))):
             return graph
         debug = graph.debug_info
@@ -327,6 +341,7 @@ class _Normalizer:
 
     def _rebind_outputs(self, graph, order):
         """同步调用输出槽位时保留原子引用，并记录方程来源供独立校验。"""
+        # 这里只重排返回列表；父方程的结果变量列表需由调用者采用相同置换。
         if tuple(order) == tuple(range(len(graph.outvars))):
             return graph
         debug = graph.debug_info
@@ -365,6 +380,7 @@ class _Normalizer:
         ):
             raise InvalidJaxprError(path, "invalid jit interface")
         params = dict(eq.params)
+        # 输入、输出元数据必须逐槽位对齐；长度不符时继续换序会错配 donation 等语义。
         for name in ("in_shardings", "in_layouts", "donated_invars"):
             if type(params[name]) is not tuple or len(params[name]) != len(eq.invars):
                 raise InvalidJaxprError(path, f"invalid jit {name}")
@@ -395,6 +411,8 @@ class _Normalizer:
             if ref[0] == "input" and start <= ref[1] < start + count:
                 slots.setdefault(ref[1], None)
         for node in result.graph.nodes:
+            # 此处也会扫描无根节点。已知缺口是无根节点排序可能依赖旧输入编号，
+            # 因而仅由它们使用的输入槽位尚未与节点编号联合搜索，可能误报不同。
             for ref in node.inputs:
                 if ref[0] == "input" and start <= ref[1] < start + count:
                     slots.setdefault(ref[1], None)
@@ -402,6 +420,7 @@ class _Normalizer:
         return (*slots, *self._free_slots(unused, path))
 
     def _output_order(self, eq, ports, uses, path):
+        """按父图最短使用路径排列已使用结果，把无锚点结果留给槽位搜索。"""
         used = [i for i in ports if eq.outvars[i] in uses]
         used.sort(key=lambda i: uses[eq.outvars[i]])
         unused = [i for i in ports if eq.outvars[i] not in uses]
@@ -425,6 +444,7 @@ class _Normalizer:
         ):
             raise InvalidJaxprError(path, "invalid shard_map interface")
         child = self._rebind_outputs(child, output_order)
+        # 上下文跨 yield 保持有效，子图抽象检查才能识别手动轴和变化性约束。
         with (
             shard_map._extend_axis_env(params["mesh"], params["newly_manual_axes"]),
             config._check_vma(params["check_vma"]),
@@ -583,6 +603,7 @@ class _Normalizer:
         slots: dict[int, None] = {}
 
         def discover(ref):
+            """按跨分支的首次出现顺序登记形参，只记录输入引用，不重编号常量。"""
             if ref[0] == "input":
                 slots.setdefault(ref[1], None)
 
@@ -590,7 +611,8 @@ class _Normalizer:
         for result in normalized:
             for ref in result.graph.outputs:
                 discover(ref)
-            # nodes 已按 BFS 存放；输入引用的编号仍对应该分支原来的形参槽位。
+            # nodes 的可达前缀按 BFS 存放，无根后缀由搜索确定；输入引用的编号
+            # 此时仍对应该分支原来的形参槽位。
             for node in result.graph.nodes:
                 for ref in node.inputs:
                     discover(ref)
@@ -657,6 +679,7 @@ class _Normalizer:
         # named-axis effect 表示所需的轴环境，NoDCEEffect 对应保留计算的标记。
         # 这里只接受已适配的这两类；未知 effect 即使出现在未使用分支也要拒绝。
         def check_effects(effects, where):
+            """在当前图及每个方程上检查 effect 类型，未知 effect 不能按纯计算处理。"""
             for effect in effects:
                 if type(effect) not in (core.NamedAxisEffect, NoDCEEffect):
                     raise UnsupportedJaxprError(
@@ -683,6 +706,7 @@ class _Normalizer:
         node_paths: dict[int, _UsePath] = {}
 
         def mark(atom, use_path):
+            """保留结果值及其生产者的最短有序使用路径，供私有结果端口排序。"""
             if isinstance(atom, core.Var) and atom in producers:
                 if atom not in uses or use_path < uses[atom]:
                     uses[atom] = use_path
@@ -693,10 +717,12 @@ class _Normalizer:
         for index, atom in enumerate(graph.outvars):
             mark(atom, _UsePath(index))
         for index, equation_index in enumerate(effect_roots):
+            # 有序操作接在外部输出根之后编号，既覆盖无输出操作，也固定彼此顺序。
             use_path = _UsePath(len(graph.outvars) + index)
             if equation_index not in node_paths or use_path < node_paths[equation_index]:
                 node_paths[equation_index] = use_path
         for i in reversed(range(len(equations))):
+            # SSA 已保证生产者在消费者之前；逆序时消费者的私有输入槽位已处理完。
             eq = equations[i]
             if eq.primitive in (pjit.jit_p, lax.cond_p, shard_map.shard_map_p):
                 output_order = self._output_order(
@@ -813,6 +839,7 @@ class _Normalizer:
                 children = []
 
                 def discover_child(child, child_path, children=children):
+                    """首次编码只登记子图任务，返回占位结果供参数容器继续遍历。"""
                     children.append((child, child_path))
                     return SimpleNamespace(graph=None)
 
@@ -857,8 +884,8 @@ class _Normalizer:
             predecessors.extend(extra_predecessors.get(i, ()))
             depths.append(1 + max((depths[p] for p in predecessors), default=0))
         order = tuple(sorted(bfs_order, key=lambda i: (depths[i], identifiers[i]))) + unused
-        # 6. 比较表示仍按 BFS 编号存放，让 result 引用可以直接定位节点。
-        # 不要将此顺序与上面的可执行方程顺序 order 混用。
+        # 6. 比较表示的可达前缀按 BFS 编号存放，无根后缀稍后再规范化；
+        # result 引用使用该编号，不能与可执行方程顺序 order 混用。
         ordered_nodes = []
         for i in identifiers:
             eq = equations[i]
@@ -909,6 +936,7 @@ class _Normalizer:
             )
         # 只替换方程列表；输入、输出、常量绑定、调试信息等仍由原 jaxpr 保留。
         reordered = graph.replace(eqns=[new_equations[i] for i in order])
+        # 中间图可能已换序多次，将本次执行顺序与既有来源映射合成，保留原方程索引。
         source, source_order = self.lineage.get(graph, (graph, tuple(range(len(graph.eqns)))))
         self.lineage[reordered] = (source, tuple(source_order[i] for i in order))
         # 先完成嵌套结构与环检查，再交给 JAX 做最终类型/参数检查，避免 JAX 先递归溢出。
@@ -940,6 +968,10 @@ def canonicalize(
 
     调用方需保持追踪上下文一致，并另行核对展平前的函数输入输出 pytree。
     依赖链、嵌套区域和参数使用显式栈；JAX 自身的检查仍可能受其资源限制。
+
+    derivative_scope="all" 物化已适配的注册一阶规则；"primal" 仅比较前向。
+    search_budget 分别用于内部槽位候选搜索和每次无根图搜索；超限抛出
+    UnsupportedJaxprError，不返回尚未证明为规范形式的局部最优结果。
     """
     try:
         if (jax.__version__, jaxlib.__version__) != ("0.11.2", "0.11.2"):
@@ -990,6 +1022,7 @@ def canonicalize(
                 semantic_views=MappingProxyType(dict(normalizer.semantic_views)),
                 derivative_scope=derivative_scope,
             )
+            # 仅一个候选时省去大图排序键；出现第二个候选后才需要比较完整键。
             if best is None:
                 best = candidate
             else:
@@ -1013,6 +1046,7 @@ def _difference(left: Any, right: Any) -> str | None:
     """
     # 差异路径定位的是规范 Graph，例如 nodes[0] 不一定是源 jaxpr 的第一个方程。
     pending = [("graph", left, right)]
+    # 同一对子结构只展开一次，避免共享区域在比较时被重复展开为树。
     seen = set()
     while pending:
         path, a, b = pending.pop()
@@ -1053,6 +1087,7 @@ def compare_jaxprs(
     """
     normalized = []
     issues = []
+    # 即使一侧失败仍处理另一侧，使 unknown 报告保留两边各自可用的诊断信息。
     for side, graph in (("left", left), ("right", right)):
         try:
             result = canonicalize(

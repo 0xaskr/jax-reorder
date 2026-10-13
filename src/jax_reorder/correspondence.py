@@ -23,7 +23,9 @@ from .support import supported_primitive_identities
 class EquationCorrespondence:
     """left 图中某一方程的 right 索引，以及参数内每个子区域的对应证据。"""
 
+    # 方程编号使用原图中的位置，不是规范化后的 BFS 编号或执行列表位置。
     right: int
+    # 子图以参数路径定位，例如 params.branches[0]；路径顺序不改变分支语义。
     children: tuple[tuple[str, "GraphCorrespondence"], ...] = ()
     # outputs[p] = q 表示左侧结果端口 p 对应右侧端口 q，与方程在列表中的位置无关。
     outputs: tuple[int, ...] = ()
@@ -37,9 +39,11 @@ class GraphCorrespondence:
     输出映射仅允许用于已审查的调用接口；顶层输出顺序同样固定。
     """
 
+    # 这些映射均从左到右；例如 constants[0] = 2 表示左常量 0 对应右常量 2。
     inputs: tuple[int, ...]
     constants: tuple[int, ...]
     equations: tuple[EquationCorrespondence, ...]
+    # 保存所有外部返回槽位，包括同一值重复返回的各个位置。
     outputs: tuple[int, ...] = ()
 
 
@@ -57,10 +61,14 @@ def _parameter_view(
 
     不读取规范图的参数编码。jit 名称和 reduce callable 是锁定版本中
     已审查的两个例外；其余值一律由完整编码检查。
+
+    inputs/outputs 是从左侧槽位到当前右侧槽位的映射，只用于把右侧的逐位置
+    元数据投影到左侧顺序。返回参数编码及“参数路径 → 原始子图”的映射。
     """
     regions = {}
 
     def nested(graph, path):
+        """登记子图及其路径，让参数编码与子图内容校验分开进行。"""
         # 父参数只记录子图所在位置，内容随后逐区域核对；占位不意味着忽略子图。
         regions[path] = graph
         return SimpleNamespace(graph=("region", path))
@@ -108,6 +116,7 @@ def build_correspondence(left, right, left_normalized, right_normalized):
     """利用来源记录构造证据；构造成功本身不表示证据正确。"""
 
     def ports(a, b, an, bn):
+        """通过规范化后配对的值，恢复两份原始接口之间的端口映射。"""
         # 同一变量可作为多个返回值；逐个消费原端口，保留重复出现次数。
         ai, bi = defaultdict(deque), defaultdict(deque)
         for i, value in enumerate(a):
@@ -119,7 +128,8 @@ def build_correspondence(left, right, left_normalized, right_normalized):
             result[ai[id(av)].popleft()] = bi[id(bv)].popleft()
         return tuple(result)
 
-    def build(a, b, an, bn):
+    def build(a, b, an, bn, required_outputs=None):
+        """为一个区域构造对应表，遇到子区域时交由外部生成器栈处理。"""
         # a/b 是原区域，an/bn 是规范化后的可执行区域；不能混用这两套索引。
         # 来源表把可执行列表位置还原到原方程位置，规范节点编号不直接用于证据。
         source_a, order_a = left_normalized.lineage[an]
@@ -140,6 +150,8 @@ def build_correspondence(left, right, left_normalized, right_normalized):
         constants = tuple(bc[ar[v]] for v in a.constvars)
         equations = [None] * len(a.eqns)
         for ia, ib, ae, be in zip(order_a, order_b, an.eqns, bn.eqns, strict=True):
+            # 原方程参数给出待证明的区域，重排方程参数给出本次使用的规范区域；
+            # 四份视图的路径必须一致，才能把规范化来源还原为原图证据。
             _, ac = _parameter_view(
                 a.eqns[ia],
                 lambda v: v,
@@ -156,25 +168,45 @@ def build_correspondence(left, right, left_normalized, right_normalized):
             )
             if ac.keys() != bc.keys() or ac.keys() != anc.keys() or ac.keys() != bnc.keys():
                 raise CorrespondenceError("correspondence", "nested region paths do not match")
+            output_ports = ports(a.eqns[ia].outvars, b.eqns[ib].outvars, ae.outvars, be.outvars)
             children = []
             for key in ac:
-                child = yield ac[key], bc[key], anc[key], bnc[key]
+                # 子图可重复返回同一个值，按 Var 身份逐次消费无法还原唯一的槽位。
+                # 此时父调用的结果端口仍是不同 SSA 定义，应以父端口约束子图返回。
+                # 独立校验器继续逐项核对值关系和反馈，不能只接受这份映射。
+                coupled = (
+                    key == "params.jaxpr"
+                    and ae.primitive in (pjit.jit_p, lax.scan_p, shard_map.shard_map_p)
+                    or key.startswith("params.branches[")
+                    and ae.primitive is lax.cond_p
+                    or key == "params.body_jaxpr"
+                    and ae.primitive is lax.while_p
+                )
+                child = yield (
+                    ac[key],
+                    bc[key],
+                    anc[key],
+                    bnc[key],
+                    output_ports if coupled else None,
+                )
                 children.append((key, child))
             equations[ia] = EquationCorrespondence(
                 ib,
                 tuple(children),
-                ports(a.eqns[ia].outvars, b.eqns[ib].outvars, ae.outvars, be.outvars),
+                output_ports,
             )
         return GraphCorrespondence(
             tuple(inputs),
             constants,
             tuple(equations),
-            ports(a.outvars, b.outvars, an.outvars, bn.outvars),
+            ports(a.outvars, b.outvars, an.outvars, bn.outvars)
+            if required_outputs is None
+            else required_outputs,
         )
 
     try:
         # 生成器只描述一个区域的工作，嵌套深度由列表承载，不递归调用 build。
-        root = (left, right, left_normalized.jaxpr, right_normalized.jaxpr)
+        root = (left, right, left_normalized.jaxpr, right_normalized.jaxpr, None)
         stack = [(root, build(*root))]
         completed = {}
         value = None
@@ -186,6 +218,7 @@ def build_correspondence(left, right, left_normalized, right_normalized):
                 completed[stack[-1][0]] = value
                 stack.pop()
             else:
+                # 相同的原图/规范图四元组复用证据；不同绑定仍由其父节点逐次核对。
                 value = completed.get(children)
                 if value is None:
                     stack.append((children, build(*children)))
@@ -207,10 +240,12 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
     """
 
     def require(condition, path, reason):
+        """将校验失败统一转成带路径的证据错误，避免泄漏无定位信息的断言。"""
         if not condition:
             raise CorrespondenceError(path, reason)
 
     def permutation(indices, left_size, right_size, path):
+        """检查完整双射：数量相等、索引为整数，且每个目标位置恰好出现一次。"""
         # 必须覆盖双方每个位置一次；只验证已匹配子集会漏掉多余节点或共享变化。
         require(
             type(indices) is tuple
@@ -222,6 +257,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
         )
 
     def reject_nested(_, path):
+        """值描述符中不允许隐藏子图；合法区域必须经参数视图单独登记和校验。"""
         raise CorrespondenceError(path, "unexpected graph in a value descriptor")
 
     require(
@@ -283,6 +319,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                     work.extend(value.values())
         return positions
 
+    # root 标记控制外部输入输出是否必须保持恒等映射；内部置换由父节点约束。
     pending = [(left, right, correspondence, "correspondence", True)]
     seen = set()
     while pending:
@@ -342,12 +379,14 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
             values.update(
                 (v, other.outvars[eqmap.outputs[p]]) for p, v in enumerate(equation.outvars)
             )
+        # 不允许两个左侧定义映射到同一个右侧定义，否则会把重复计算误当成共享。
         require(len(values) == len(set(values.values())), path, "value sharing is not bijective")
         # 参数和抽象值也可能引用 Var；统一映射到右侧命名空间后，才能精确比较。
         ae = Encoder(reject_nested, lambda v, values=values: values[v])
         be = Encoder(reject_nested, lambda v: v)
 
         def same_value(av, bv, where, ae=ae, be=be, values=values):
+            """字面量比较类型和精确内容，变量则要求遵守已建立的唯一绑定。"""
             if isinstance(av, core.Literal):
                 require(isinstance(bv, core.Literal), where, "literal and variable differ")
                 require(
@@ -416,6 +455,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                 input_order = children["params.jaxpr"].inputs
                 permutation(input_order, len(equation.invars), len(other.invars), where)
             scope = "primal" if ".params.rules[" in where else derivative_scope
+            # 此处重新读取原参数并物化求导规则，不接受规范化器提供的相等结论。
             ap, ac = _parameter_view(
                 equation, lambda v, values=values: values[v], derivative_scope=scope, parent=a
             )
@@ -446,7 +486,11 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                 other=other,
                 same_value=same_value,
             ):
-                """结合子图形参映射复核父节点实际绑定，不使用规范化后的实参。"""
+                """结合子图形参映射复核父节点实际绑定，不使用规范化后的实参。
+
+                flexible 之前的槽位可在该组内置换，其余位置必须固定。
+                循环额外的角色分组和反馈关系由下方对应的原语分支继续校验。
+                """
                 child = children[key]
                 # a_slots/b_slots 将子图形参位置投影到父方程操作数位置。
                 # 例如 cond 的子图形参 0 对应父操作数 1，父操作数 0 是 selector。
@@ -537,4 +581,5 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                         "unsupported internal output permutation",
                     )
             for key, child in children.items():
+                # 父子接口已核对，入栈后再检查该区域内部全部定义、操作及绑定。
                 pending.append((ac[key], bc[key], child, f"{where}.{key}", False))

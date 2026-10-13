@@ -33,6 +33,7 @@ def verify_derivatives(family):
             *args,
             argnums=(1,),
             modes=("forward", "jvp", "vjp"),
+            equivalence="structural",
         )
         assert [m.status for m in result.modes] == [
             Status.EQUIVALENT,

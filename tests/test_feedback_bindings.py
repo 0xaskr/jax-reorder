@@ -60,7 +60,7 @@ def test_joint_feedback_permutation(kind, suffix, steps, dtype):
 def test_incorrect_feedback_or_result_binding_has_a_witness(kind, suffix):
     original, candidate = getattr(cases, f"{kind}_original"), getattr(cases, f"{kind}_{suffix}")
     args = arguments(kind, 3, jnp.float32)
-    result = compare_functions(original, candidate, *args)
+    result = compare_functions(original, candidate, *args, equivalence="structural")
     assert result.status == Status.DIFFERENT, result
     assert any(
         not np.array_equal(a, b)
@@ -82,7 +82,10 @@ def test_reordered_scan_under_jit_and_reverse_mode():
     assert result.status == Status.EQUIVALENT, result
 
 
-def test_changed_vjp_accumulation_order_is_not_treated_as_a_port_rename():
+@pytest.mark.parametrize(
+    "equivalence,expected", [("structural", Status.DIFFERENT), ("auto", Status.EQUIVALENT)]
+)
+def test_changed_vjp_accumulation_order_is_not_treated_as_a_port_rename(equivalence, expected):
     result = compare_functions(
         cases.scan_original,
         cases.scan_reordered,
@@ -90,13 +93,18 @@ def test_changed_vjp_accumulation_order_is_not_treated_as_a_port_rename():
         modes=("forward", "jvp", "vjp"),
         transforms=("jit",),
         check_cpu=True,
+        equivalence=equivalence,
     )
     # 两份前向图相同，但 JAX 转置按返回槽位累加余切向量：
     # 左侧 ((carry + total_ct) + difference_ct)，右侧先累加 difference_ct。
-    # 这会改变普通 add_any 连接，不能为使标签通过而套用结合律。
+    # 结构模式保留 add_any 连接；auto 需要独立的代数证据和浮点警告。
     assert [mode.status for mode in result.modes] == [
         Status.EQUIVALENT,
         Status.EQUIVALENT,
-        Status.DIFFERENT,
+        expected,
     ]
-    assert result.status == Status.DIFFERENT
+    assert result.status == expected
+    assert result.modes[2].comparison.status == Status.DIFFERENT
+    if equivalence == "auto":
+        assert result.modes[2].equivalence_kind == "algebraic"
+        assert result.modes[2].algebra.proof and result.modes[2].algebra.warnings

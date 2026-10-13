@@ -6,7 +6,6 @@
 | --- | --- |
 | [AGENTS.md](../AGENTS.md) | Agent 规则、命令与技能入口 |
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | 项目架构与比较契约 |
-| [AI_WORKFLOW.md](AI_WORKFLOW.md) | AI 的使用方式和现有工具 |
 | [design-docs](design-docs/index.md) | 跨功能设计决定与核心原则 |
 | [development-docs](development-docs/index.md) | 具体算法或工具的设计、实验与验证 |
 | [references](references/index.md) | 工具参考、迁移来源与上游资料 |
@@ -21,6 +20,6 @@
 - 每项规则或事实有明确的维护位置；入口通过链接引用，避免多份正文漂移。
 - 新增、移动或删除文档时同步更新索引与引用。
 - 复杂任务维护计划，完成后归档；未解决问题进入技术债记录。
-- README 面向使用者，中英文同步；内部设计和计划默认使用中文。
+- README 面向使用者；内部设计和计划默认使用中文。
 - 标明规划、实现和验证状态。上游实验记录保留其项目、版本和设备上下文。
 - 能由确定性检查保障的约束放入脚本、lint 或测试。文档修改运行 `uv run python tools/check_docs.py --changed` 和 `git diff --check`。

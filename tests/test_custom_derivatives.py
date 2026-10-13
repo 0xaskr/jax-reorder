@@ -48,7 +48,12 @@ def test_direct_custom_call_matches_rules_and_preserves_execution(original, cand
 def test_forward_and_gradient_scope_have_distinct_results(candidate):
     args = (jnp.float32(0.7), jnp.float32(-0.3))
     result = compare_functions(
-        cases.vjp_original, candidate, *args, modes=("forward", "vjp"), check_cpu=True
+        cases.vjp_original,
+        candidate,
+        *args,
+        modes=("forward", "vjp"),
+        check_cpu=True,
+        equivalence="structural",
     )
     assert result.modes[0].status == Status.EQUIVALENT, result
     assert result.modes[1].status == Status.DIFFERENT, result
@@ -71,6 +76,7 @@ def test_custom_jvp_wrong_coefficient_is_found_in_each_derivative_mode():
         jnp.float32(0.7),
         jnp.float32(-0.3),
         modes=("forward", "jvp", "vjp"),
+        equivalence="structural",
     )
     assert [m.status for m in result.modes] == [
         Status.EQUIVALENT,

@@ -16,30 +16,37 @@ from jax._src.interpreters import partial_eval as pe
 
 from .errors import InvalidJaxprError, UnsupportedJaxprError
 
+# 只接纳锁定版本中的这两个原语身份，同名用户原语不会进入规则适配。
 CUSTOM_PRIMITIVES = frozenset((cd.custom_jvp_call_p, cd.custom_vjp_call_p))
+# symbolic zeros 会产生组合爆炸；该上限限制规则模式数，而不是图节点数。
 MAX_RULE_CASES = 64
 # 仅用于识别已审查的 JAX 延迟追踪包装，不用 code 对象身份比较用户求导规则。
 _MEMOIZED_CODE = pe._memoize(lambda: None).__code__
 
 
 def _abstract(aval):
+    """为规则物化生成形状签名，避免用具体样本固定切线或余切的数值。"""
     if not isinstance(aval, core.ShapedArray):
         raise UnsupportedJaxprError("derivative", f"unsupported rule abstract value {type(aval)}")
+    # 当前重建方式只复制这些字段，其他抽象属性的透传仍需单独完善。
     return jax.ShapeDtypeStruct(
         aval.shape, aval.dtype, weak_type=aval.weak_type, sharding=aval.sharding
     )
 
 
 def _differentiable(aval):
+    """筛选浮点或复数抽象值，整数等叶子不分配动态求导种子。"""
     return jax.dtypes.issubdtype(aval.dtype, np.inexact)
 
 
 def _activations(avals, symbolic):
+    """返回与原叶子位置对齐的非空激活掩码，不把整数叶子从接口中删除。"""
     # active=True 表示传入动态切线/余切，False 表示符号零；不检查样本数值是否为零。
     # symbolic 模式枚举非空激活组合，整数等不可微叶子始终不激活。
     indices = [i for i, aval in enumerate(avals) if _differentiable(aval)]
     if not indices:
         return ()
+    # k 个可微叶子最多形成 2**k - 1 个非空组合；先检查数量，再展开枚举。
     count = 2 ** len(indices) - 1 if symbolic else 1
     if count > MAX_RULE_CASES:
         raise UnsupportedJaxprError(
@@ -56,7 +63,11 @@ def _activations(avals, symbolic):
 
 
 def _constant_bindings(constants, equation, parent):
-    """把规则捕获的旧 tracer/数组还原到调用实参，避免把动态值当字面常量。"""
+    """把规则捕获的旧 tracer/数组还原到调用实参，避免把动态值当字面常量。
+
+    返回项为（input，原调用操作数位置）或（constant，静态值）。数组按对象
+    身份寻找原绑定，不因内容相等就把两份独立捕获合并成一条输入边。
+    """
     parent_constants = (
         {}
         if parent is None
@@ -87,6 +98,7 @@ def _constant_bindings(constants, equation, parent):
 
 
 def _constant_values(bindings, primals):
+    """在新追踪中解析捕获绑定：动态捕获取当前原值，静态捕获直接透传。"""
     return tuple(primals[value] if kind == "input" else value for kind, value in bindings)
 
 
@@ -119,6 +131,11 @@ def _check_rule_order(rules):
 
 
 def _jvp_rules(params, equation, parent):
+    """逐激活模式物化 JVP，记录输入掩码、输出零掩码和实际规则图。
+
+    规则 thunk 的输入布局与原调用不同，因此先还原捕获，再接上原值与切线。
+    每个 connected 图都以原调用的完整输入作为前缀，方便比较真实绑定。
+    """
     primal = params["call_jaxpr"]
     # num_consts 是调用输入中的捕获前缀；求导激活掩码只对应后面的普通参数。
     avals = primal.in_avals[params["num_consts"] :]
@@ -132,6 +149,7 @@ def _jvp_rules(params, equation, parent):
             raise InvalidJaxprError("derivative", "invalid custom JVP rule input count")
 
         def connected(*xs, graph=graph, bindings=bindings, n=n):
+            """用本次输入重建 thunk 所需的捕获前缀，并执行物化后的规则。"""
             # 包装图接收 [完整 primal 实参, 活跃切线]，再按规则接口补入捕获值。
             return tuple(
                 core.eval_jaxpr(
@@ -151,7 +169,13 @@ def _jvp_rules(params, equation, parent):
 
 
 def _vjp_rules(params, equation, parent):
+    """连接 VJP 的前向残差与反向消费者，按输入和余切激活模式收集规则图。
+
+    单独比较 fwd/bwd 函数体会遗漏残差错绑；这里以 connected 图中的实际
+    数据边表达两者关系，同时保留输出树和残差树作为接口信息。
+    """
     primal = params["call_jaxpr"]
+    # nc 是 call_jaxpr 输入中的捕获前缀长度，不是该图 constvars 的长度。
     nc = params["num_consts"]
     activations = _activations(primal.in_avals[nc:], params["symbolic_zeros"])
     cotangents = _activations(primal.out_avals, params["symbolic_zeros"])
@@ -194,11 +218,14 @@ def _vjp_rules(params, equation, parent):
         if len(graph.outvars) != nr + len(primal.outvars):
             raise InvalidJaxprError("derivative", "invalid custom VJP forward result count")
 
+        # 已知缺口：全整数输出使 cotangents 为空，当前不会保存上面物化的 fwd；
+        # 即使没有活跃余切，VJP 的前向输出仍需比较，后续须补齐这一分支。
         for ct_active in cotangents:
             # 两个边界显式保留。返回槽位与消费者一起比较，不能单独比较 bwd
             # 后遗漏 fwd 透传输入给 residual 的路径。
             @partial(jax.jit, keep_unused=True)
             def fwd(*xs, graph=graph, bindings=bindings):
+                """保留前向调用边界及全部输入，输出非透传残差和原值结果。"""
                 return tuple(
                     core.eval_jaxpr(graph, graph.consts, *_constant_values(bindings, xs), *xs[nc:])
                 )
@@ -206,7 +233,10 @@ def _vjp_rules(params, equation, parent):
             nr_full = len(forwards)
 
             def backward(*xs, ct_active=ct_active, params=params, nr_full=nr_full):
+                """补回省略的输出余切，调用用户反向规则并物化返回的显式零。"""
                 # 图输入只携带活跃余切，调用用户 bwd 前按原输出端口补回 SymbolicZero。
+                # 已知缺口：symbolic_zeros=False 时，整数输出应按 JAX 行为补 float0
+                # 数组；当前统一补 SymbolicZero，可能追踪到与实际执行不同的用户分支。
                 residuals, nonzero_cts = xs[:nr_full], iter(xs[nr_full:])
                 cts = tuple(
                     next(nonzero_cts) if nz else cd.SymbolicZero(aval.to_ct_aval())
@@ -220,6 +250,7 @@ def _vjp_rules(params, equation, parent):
                 # None/Zero 返回值按 JAX 的实际 cotangent 语义显式物化，保留形状类型。
                 return tuple(ad_util.instantiate(gradient) for gradient in gradients)
 
+            # 透传残差从原调用输入取类型，非透传残差按 fwd 输出顺序消费类型。
             residual_outputs = iter(graph.out_avals[:nr])
             residual_avals = tuple(
                 next(residual_outputs) if f is None else primal.in_avals[f] for f in forwards
@@ -242,12 +273,14 @@ def _vjp_rules(params, equation, parent):
                 (kind, captured_inputs.index(value) if kind == "input" else value)
                 for kind, value in backward_bindings
             )
+            # 将 bwd 的 constvars 转成普通输入，包装器才能显式提供每个捕获值。
             backward_graph = pe.convert_constvars_jaxpr(backward_graph)
 
             capture_count = len(captured_inputs)
 
             @partial(jax.jit, keep_unused=True)
             def bwd(*xs, graph=backward_graph, bindings=local_bindings, count=capture_count):
+                """以紧凑捕获前缀、残差和余切调用反向图，保留其独立区域边界。"""
                 return tuple(
                     core.eval_jaxpr(
                         graph, graph.consts, *_constant_values(bindings, xs[:count]), *xs[count:]
@@ -257,6 +290,7 @@ def _vjp_rules(params, equation, parent):
             def connected(
                 *xs, fwd=fwd, bwd=bwd, forwards=forwards, nr=nr, captured_inputs=captured_inputs
             ):
+                """在同一图中连接前向、残差透传与反向，输出原值及反向规则的结果。"""
                 primals, seeds = xs[: len(primal.invars)], xs[len(primal.invars) :]
                 forwarded = fwd(*primals)
                 residual_values = iter(forwarded[:nr])
@@ -274,7 +308,11 @@ def _vjp_rules(params, equation, parent):
 
 
 def semantic_parameters(equation, *, scope="all", parent=None):
-    """已知 callable 展开为语义图；其余原语参数原样交给通用编码器。"""
+    """已知 callable 展开为语义图；其余原语参数原样交给通用编码器。
+
+    返回值仅供比较使用，原方程仍保留 callable 以支持执行和 JAX 变换。
+    parent 提供捕获常量的原始绑定；scope 由调用入口约束为 all 或 primal。
+    """
     if equation.primitive not in CUSTOM_PRIMITIVES:
         return equation.params
     if jax.__version__ != "0.11.2":
@@ -286,6 +324,7 @@ def semantic_parameters(equation, *, scope="all", parent=None):
         if equation.primitive is cd.custom_jvp_call_p
         else {"fwd_jaxpr_thunk", "bwd", "out_trees"}
     )
+    # 参数增减都表示适配假设变化，不能忽略新字段后继续声称理解了完整规则。
     if p.keys() != keys:
         raise UnsupportedJaxprError("derivative", "custom derivative parameter schema changed")
     if (
@@ -308,6 +347,7 @@ def semantic_parameters(equation, *, scope="all", parent=None):
                 else _vjp_rules(p, equation, parent)
             )
             _check_rule_order(result["rules"])
+        # 已分类的错误保留原路径；JAX 或用户规则的其他失败统一包装成不支持。
         except (InvalidJaxprError, UnsupportedJaxprError):
             raise
         except Exception as exc:

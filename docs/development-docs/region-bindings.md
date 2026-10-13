@@ -20,7 +20,7 @@ JAX 0.11.2 的 scan 参数为 reverse、length、jaxpr、ft_in、ft_out、unroll
 
 while 的 carry 初始化值、condition/body 形参、body 返回和父节点结果使用同一个映射。scan 同时保留 carry 与 xs/ys 的角色，并同步 ft_in/ft_out 的叶子元数据。原始图校验器额外检查反馈映射，不能只分别核对两张子图后漏掉循环连接。
 
-这也消除 jit 或 cond 求导残差返回槽位变化造成的漏认。求导后若实际累加顺序改变，则仍按[求导契约](function-and-derivative-contract.md)报告图差异。
+这也消除 jit 或 cond 求导残差返回槽位变化造成的漏认。求导后若实际累加顺序改变，结构层仍报告图差异；默认函数入口可以继续尝试独立代数证明，详见[求导契约](function-and-derivative-contract.md)。重复返回同一个 Var 的区域由父调用结果槽位约束对应映射，避免按 Var 首次出现顺序错配重复输出。
 
 ## 正确性要点
 

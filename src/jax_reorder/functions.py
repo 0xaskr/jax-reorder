@@ -14,11 +14,15 @@ import jaxlib
 import numpy as np
 from jax._src import core
 from jax._src.interpreters import ad
+from jax._src.layout import AutoLayout, Format
 
+from .algebra import AlgebraComparison, compare_algebraic_jaxprs
+from .algebra_ir import Budget
 from .canonical import Comparison, Issue, Status, _difference, compare_jaxprs
 from .errors import JaxprError, UnsupportedJaxprError
-from .semantics import Encoder, Frozen
+from .semantics import Encoder, Frozen, encoded_equal
 
+# 固定模式顺序也用于报告 unverified_modes，避免遗漏项随集合遍历顺序变化。
 MODES = ("forward", "jvp", "vjp")
 
 # 与类型、精度和求导实现有关的配置；升级锁定版本时随 IR 适配一并审核。
@@ -41,7 +45,10 @@ CONTEXT_FLAGS = (
 
 
 def _encoder():
+    """创建函数契约专用编码器；元数据中的嵌套图不在这个入口解释。"""
+
     def unsupported(_, path):
+        """把误放进接口元数据的图转成可定位的不支持错误。"""
         raise UnsupportedJaxprError(path, "graphs are not valid function contract metadata")
 
     return Encoder(unsupported, lambda _: None)
@@ -51,16 +58,28 @@ def _encoder():
 class FunctionSignature:
     """展平前的接口、静态参数与变换范围；抽象值仍由 jaxpr 完整比较。"""
 
+    # tree 保存容器形状和辅助数据，动态叶子的类型由实际追踪图表示。
     input_tree: Frozen
+    # 静态值带原始位置或关键字名称，防止图中未用到的静态接口变化被遗漏。
     static_arguments: Frozen
     output_tree: Frozen
     # 编号针对展平后的动态输入叶子，不是原函数的 argnums，也不包含切线/余切种子。
     differentiated_leaves: tuple[int, ...]
+    # 保存应用顺序，例如先 jit 后 vmap 与先 vmap 后 jit 是不同的追踪范围。
     transforms: tuple[str, ...]
+    # 保留追踪前全部抽象属性，不能依赖重新追踪后可能被丢弃的默认值。
+    input_avals: Frozen = ()
+    output_avals: Frozen = ()
 
 
 @dataclass(frozen=True)
 class FunctionTrace:
+    """一个模式的追踪快照，包含函数契约、环境及带常量绑定的物化图。
+
+    jaxpr 和 abstract_inputs 用于后续比较或编译，不参与数据类默认相等判断。
+    图是否等价应通过 compare_function_traces 检查，不能比较快照对象代替。
+    """
+
     mode: str
     signature: FunctionSignature
     context: Frozen
@@ -71,26 +90,37 @@ class FunctionTrace:
 
 @dataclass(frozen=True)
 class ModeComparison:
+    """单个前向或求导模式的结论，并保留失败阶段与两侧追踪证据。"""
+
     mode: str
     status: Status
+    # 契约或追踪阶段已经失败时，尚未进入底层图比较，此字段保持 None。
     comparison: Comparison | None = None
     issues: tuple[Issue, ...] = ()
+    # difference 定位已确认的差异；issues 解释未完成检查，二者含义不同。
     difference: str | None = None
+    # 区分上下文不一致、契约差异、追踪拒绝、不支持语义及 CPU 编译拒绝。
     failure_kind: str | None = None
     left: FunctionTrace | None = field(default=None, compare=False, repr=False)
     right: FunctionTrace | None = field(default=None, compare=False, repr=False)
+    algebra: AlgebraComparison | None = None
+    equivalence_kind: str | None = None
 
 
 @dataclass(frozen=True)
 class FunctionComparison:
+    """汇总全部请求模式，同时列出本次没有检查的模式。"""
+
     status: Status
     modes: tuple[ModeComparison, ...]
     unverified_modes: tuple[str, ...]
     # 仅在请求编译且各模式两侧都编译成功时为 True，不表示已执行数值验证。
     cpu_compiled: bool
+    equivalence_kind: str | None = None
 
 
 def _context():
+    """编码版本、设备、当前 mesh 和已列入审查范围的配置快照。"""
     # 每次追踪重新记录环境；版本、设备或精度配置不同的图不能直接合并比较结论。
     encoder = _encoder()
     values = jax.config.values
@@ -107,11 +137,13 @@ def _context():
 
 
 def _inexact(value):
+    """根据抽象 dtype 识别浮点和复数叶子，不读取样本数值。"""
     dtype = getattr(core.typeof(value), "dtype", None)
     return dtype is not None and jax.dtypes.issubdtype(dtype, np.inexact)
 
 
 def _abstract(value, *, cotangent=False):
+    """把输入转换为追踪签名；请求余切时先采用对应的余切抽象类型。"""
     aval = core.typeof(value)
     if cotangent:
         aval = aval.to_ct_aval()
@@ -119,13 +151,35 @@ def _abstract(value, *, cotangent=False):
         raise UnsupportedJaxprError(
             "signature", f"unsupported function input abstract type {type(aval)}"
         )
-    return jax.ShapeDtypeStruct(
-        aval.shape, aval.dtype, weak_type=aval.weak_type, sharding=aval.sharding
+    # 未指定 sharding 不能替换成 aval 的默认 NamedSharding，否则锁定版本会
+    # 从 memory_kind 重置 memory_space，丢失 Host 等属性。
+    sharding = value.sharding if isinstance(value, jax.ShapeDtypeStruct) else aval.sharding
+    if aval.layout is not AutoLayout:
+        sharding = Format(aval.layout, sharding)
+    result = jax.ShapeDtypeStruct(
+        aval.shape,
+        aval.dtype,
+        weak_type=aval.weak_type,
+        sharding=sharding,
+        manual_axis_type=aval.manual_axis_type,
+        _memory_space=aval.memory_space,
     )
+    encoder = _encoder()
+    if not encoded_equal(
+        encoder.encode(aval, "signature.original"),
+        encoder.encode(core.typeof(result), "signature.abstract"),
+    ):
+        raise UnsupportedJaxprError("signature", "cannot faithfully preserve input abstract value")
+    return result
 
 
 def _prepare(function, args, kwargs, static_argnums, static_argnames, argnums):
-    """分离静态位置与动态 pytree，重建原始调用，不改变对外的位置顺序。"""
+    """分离静态位置与动态 pytree，重建原始调用，不改变对外的位置顺序。
+
+    返回展平调用器、动态叶子的抽象签名、输入树、静态值及可微叶子索引。
+    后续 JVP/VJP 只使用这些叶子索引，不再把原参数位置当作展平位置。
+    """
+    # 先按 Python 签名核对参数；补入默认值后，省略的静态关键字也能被记录。
     signature = inspect.signature(function)
     bound = signature.bind(*args, **kwargs)
     bound.apply_defaults()
@@ -138,6 +192,7 @@ def _prepare(function, args, kwargs, static_argnums, static_argnames, argnums):
     for index in static_argnums:
         if type(index) is not int or not -len(args) <= index < len(args):
             raise ValueError("static_argnums contains an invalid positional index")
+        # 负数位置归一化后与按名称找到的位置合并，同一参数只剔除一次。
         static.add(index % len(args))
     for name in static_argnames:
         if name not in bound.arguments:
@@ -158,6 +213,7 @@ def _prepare(function, args, kwargs, static_argnums, static_argnames, argnums):
     leaves, tree = jax.tree.flatten((dynamic_args, dynamic_kwargs))
 
     def run(*flat):
+        """把动态叶子还原到原始容器与位置，静态参数继续使用闭包中的值。"""
         values, keywords = jax.tree.unflatten(tree, flat)
         positions = dict(zip(dynamic_positions, values, strict=True))
         positional_args = [positions.get(i, value) for i, value in enumerate(args)]
@@ -228,10 +284,12 @@ def trace_function(
             seeds = tuple(_abstract(v, cotangent=True) for v in output_leaves)
 
         def with_derivative(*flat):
+            """拆开原值与种子，把一阶变换本身追踪成可比较的程序。"""
             primals, seed_values = flat[: len(abstract)], flat[len(abstract) :]
             selected = tuple(primals[i] for i in differentiated)
 
             def selected_function(*values):
+                """只替换选中的可微输入，其余动态输入由外层追踪继续提供。"""
                 # 未被选中求导的输入仍是外层图的动态输入，仅在本次 AD 中视为固定。
                 full = list(primals)
                 for index, value in zip(differentiated, values, strict=True):
@@ -250,6 +308,7 @@ def trace_function(
         mode_run = run
     # return_shape 同时提供输出 pytree；图输出叶子相同不代表 Python 返回结构相同。
     graph, output_shape = jax.make_jaxpr(mode_run, return_shape=True)(*mode_inputs)
+    # 求导模式返回（前向值，切线或余切），因此输出树也记录变换后的完整接口。
     # custom_vjp 的非法 JVP 可能先追踪出 custom_lin，直到执行时才抛错。
     # 这是 JAX 自身拒绝的变换，不应记录成比较器尚未支持一个普通原语。
     pending = [graph]
@@ -275,12 +334,23 @@ def trace_function(
         encoder.encode(jax.tree.structure(output_shape), "signature.outputs"),
         differentiated if mode != "forward" else (),
         tuple(transforms),
+        tuple(encoder.encode(core.typeof(value), "signature.aval") for value in mode_inputs),
+        tuple(encoder.encode(value.aval, "signature.output_aval") for value in graph.outvars),
     )
     return FunctionTrace(mode, interface, context, graph, tuple(mode_inputs))
 
 
-def compare_function_traces(left: FunctionTrace, right: FunctionTrace) -> ModeComparison:
+def compare_function_traces(
+    left: FunctionTrace,
+    right: FunctionTrace,
+    *,
+    equivalence="auto",
+    algebra_budget=10000,
+) -> ModeComparison:
     """先核对完整函数范围，再比较图；不能把不同上下文的追踪结果混为一谈。"""
+    if equivalence not in ("auto", "structural"):
+        raise ValueError("equivalence must be auto or structural")
+    Budget(algebra_budget)
     # 上下文不同意味着比较前提不一致，归为 unknown；同一前提下的接口差异才报 different。
     if left.mode != right.mode or left.context != right.context:
         return ModeComparison(
@@ -304,15 +374,28 @@ def compare_function_traces(left: FunctionTrace, right: FunctionTrace) -> ModeCo
     # 求导模式已经通过公开变换展开为实际一阶程序；内部普通调用只比较其
     # 前向语义，不能从一次一阶检查继续外推尚未请求的高阶规则。
     result = compare_jaxprs(left.jaxpr, right.jaxpr, derivative_scope="primal")
+    algebra = None
+    status, issues, difference = result.status, result.issues, result.difference
+    kind = "structural" if status == Status.EQUIVALENT else None
+    failure = "unsupported" if status == Status.UNKNOWN else None
+    if equivalence == "auto" and status == Status.DIFFERENT:
+        algebra = compare_algebraic_jaxprs(left.jaxpr, right.jaxpr, algebra_budget=algebra_budget)
+        status, issues = algebra.status, algebra.issues
+        kind = algebra.equivalence_kind
+        failure = "algebra_incomplete" if status == Status.UNKNOWN else None
+        if status == Status.EQUIVALENT:
+            difference = None
     return ModeComparison(
         left.mode,
-        result.status,
+        status,
         comparison=result,
-        issues=result.issues,
-        difference=result.difference,
-        failure_kind="unsupported" if result.status == Status.UNKNOWN else None,
+        issues=issues,
+        difference=difference,
+        failure_kind=failure,
         left=left,
         right=right,
+        algebra=algebra,
+        equivalence_kind=kind,
     )
 
 
@@ -329,16 +412,29 @@ def compare_functions(
     argnums: Sequence[int] | None = None,
     transforms: Sequence[str] = (),
     check_cpu: bool = False,
+    equivalence: str = "auto",
+    algebra_budget: int = 10000,
 ) -> FunctionComparison:
     """对每个请求模式分别追踪、检查契约并比较，未请求模式显式列出。
 
+    默认 auto 在结构不同时尝试理想实数代数证明；structural 保留原结构结果。
+    algebra_budget 限制每个模式的一次图对证明，浮点警告保存在 algebra 报告中。
+
     check_cpu 额外编译两侧物化图，用于区别 CPU 编译拒绝和图不支持；
     数值采样由案例运行器另行执行，不将某个样本相等作为结构结论。
+
+    right_args / right_kwargs 为 None 时复用左侧的调用签名；显式传入空容器
+    则表示右侧确实使用空参数。各模式保留独立结论，汇总优先级为
+    unknown、different、equivalent。
     """
     modes = tuple(modes)
+    if equivalence not in ("auto", "structural"):
+        raise ValueError("equivalence must be auto or structural")
+    Budget(algebra_budget)
     if not modes or len(set(modes)) != len(modes) or any(mode not in MODES for mode in modes):
         raise ValueError("modes must contain distinct forward/jvp/vjp entries")
     results = []
+    # 仅在请求检查且所有追踪、编译均成功时保留 True；图不同也可能编译成功。
     compiled = check_cpu
     for mode in modes:
         # 各模式独立记录两侧的失败证据；某个模式失败后仍检查其余请求模式。
@@ -375,6 +471,7 @@ def compare_functions(
             ) as exc:
                 issues.append(Issue(f"{side}.{mode}.trace", str(exc)))
                 failure_kind = "unsupported" if isinstance(exc, JaxprError) else "trace_rejected"
+                # 保持 traces 的左右位置固定，即使一侧失败，另一侧仍能单独留下证据。
                 traces.append(None)
                 compiled = False
                 continue
@@ -382,6 +479,7 @@ def compare_functions(
                 try:
 
                     def evaluate(*flat, graph=traced.jaxpr):
+                        """直接执行物化图及其常量绑定，供 JIT 检查后端可接受性。"""
                         return core.eval_jaxpr(graph, graph.consts, *flat)
 
                     # lower/compile 检查后端能否接受物化图，不实际调用编译产物。
@@ -408,7 +506,11 @@ def compare_functions(
                 )
             )
         else:
-            results.append(compare_function_traces(*traces))
+            results.append(
+                compare_function_traces(
+                    *traces, equivalence=equivalence, algebra_budget=algebra_budget
+                )
+            )
     # 汇总优先报告未完成的检查；已发现的结构差异仍保留在对应 ModeComparison 中。
     statuses = {result.status for result in results}
     status = (
@@ -418,6 +520,11 @@ def compare_functions(
         if Status.DIFFERENT in statuses
         else Status.EQUIVALENT
     )
+    kind = None
+    if status == Status.EQUIVALENT:
+        kind = (
+            "algebraic" if any(r.equivalence_kind == "algebraic" for r in results) else "structural"
+        )
     return FunctionComparison(
-        status, tuple(results), tuple(mode for mode in MODES if mode not in modes), compiled
+        status, tuple(results), tuple(mode for mode in MODES if mode not in modes), compiled, kind
     )

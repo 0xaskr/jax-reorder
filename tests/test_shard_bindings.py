@@ -84,7 +84,7 @@ def test_shard_map_internal_interface_permutation(candidate, setup):
 def test_wrong_shard_map_binding_has_a_witness(candidate, setup):
     mesh, args = setup
     a, b = original(mesh), candidate(mesh)
-    result = compare_functions(a, b, *args)
+    result = compare_functions(a, b, *args, equivalence="structural")
     assert result.status == Status.DIFFERENT, result
     assert any(not np.array_equal(x, y) for x, y in zip(a(*args), b(*args), strict=True))
 

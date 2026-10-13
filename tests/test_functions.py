@@ -129,7 +129,9 @@ def test_dynamic_cotangents_cover_each_output_not_only_their_sum():
     def wrong(x):
         return (3 * x, 2 * x)
 
-    result = compare_functions(first, wrong, jnp.float32(2), modes=("vjp",))
+    result = compare_functions(
+        first, wrong, jnp.float32(2), modes=("vjp",), equivalence="structural"
+    )
     assert result.status == Status.DIFFERENT, result
     left, right = result.modes[0].left, result.modes[0].right
     # 一份原始输入加两个独立余切向量，不能退化成 grad(sum(...))。

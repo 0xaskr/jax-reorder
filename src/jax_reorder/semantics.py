@@ -42,6 +42,7 @@ def encoded_equal(left, right):
     interned, cache = {}, {}
 
     def number(root):
+        """后序遍历一个编码值，以类型和子项内容编号构造可复用的结构编号。"""
         pending = [(False, root)]
         while pending:
             ready, value = pending.pop()
@@ -51,6 +52,7 @@ def encoded_equal(left, right):
                 children = tuple(value)
                 kind = type(value)
             elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+                # 与数据类自身的相等契约一致，只收集 compare=True 的语义字段。
                 children = tuple(
                     getattr(value, f.name) for f in dataclasses.fields(value) if f.compare
                 )
@@ -60,6 +62,7 @@ def encoded_equal(left, right):
                 cache[id(value)] = interned.setdefault(signature, len(interned))
                 continue
             if not ready:
+                # 父容器晚于全部子项出栈，回填时才有完整的子项编号。
                 pending.append((True, value))
                 pending.extend((False, child) for child in reversed(children))
                 continue
@@ -87,9 +90,11 @@ class Encoder:
     """
 
     def __init__(self, nested: Callable, variable: Callable):
+        """注入区域和变量解析器，每个编码器独立维护当前容器路径。"""
         self.nested = nested
         self.variable = variable
         self.active: set[int] = set()
+        # 调度期间的 encode 调用只生成占位请求，避免描述符层级形成 Python 递归。
         self.scheduling = False
 
     def fields(self, obj: Any, names: tuple[str, ...], path: str) -> Frozen:
@@ -113,6 +118,7 @@ class Encoder:
             # _encode/fields 中的递归调用只登记子任务，由外层工作栈统一展开。
             return _EncodeRequest(value, path)
         pending = [("encode", value, path)]
+        # values 是后序结果栈；join 只消费属于当前容器的末尾若干项。
         values = []
         try:
             # encode 生成一层模板，resolve 展开子任务，join 收集结果，leave 退出路径。
@@ -150,6 +156,7 @@ class Encoder:
                     values.append(kind(children))
             return values[0]
         finally:
+            # 失败时也清空当前路径，使同一个编码器的后续调用不继承半完成状态。
             self.scheduling = False
             self.active.clear()
 
@@ -177,6 +184,7 @@ class Encoder:
         if isinstance(value, core.Jaxpr):
             return ("jaxpr", self.nested(value, path).graph)
         if isinstance(value, core.Var):
+            # 变量只能由所属图解释；这里不猜测它是输入、常量还是某个方程的结果。
             return ("variable", self.variable(value))
         if isinstance(value, core.Primitive):
             return ("primitive", value)
@@ -193,6 +201,7 @@ class Encoder:
             # 某些合法参数直接传 jnp.float32 等 dtype 类，而不是 np.dtype 实例。
             return ("dtype", np.dtype(value))
         if value is None:
+            # 空值使用独立标签，不能与空 tuple、空数组或整数零合并。
             return ("none",)
         if isinstance(value, enum.Enum):
             # 保留枚举类型，不能把不同枚举类中数值相同的成员合并。
@@ -273,6 +282,7 @@ class Encoder:
                 path,
             )
         if isinstance(value, core.ManualAxisType):
+            # 手动轴上的变化性与归约状态属于抽象类型，通信图比较必须保留。
             return self.fields(value, ("varying", "unreduced", "reduced", "unreduced_kind"), path)
         if isinstance(value, core.JaxprEqnContext):
             # 保存所有已设置的上下文字段；弱引用槽不是执行语义，未设置槽不能读取。
@@ -299,6 +309,7 @@ class Encoder:
                 raise UnsupportedJaxprError(path, "only CPU device placement is supported")
             return ("device", value.platform, value.process_index, value.id, value.device_kind)
         if isinstance(value, jax.sharding.NamedSharding):
+            # mesh、分区规则、内存种类和逻辑设备顺序共同决定分片描述。
             return self.fields(value, ("mesh", "spec", "memory_kind", "_logical_device_ids"), path)
         if isinstance(value, jax.sharding.SingleDeviceSharding):
             return self.fields(value, ("_device", "memory_kind"), path)
