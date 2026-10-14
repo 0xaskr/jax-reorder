@@ -1,7 +1,7 @@
 """索引代数的不可变表示、精确系数及确定性资源预算。
 
 自由轴按输出位置编号，求和临时轴仅在转换时存在；规范项的绑定轴局部编号。
-Factor 的参数是独立张量表达式的规范形式，不捕获所在项的绑定索引。
+标量调用捕获外部坐标，未知张量边界保持独立作用域；两者显式区分。
 """
 
 from dataclasses import dataclass, fields, is_dataclass
@@ -12,10 +12,12 @@ from .errors import UnsupportedJaxprError
 
 @dataclass(frozen=True)
 class Index:
-    """free 固定输出轴，sum 为临时绑定，bound 为项内轴，zero 表示下标 0。"""
+    """符号整数坐标；算术节点不枚举元素，scope 区分标量调用内外的绑定。"""
 
     kind: str
     number: int = 0
+    args: tuple["Index", ...] = ()
+    scope: int = 0
 
 
 class _ImmutableDag:
@@ -69,7 +71,7 @@ class _ImmutableDag:
 
 @dataclass(frozen=True, eq=False)
 class Expr(_ImmutableDag):
-    """转换后的标量表达式；atom 的参数表达式具有各自独立的自由轴。"""
+    """逐元素语义；call 参数共享索引环境，atom 参数是独立张量边界。"""
 
     op: str
     data: tuple = ()
@@ -77,14 +79,36 @@ class Expr(_ImmutableDag):
     total: bool = True
 
 
+@dataclass(frozen=True)
+class Recurrence:
+    """有限递推的元素语义：状态、初值、更新及每步可观察输出均有序保存。"""
+
+    time: Index
+    length: int
+    reverse: bool
+    states: tuple[Expr, ...]
+    initials: tuple[Expr, ...]
+    updates: tuple[Expr, ...]
+    emissions: tuple[Expr, ...]
+
+
 @dataclass(frozen=True, eq=False)
 class Factor(_ImmutableDag):
-    """标量因子：完整调用语义、有序读取下标及已证明的张量参数。"""
+    """标量因子；scalar 参数中的 bound.scope 标识捕获哪一层的求和轴。"""
 
     semantic: tuple
     indices: tuple[Index, ...]
     arguments: tuple[tuple["Term", ...], ...] = ()
     total: bool = True
+    scalar: bool = False
+
+
+@dataclass(frozen=True, eq=False)
+class FiniteRange(_ImmutableDag):
+    """半开整数求和域；规范结果使用从零开始的域，平移阶段保留原端点。"""
+
+    start: int
+    stop: int
 
 
 @dataclass(frozen=True, eq=False)
@@ -92,7 +116,7 @@ class Term(_ImmutableDag):
     """系数乘以有限求和中的因子乘积；系数保存为约分后的整数对。"""
 
     coefficient: tuple[int, int]
-    bounds: tuple[int, ...] = ()
+    bounds: tuple[int | FiniteRange, ...] = ()
     factors: tuple[Factor, ...] = ()
 
     @property
@@ -109,6 +133,7 @@ class AlgebraStep:
     premises: tuple[int, ...]
     result: tuple[Term, ...]
     orders: tuple[tuple[int, ...], ...]
+    domains: tuple[tuple[tuple, ...], ...] = ()
 
 
 class Budget:

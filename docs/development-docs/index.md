@@ -6,6 +6,7 @@
 | --- | --- |
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
 | 索引乘加、有限求和与代数证明 | [algebraic-equivalence.md](algebraic-equivalence.md) |
+| 标量索引 IR、求和域双射、有限递推与条件 | [algebraic-reduction-gaps.md](algebraic-reduction-gaps.md) |
 | cond 闭包捕获与实参/形参同步规范化 | [cond-bindings.md](cond-bindings.md) |
 | 循环与调用区域的接口绑定规范化 | [region-bindings.md](region-bindings.md) |
 | 原始图对应证据、独立校验与同构论证 | [original-correspondence.md](original-correspondence.md) |

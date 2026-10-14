@@ -6,6 +6,7 @@
 
 from dataclasses import dataclass
 from fractions import Fraction
+from math import prod
 
 import jax
 import numpy as np
@@ -14,6 +15,7 @@ from jax._src import ad_util, core, pjit
 from jax._src.lax.lax import empty2_p
 from jax._src.layout import AutoLayout
 
+from .algebra_indices import add, divide, integer, map_index, scale
 from .algebra_ir import Budget, Expr, Index, ratio
 from .canonical import _ordered_equation
 from .derivatives import CUSTOM_PRIMITIVES, semantic_parameters
@@ -40,7 +42,13 @@ def _substitute(expr, indices, cache):
         semantic, old = expr.data
         result = Expr(
             expr.op,
-            (semantic, tuple(indices[i.number] if i.kind == "free" else i for i in old)),
+            (
+                semantic,
+                tuple(
+                    map_index(i, lambda j: indices[j.number] if j.kind == "free" else j)
+                    for i in old
+                ),
+            ),
             expr.args,
             expr.total,
         )
@@ -75,7 +83,20 @@ class Lowered:
     @property
     def roots(self):
         """保留每个输出位置；区域根单独参与比较，禁止消去循环边界。"""
-        return tuple(value.body for value in self.outputs) + self.barriers
+        return (
+            tuple(
+                _substitute(
+                    value.body,
+                    tuple(
+                        Index("zero") if n == 1 else Index("free", i)
+                        for i, n in enumerate(value.shape)
+                    ),
+                    {},
+                )
+                for value in self.outputs
+            )
+            + self.barriers
+        )
 
 
 class Lowerer:
@@ -88,6 +109,7 @@ class Lowerer:
         self.substitutions = {}
         self.rules = set()
         self.region_depth = 0
+        self.index_domains = {}
 
     def _axes(self, aval):
         """首期只接纳给定签名中的具体非负维度。"""
@@ -95,14 +117,39 @@ class Lowerer:
             type(d) is not int or d < 0 for d in aval.shape
         ):
             raise UnsupportedJaxprError("algebra.shape", "requires static shaped array values")
-        return tuple(
-            Index("zero") if n == 1 else Index("free", i) for i, n in enumerate(aval.shape)
-        )
+        return tuple(Index("free", i) for i, n in enumerate(aval.shape))
 
     def _tensor(self, aval, body):
         """记录完整抽象属性，dtype 仅用于判断实数规则的适用性。"""
         self._axes(aval)
-        return Tensor(encode(aval), tuple(aval.shape), aval.dtype, body)
+        domains = dict(self.index_domains)
+        domains.update((Index("free", i), (0, n)) for i, n in enumerate(aval.shape))
+        return Tensor(
+            encode(aval), tuple(aval.shape), aval.dtype, self._simplify_indices(body, domains, {})
+        )
+
+    def _simplify_indices(self, expression, domains, cache):
+        """在已知输出域内化简坐标；不进入未知张量调用的独立参数。"""
+        if expression in cache:
+            return cache[expression]
+        self.budget.spend(path="algebra.index_simplify")
+        if expression.op in ("atom", "bag"):
+            semantic, indices = expression.data
+            result = Expr(
+                expression.op,
+                (semantic, tuple(map_index(i, lambda j: j, domains) for i in indices)),
+                expression.args,
+                expression.total,
+            )
+        else:
+            result = Expr(
+                expression.op,
+                expression.data,
+                tuple(self._simplify_indices(a, domains, cache) for a in expression.args),
+                expression.total,
+            )
+        cache[expression] = result
+        return result
 
     def _input(self, aval, identity):
         """读取外部输入或固定循环形参，身份由有序接口锚定。"""
@@ -127,9 +174,6 @@ class Lowerer:
         """读取已构造张量，不枚举索引域中的元素。"""
         if len(indices) != len(value.shape):
             raise UnsupportedJaxprError("algebra.index", "read rank mismatch")
-        indices = tuple(
-            Index("zero") if size == 1 else i for size, i in zip(value.shape, indices, strict=True)
-        )
         self.budget.spend(path="algebra.read")
         return _substitute(value.body, indices, self.substitutions)
 
@@ -140,7 +184,13 @@ class Lowerer:
             a not in (1, b) for a, b in zip(value.shape, shape[offset:], strict=True)
         ):
             raise UnsupportedJaxprError("algebra.broadcast", "incompatible broadcast mapping")
-        return self._read(value, indices[offset:])
+        return self._read(
+            value,
+            tuple(
+                Index("zero") if a == 1 and b != 1 else i
+                for a, b, i in zip(value.shape, shape[offset:], indices[offset:], strict=True)
+            ),
+        )
 
     def _sum(self, body, bindings):
         """为独立有限矩形域建立嵌套求和，规范化阶段再合并。"""
@@ -222,7 +272,13 @@ class Lowerer:
             and params.get("sharding") is None
         ):
             dimensions = params["broadcast_dimensions"]
-            body = self._read(values[0], tuple(indices[d] for d in dimensions))
+            body = self._read(
+                values[0],
+                tuple(
+                    Index("zero") if size == 1 and aval.shape[d] != 1 else indices[d]
+                    for size, d in zip(values[0].shape, dimensions, strict=True)
+                ),
+            )
         elif primitive is lax.transpose_p and set(params) == {"permutation"}:
             mapped = [None] * len(indices)
             for output, original in enumerate(params["permutation"]):
@@ -240,15 +296,35 @@ class Lowerer:
         elif (
             primitive is lax.reshape_p
             and set(params) <= {"new_sizes", "dimensions", "sharding"}
-            and params.get("dimensions") is None
             and params.get("sharding") is None
         ):
-            old, new = values[0].shape, tuple(aval.shape)
-            if tuple(n for n in old if n != 1) != tuple(n for n in new if n != 1):
+            source = values[0]
+            permutation = params.get("dimensions") or tuple(range(len(source.shape)))
+            old = tuple(source.shape[i] for i in permutation)
+            if prod(old) != prod(aval.shape):
                 return None
-            remaining = iter(i for n, i in zip(new, indices, strict=True) if n != 1)
+            linear = add(
+                *(scale(index, prod(aval.shape[i + 1 :])) for i, index in enumerate(indices))
+            )
+            mapped = [None] * len(old)
+            for axis, size in enumerate(old):
+                coordinate = divide(linear, max(1, prod(old[axis + 1 :])))
+                mapped[permutation[axis]] = divide(coordinate, max(1, size), modulo=True)
+            body = self._read(source, tuple(mapped))
+        elif primitive is lax.slice_p and set(params) == {
+            "start_indices",
+            "limit_indices",
+            "strides",
+        }:
+            strides = params["strides"] or (1,) * len(indices)
             body = self._read(
-                values[0], tuple(Index("zero") if n == 1 else next(remaining) for n in old)
+                values[0],
+                tuple(
+                    add(integer(start), scale(index, stride))
+                    for index, start, stride in zip(
+                        indices, params["start_indices"], strides, strict=True
+                    )
+                ),
             )
         elif primitive is lax.reduce_sum_p and set(params) <= {"axes", "out_sharding"}:
             axes = set(params["axes"])
@@ -258,6 +334,7 @@ class Lowerer:
                 if i in axes:
                     index = self._new_index()
                     bindings.append((index, extent))
+                    self.index_domains[index] = (0, extent)
                     mapped.append(index)
                 else:
                     mapped.append(next(remaining))
@@ -284,6 +361,7 @@ class Lowerer:
                 index = self._new_index()
                 left[i] = right[j] = index
                 bindings.append((index, values[0].shape[i]))
+                self.index_domains[index] = (0, values[0].shape[i])
             args = (self._read(values[0], tuple(left)), self._read(values[1], tuple(right)))
             body = self._sum(Expr("mul", args=args, total=total), bindings)
         else:
@@ -347,6 +425,10 @@ class Lowerer:
             bindings = tuple(
                 self._input(v.aval, ("argument", i)) for i, v in enumerate(graph.invars)
             )
+        from .algebra_piecewise import lower_piecewise
+        from .algebra_scalar import lower_scalar
+        from .algebra_scan import lower_scan
+
         environment = dict(zip(graph.invars, bindings, strict=True))
         environment.update(
             (v, self._constant(c, v.aval))
@@ -361,8 +443,16 @@ class Lowerer:
             )
             params = semantic_parameters(eq, scope="primal", parent=graph)
             converted = self._arithmetic(eq, values)
+            adapted = None
+            if converted is None:
+                for adapter in (lower_piecewise, lower_scalar, lower_scan):
+                    adapted = adapter(self, eq, values, params)
+                    if adapted is not None:
+                        break
             if converted is not None:
                 results = (converted,)
+            elif adapted is not None:
+                results = adapted
             elif eq.primitive in (
                 pjit.jit_p,
                 lax.cond_p,

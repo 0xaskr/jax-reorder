@@ -10,6 +10,8 @@ from itertools import product
 
 from jax._src import core
 
+from .algebra_domains import apply_domain_witness, prefix_terms, ranges
+from .algebra_indices import coordinates, leaves, map_factors, scalar_factor, used_axes
 from .algebra_ir import AlgebraStep, Budget, Factor, Index, Term, ratio
 from .algebra_lower import Lowerer
 from .correspondence import GraphCorrespondence, verify_correspondence
@@ -34,7 +36,7 @@ class AlgebraProof:
     right: AlgebraSource | None
     steps: tuple[AlgebraStep, ...]
     budget: int
-    version: int = 1
+    version: int = 2
     structural: GraphCorrespondence | None = None
 
 
@@ -50,6 +52,8 @@ def _raw_rule(step, children, budget):
     if expr.op == "constant":
         _require(not children, "constant has premises")
         return (Term(ratio(Fraction(*expr.data))),)
+    if expr.op == "call":
+        return (Term((1, 1), factors=(scalar_factor(expr.data, children, expr.total),)),)
     if expr.op in ("atom", "bag"):
         semantic, indices = expr.data
         args = tuple(sorted(children, key=order_key)) if expr.op == "bag" else children
@@ -62,13 +66,11 @@ def _raw_rule(step, children, budget):
         _require(type(extent) is int and extent >= 0, "invalid finite sum range")
         terms = []
         for term in children[0]:
-            factors = []
-            for factor in term.factors:
-                indices = tuple(
-                    Index("bound", len(term.bounds)) if i == Index("sum", uid) else i
-                    for i in factor.indices
-                )
-                factors.append(Factor(factor.semantic, indices, factor.arguments, factor.total))
+            size = len(term.bounds)
+            factors = map_factors(
+                term.factors,
+                lambda i, size=size: Index("bound", size) if i == Index("sum", uid) else i,
+            )
             terms.append(Term(term.coefficient, term.bounds + (extent,), tuple(factors)))
         return tuple(terms)
     _require(expr.op == "mul", "unknown proof rule")
@@ -86,12 +88,15 @@ def _raw_rule(step, children, budget):
         for child, choice in enumerate(choices):
             term = children[child][choice]
             coefficient *= Fraction(term.coefficient[0], term.coefficient[1])
-            for factor in term.factors:
-                mapped = tuple(
-                    Index("bound", i.number + len(ranges)) if i.kind == "bound" else i
-                    for i in factor.indices
+            size = len(ranges)
+            factors.extend(
+                map_factors(
+                    term.factors,
+                    lambda i, size=size: (
+                        Index("bound", i.number + size) if i.kind == "bound" and i.scope == 0 else i
+                    ),
                 )
-                factors.append(Factor(factor.semantic, mapped, factor.arguments, factor.total))
+            )
             ranges.extend(term.bounds)
         result.append(Term(ratio(coefficient), tuple(ranges), tuple(factors)))
     return tuple(result)
@@ -106,29 +111,29 @@ def _check_term(term, order):
         _require(all(f.total for f in term.factors), "zero erases a partial expression")
         _require(not order, "zero term contains a spurious mapping")
         return Term((0, 1))
-    used = set()
-    for factor in term.factors:
-        for index in factor.indices:
-            if index.kind == "bound":
+    simplified = map_factors(
+        term.factors,
+        lambda i: (
+            Index("zero")
+            if i.kind == "bound" and i.scope == 0 and term.bounds[i.number] == 1
+            else i
+        ),
+        ranges(term),
+    )
+    used = used_axes(simplified)
+    for coordinate in coordinates(simplified):
+        for index in leaves(coordinate):
+            if index.kind == "bound" and index.scope == 0:
                 _require(0 <= index.number < len(term.bounds), "bound index is outside its scope")
-                if term.bounds[index.number] != 1:
-                    used.add(index.number)
     _require(len(order) == len(used) and set(order) == used, "index witness is not a bijection")
     for axis, extent in enumerate(term.bounds):
         if axis not in used:
             coefficient *= extent
     renaming = {old: new for new, old in enumerate(order)}
-    factors = []
-    for factor in term.factors:
-        indices = []
-        for index in factor.indices:
-            if index.kind != "bound":
-                indices.append(index)
-            elif term.bounds[index.number] == 1:
-                indices.append(Index("zero"))
-            else:
-                indices.append(Index("bound", renaming[index.number]))
-        factors.append(Factor(factor.semantic, tuple(indices), factor.arguments, factor.total))
+    factors = map_factors(
+        simplified,
+        lambda i: Index("bound", renaming[i.number]) if i.kind == "bound" and i.scope == 0 else i,
+    )
     return Term(
         ratio(coefficient),
         tuple(term.bounds[i] for i in order),
@@ -138,7 +143,26 @@ def _check_term(term, order):
 
 def _check_step(step, children, budget):
     """独立汇总经见证转换的每一项，精确核对结果及消项定义域。"""
-    raw = _raw_rule(step, children, budget)
+    originals = _raw_rule(step, children, budget)
+    _require(len(step.domains) == len(originals), "missing domain witnesses")
+    raw = []
+    for original, witnesses in zip(originals, step.domains, strict=True):
+        terms = [original]
+        for instruction in witnesses:
+            kind, position, *detail = instruction
+            _require(type(position) is int and 0 <= position < len(terms), "invalid domain branch")
+            term = terms[position]
+            budget.spend(1 + len(term.factors) + len(term.bounds), "algebra.proof.domain")
+            if kind == "rewrite":
+                _require(len(detail) == 1, "invalid domain rewrite")
+                terms[position] = apply_domain_witness(term, detail[0])
+            else:
+                _require(kind == "prefix" and not detail, "invalid domain instruction")
+                terms[position : position + 1] = prefix_terms(term, budget)
+        _require(
+            all(type(n) is int for term in terms for n in term.bounds), "unresolved domain interval"
+        )
+        raw.extend(terms)
     _require(len(step.orders) == len(raw), "proof does not cover all expanded terms")
     budget.spend(len(raw) + 1, "algebra.proof.steps")
     coefficients = {}
@@ -163,7 +187,7 @@ def verify_algebraic_proof(left, right, proof):
     必须先通过完整结构对应，再核对转换后的每个表达式根和全部局部推导。
     """
     try:
-        _require(isinstance(proof, AlgebraProof) and proof.version == 1, "unsupported proof format")
+        _require(isinstance(proof, AlgebraProof) and proof.version == 2, "unsupported proof format")
         budget = Budget(proof.budget)
         if proof.structural is not None:
             _require(

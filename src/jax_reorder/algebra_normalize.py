@@ -1,18 +1,14 @@
 """生成稀疏索引多项式及局部证明；搜索与证据复核由不同模块承担。"""
 
-from dataclasses import replace
 from fractions import Fraction
 from itertools import permutations, product
 from math import factorial, prod
 
+from .algebra_domains import apply_domain_witness, prefix_terms, ranges, translation
+from .algebra_indices import coordinates, map_factors, scalar_factor, used_axes
 from .algebra_ir import AlgebraStep, Budget, Expr, Factor, Index, Term, ratio
 from .errors import UnsupportedJaxprError
 from .unrooted import order_key
-
-
-def _map_factors(factors, change):
-    """只替换当前项读取的索引，调用参数内部的绑定保持独立。"""
-    return tuple(replace(f, indices=tuple(change(i) for i in f.indices)) for f in factors)
 
 
 class PolynomialNormalizer:
@@ -39,15 +35,18 @@ class PolynomialNormalizer:
             premises = tuple(self.cache[child] for child in expr.args)
             children = tuple(self.steps[i].result for i in premises)
             raw = self._expand(expr, children)
-            orders, terms = [], []
-            for term in raw:
-                normal, order = self._term(term)
-                terms.append(normal)
-                orders.append(order)
+            orders, terms, domains = [], [], []
+            for original in raw:
+                converted, witnesses = self._domains(original)
+                domains.append(witnesses)
+                for term in converted:
+                    normal, order = self._term(term)
+                    terms.append(normal)
+                    orders.append(order)
             result = self._collect(terms)
             self.budget.spend(path="algebra.proof")
             self.cache[expr] = len(self.steps)
-            self.steps.append(AlgebraStep(expr, premises, result, tuple(orders)))
+            self.steps.append(AlgebraStep(expr, premises, result, tuple(orders), tuple(domains)))
         return self.cache[expression]
 
     def _expand(self, expr, children):
@@ -55,6 +54,9 @@ class PolynomialNormalizer:
         if expr.op == "constant":
             self.budget.spend()
             return [Term(expr.data)]
+        if expr.op == "call":
+            self.budget.spend(path="algebra.scalar_call")
+            return [Term((1, 1), factors=(scalar_factor(expr.data, children, expr.total),))]
         if expr.op in ("atom", "bag"):
             self.budget.spend()
             semantic, indices = expr.data
@@ -78,10 +80,12 @@ class PolynomialNormalizer:
                     self.budget.coefficient(coefficient)
                     coefficient *= term.rational
                     offset = len(bounds)
-                    factors += _map_factors(
+                    factors += map_factors(
                         term.factors,
                         lambda i, offset=offset: (
-                            Index("bound", i.number + offset) if i.kind == "bound" else i
+                            Index("bound", i.number + offset)
+                            if i.kind == "bound" and i.scope == 0
+                            else i
                         ),
                     )
                     bounds += term.bounds
@@ -96,7 +100,7 @@ class PolynomialNormalizer:
                 Term(
                     term.coefficient,
                     (*term.bounds, extent),
-                    _map_factors(
+                    map_factors(
                         term.factors,
                         lambda i, bounds=term.bounds: (
                             Index("bound", len(bounds)) if i == Index("sum", uid) else i
@@ -107,6 +111,89 @@ class PolynomialNormalizer:
             ]
         raise UnsupportedJaxprError("algebra.expression", f"unsupported expression {expr.op}")
 
+    def _domains(self, term):
+        """在前缀拆分后继续规范化各个域，保留每次分支与双射见证。"""
+        terms, witnesses, position = [term], [], 0
+        while position < len(terms):
+            converted, path = self._domain_path(terms[position])
+            witnesses.extend(("rewrite", position, witness) for witness in path)
+            if any(witness[0] == "shift" for witness in path):
+                witnesses.append(("prefix", position))
+                terms[position : position + 1] = converted
+            else:
+                terms[position] = converted[0]
+                position += 1
+        return terms, tuple(witnesses)
+
+    def _domain_path(self, term):
+        """选择域双射并记录见证；独立验证器只检查见证，不执行此搜索。"""
+        witnesses = []
+
+        def apply(witness):
+            nonlocal term
+            self.budget.spend(1 + len(term.factors) + len(term.bounds), "algebra.domain_bijection")
+            term = apply_domain_witness(term, witness)
+            witnesses.append(witness)
+
+        def nodes(index):
+            yield index
+            for child in index.args:
+                yield from nodes(child)
+
+        # 混合进制坐标的完整矩形先合成一根轴；不依赖 reshape 的存在。
+        while True:
+            found = None
+            for coordinate in coordinates(term.factors):
+                for node in nodes(coordinate):
+                    numerator = node.args[0] if node.kind in ("div", "mod") else node
+                    if numerator.kind != "add" or len(numerator.args) != 2:
+                        continue
+                    for major, minor in (numerator.args, numerator.args[::-1]):
+                        if major.kind != "scale" or minor.kind != "bound" or minor.scope != 0:
+                            continue
+                        axis = major.args[0]
+                        if (
+                            axis.kind == "bound"
+                            and axis.scope == 0
+                            and axis.number != minor.number
+                            and major.number == term.bounds[minor.number]
+                            and major.number > 1
+                            and term.bounds[axis.number] > 1
+                        ):
+                            found = ("fuse", axis.number, minor.number)
+                            break
+                    if found:
+                        break
+                if found:
+                    break
+            if found is None:
+                break
+            apply(found)
+        # 商/余数读取按其进制拆域；每次拆分都严格缩小被拆轴。
+        while True:
+            found = None
+            for coordinate in coordinates(term.factors):
+                for node in nodes(coordinate):
+                    if node.kind not in ("div", "mod"):
+                        continue
+                    axis = node.args[0]
+                    if axis.kind != "bound" or axis.scope != 0:
+                        continue
+                    extent = term.bounds[axis.number]
+                    if 1 < node.number < extent and extent % node.number == 0:
+                        found = ("split", axis.number, node.number)
+                        break
+                if found:
+                    break
+            if found is None:
+                break
+            apply(found)
+        for axis in range(len(term.bounds)):
+            offset = translation(term, axis)
+            if offset and all(f.total for f in term.factors):
+                apply(("shift", axis, offset))
+        return prefix_terms(term, self.budget), tuple(witnesses)
+
     def _term(self, term):
         """移除单位/无用轴后，精确搜索同色绑定轴的最小序列化。"""
         total = all(f.total for f in term.factors)
@@ -114,11 +201,16 @@ class PolynomialNormalizer:
             if not total:
                 raise UnsupportedJaxprError("algebra.domain", "cannot erase a partial expression")
             return Term((0, 1)), ()
-        factors = _map_factors(
+        factors = map_factors(
             term.factors,
-            lambda i: Index("zero") if i.kind == "bound" and term.bounds[i.number] == 1 else i,
+            lambda i: (
+                Index("zero")
+                if i.kind == "bound" and i.scope == 0 and term.bounds[i.number] == 1
+                else i
+            ),
         )
-        used = {i.number for f in factors for i in f.indices if i.kind == "bound"}
+        factors = map_factors(factors, lambda i: i, ranges(term))
+        used = used_axes(factors)
         coefficient = term.rational
         for i, extent in enumerate(term.bounds):
             if i not in used:
@@ -126,19 +218,16 @@ class PolynomialNormalizer:
                 self.budget.coefficient(coefficient)
         groups = {}
         for i in sorted(used):
-            # 每次读取的轴端口是固定锚点；其他绑定仅用范围着色，不能使用原编号。
-            incidence = []
-            for f in factors:
-                for port, index in enumerate(f.indices):
-                    if index == Index("bound", i):
-                        colors = tuple(
-                            ("bound", term.bounds[j.number])
-                            if j.kind == "bound"
-                            else (j.kind, j.number)
-                            for j in f.indices
-                        )
-                        incidence.append(order_key((f.semantic, f.arguments, port, colors)))
-            color = (term.bounds[i], tuple(sorted(incidence)))
+            # 以完整标量调用树着色，外层绑定编号不泄漏进颜色。
+            colored = map_factors(
+                factors,
+                lambda j, axis=i: (
+                    Index("target" if j.number == axis else "color", term.bounds[j.number])
+                    if j.kind == "bound" and j.scope == 0
+                    else j
+                ),
+            )
+            color = (term.bounds[i], order_key(tuple(sorted(colored, key=order_key))))
             groups.setdefault(color, []).append(i)
         ordered_groups = [groups[key] for key in sorted(groups)]
         count = 1
@@ -151,10 +240,10 @@ class PolynomialNormalizer:
         for choices in product(*(permutations(group) for group in ordered_groups)):
             order = tuple(i for choice in choices for i in choice)
             renaming = {old: new for new, old in enumerate(order)}
-            remapped = _map_factors(
+            remapped = map_factors(
                 factors,
                 lambda i, renaming=renaming: (
-                    Index("bound", renaming[i.number]) if i.kind == "bound" else i
+                    Index("bound", renaming[i.number]) if i.kind == "bound" and i.scope == 0 else i
                 ),
             )
             candidate = Term(
