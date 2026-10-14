@@ -2,6 +2,8 @@
 
 当前没有进行中的执行计划。
 
+[GLM-5.2 纯 JAX decode DSA/MLA 对抗测试](../completed/glm52-decode-dsa-mla.md)已完成并归档：固定纯 JAX reference，5 个等价版本与 5 个数值反例；新增 29 项回归，相关 31 项检查通过。
+
 [DeepSeek-V4.1-Flash 真实 JAX 层的代数改写验证](../completed/deepseek-v41-layer.md)已完成并归档：固定原始 mHC 层、两种 AI 代数改写、前向/JVP/VJP 证明、独立数值参照与 CPU 计时；新增 68 项回归，1870 个用例均完成通过验证。
 
 [修复仓库审查确认的求导与内部绑定问题](../completed/review-correctness-fixes.md)已完成并归档：修复 VJP 整数输出规则遗漏和无根私有输入换序，新增 27 项回归，全量 1802 项通过。

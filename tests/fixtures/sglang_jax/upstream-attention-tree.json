@@ -6,6 +6,10 @@
       "sha": "c57eb076f5351b71385dff16f6a6faa7b576f99a"
     },
     {
+      "path": "python/sgl_jax/srt/kernels/dsa/ref.py",
+      "sha": "e86db4748f507eebf8418af104fbcc357af74119"
+    },
+    {
       "path": "python/sgl_jax/srt/kernels/gmm/megablox_gmm_backend.py",
       "sha": "42c5f9cb4072cfed4c52fb9137dc5d5f856c8393"
     },
