@@ -1,12 +1,14 @@
 """生成稀疏索引多项式及局部证明；搜索与证据复核由不同模块承担。"""
 
 from fractions import Fraction
+from functools import partial
 from itertools import permutations, product
 from math import factorial, prod
 
 from .algebra_domains import apply_domain_witness, prefix_terms, ranges, translation
 from .algebra_indices import coordinates, map_factors, scalar_factor, used_axes
 from .algebra_ir import AlgebraStep, Budget, Expr, Factor, Index, Term, ratio
+from .algebra_padding import simplify_prefix_factors
 from .errors import UnsupportedJaxprError
 from .unrooted import order_key
 
@@ -19,6 +21,7 @@ class PolynomialNormalizer:
         self.budget = budget
         self.steps = []
         self.cache = {}
+        self._key = partial(order_key, cache={})
 
     def normalize(self, expression: Expr):
         """返回证明根编号；显式栈避免依赖链消耗 Python 递归栈。"""
@@ -61,7 +64,7 @@ class PolynomialNormalizer:
             self.budget.spend()
             semantic, indices = expr.data
             if expr.op == "bag":
-                children = tuple(sorted(children, key=order_key))
+                children = tuple(sorted(children, key=self._key))
             return [Term((1, 1), factors=(Factor(semantic, indices, children, expr.total),))]
         if expr.op == "add":
             self.budget.spend(sum(map(len, children)), "algebra.add")
@@ -87,6 +90,7 @@ class PolynomialNormalizer:
                             if i.kind == "bound" and i.scope == 0
                             else i
                         ),
+                        key=self._key,
                     )
                     bounds += term.bounds
                 output.append(Term(ratio(coefficient), bounds, factors))
@@ -105,6 +109,7 @@ class PolynomialNormalizer:
                         lambda i, bounds=term.bounds: (
                             Index("bound", len(bounds)) if i == Index("sum", uid) else i
                         ),
+                        key=self._key,
                     ),
                 )
                 for term in children[0]
@@ -132,7 +137,7 @@ class PolynomialNormalizer:
         def apply(witness):
             nonlocal term
             self.budget.spend(1 + len(term.factors) + len(term.bounds), "algebra.domain_bijection")
-            term = apply_domain_witness(term, witness)
+            term = apply_domain_witness(term, witness, key=self._key)
             witnesses.append(witness)
 
         def nodes(index):
@@ -208,8 +213,10 @@ class PolynomialNormalizer:
                 if i.kind == "bound" and i.scope == 0 and term.bounds[i.number] == 1
                 else i
             ),
+            key=self._key,
         )
-        factors = map_factors(factors, lambda i: i, ranges(term))
+        factors = map_factors(factors, lambda i: i, ranges(term), key=self._key)
+        factors = simplify_prefix_factors(factors, key=self._key)
         used = used_axes(factors)
         coefficient = term.rational
         for i, extent in enumerate(term.bounds):
@@ -226,8 +233,9 @@ class PolynomialNormalizer:
                     if j.kind == "bound" and j.scope == 0
                     else j
                 ),
+                key=self._key,
             )
-            color = (term.bounds[i], order_key(tuple(sorted(colored, key=order_key))))
+            color = (term.bounds[i], self._key(tuple(sorted(colored, key=self._key))))
             groups.setdefault(color, []).append(i)
         ordered_groups = [groups[key] for key in sorted(groups)]
         count = 1
@@ -245,13 +253,14 @@ class PolynomialNormalizer:
                 lambda i, renaming=renaming: (
                     Index("bound", renaming[i.number]) if i.kind == "bound" and i.scope == 0 else i
                 ),
+                key=self._key,
             )
             candidate = Term(
                 ratio(coefficient),
                 tuple(term.bounds[i] for i in order),
-                tuple(sorted(remapped, key=order_key)),
+                tuple(sorted(remapped, key=self._key)),
             )
-            key = order_key(candidate)
+            key = self._key(candidate)
             if best_key is None or key < best_key:
                 best, best_key, best_order = candidate, key, order
         return best, best_order
@@ -270,4 +279,4 @@ class PolynomialNormalizer:
                 output.append(Term(ratio(coefficient), bounds, factors))
             elif any(not factor.total for factor in factors):
                 raise UnsupportedJaxprError("algebra.domain", "cannot cancel a partial expression")
-        return tuple(sorted(output, key=order_key))
+        return tuple(sorted(output, key=self._key))

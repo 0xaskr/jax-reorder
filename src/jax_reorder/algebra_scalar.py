@@ -3,6 +3,7 @@
 import jax
 import numpy as np
 from jax import lax
+from jax._src import core
 
 from .algebra_ir import Expr
 from .algebra_lower import encode
@@ -17,10 +18,17 @@ def lower_scalar(lowerer, eq, values, params):
             not _plain(eq)
             or len(values) != 1
             or set(params) != {"new_dtype", "weak_type", "sharding"}
-            or params["sharding"] is not None
         ):
             return None
         aval = eq.outvars[0].aval
+        sharding = params["sharding"]
+        if sharding is not None:
+            # JAX 转置 cast 时补入默认空网格，None 分区数量只反映中间 rank。
+            # 比较完整默认描述，不能顺带忽略 memory kind 或逻辑设备等属性。
+            default = core.ShapedArray(aval.shape, aval.dtype).sharding
+            if encode(sharding) != encode(default):
+                return None
+            params = {**params, "sharding": None}
         if not all(
             jax.dtypes.issubdtype(dtype, np.floating) for dtype in (values[0].dtype, aval.dtype)
         ):

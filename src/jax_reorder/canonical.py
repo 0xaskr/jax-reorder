@@ -406,13 +406,13 @@ class _Normalizer:
         """按规范子图的首次使用位置排列捕获前缀，不能顺带改变 carry 位置。"""
         slots = {}
         # 直接返回的形参也是有序根，优先于节点中的使用；只移动指定角色区间。
-        # 完全未使用的槽位没有使用路径，交给完整搜索，而不是按旧编号打破平局。
+        # 只在无根节点中使用的槽位同样没有固定使用路径，必须交给完整搜索。
         for ref in result.graph.outputs:
             if ref[0] == "input" and start <= ref[1] < start + count:
                 slots.setdefault(ref[1], None)
-        for node in result.graph.nodes:
-            # 此处也会扫描无根节点。已知缺口是无根节点排序可能依赖旧输入编号，
-            # 因而仅由它们使用的输入槽位尚未与节点编号联合搜索，可能误报不同。
+        for node in result.graph.nodes[: len(result.bfs_order)]:
+            # 无根后缀的排序依赖当前输入编号，不能反过来把它用作输入的锚点。
+            # 剩余槽位由外层枚举，每次重绑后重新规范化全部节点与父图。
             for ref in node.inputs:
                 if ref[0] == "input" and start <= ref[1] < start + count:
                     slots.setdefault(ref[1], None)
@@ -611,9 +611,9 @@ class _Normalizer:
         for result in normalized:
             for ref in result.graph.outputs:
                 discover(ref)
-            # nodes 的可达前缀按 BFS 存放，无根后缀由搜索确定；输入引用的编号
-            # 此时仍对应该分支原来的形参槽位。
-            for node in result.graph.nodes:
+            # 全部分支的有序根共同锚定输入；无根后缀不得先于其他分支的
+            # 实际使用位置定序，否则原输入编号会泄漏到共享槽位置换中。
+            for node in result.graph.nodes[: len(result.bfs_order)]:
                 for ref in node.inputs:
                     discover(ref)
         unused = [i for i in range(len(eq.invars) - 1) if i not in slots]

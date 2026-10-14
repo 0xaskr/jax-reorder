@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 
+from .algebra_calls import CommonCalls
 from .algebra_ir import Budget
 from .algebra_lower import Lowerer
 from .algebra_normalize import PolynomialNormalizer
@@ -83,9 +84,16 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000):
             return AlgebraComparison(Status.UNKNOWN, structural.issues)
         normalizer = PolynomialNormalizer(budget)
         sources, signatures = [], []
-        for original in (left, right):
-            graph, correspondence = _prepare(original)
-            lowerer = Lowerer(budget)
+        prepared = tuple(_prepare(original) for original in (left, right))
+        common_calls = CommonCalls(
+            tuple(
+                (original, *adapted)
+                for original, adapted in zip((left, right), prepared, strict=True)
+            ),
+            budget,
+        )
+        for graph, correspondence in prepared:
+            lowerer = Lowerer(budget, common_calls)
             lowered = lowerer.graph(graph)
             rules.update(lowerer.rules)
             roots = tuple(normalizer.normalize(expr) for expr in lowered.roots)

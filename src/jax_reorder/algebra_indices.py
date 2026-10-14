@@ -142,7 +142,7 @@ def leaves(index):
         yield from leaves(child)
 
 
-def map_factors(factors, change, domains=None, depth=0):
+def map_factors(factors, change, domains=None, depth=0, *, key=order_key):
     """改写当前项可见的坐标；标量参数递归进入，张量边界参数保持独立。"""
     domains = {} if domains is None else domains
     scoped_domains = {
@@ -172,14 +172,16 @@ def map_factors(factors, change, domains=None, depth=0):
                                 term,
                                 factors=tuple(
                                     sorted(
-                                        map_factors(term.factors, change, domains, depth + 1),
-                                        key=order_key,
+                                        map_factors(
+                                            term.factors, change, domains, depth + 1, key=key
+                                        ),
+                                        key=key,
                                     )
                                 ),
                             )
                             for term in polynomial
                         ),
-                        key=order_key,
+                        key=key,
                     )
                 )
                 for polynomial in arguments

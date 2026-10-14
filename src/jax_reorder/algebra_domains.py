@@ -9,6 +9,7 @@ from itertools import product
 
 from .algebra_indices import add, coordinates, divide, integer, leaves, map_factors, scale
 from .algebra_ir import FiniteRange, Index, Term, ratio
+from .unrooted import order_key
 
 
 def ranges(term):
@@ -74,7 +75,7 @@ def translation(term, axis):
     return None
 
 
-def apply_domain_witness(term, witness):
+def apply_domain_witness(term, witness, *, key=order_key):
     """检查单个换元见证；失败抛 ValueError，由证明器转为证据错误。"""
     kind, axis, amount = witness
     if type(axis) is not int or not 0 <= axis < len(term.bounds) or type(amount) is not int:
@@ -128,7 +129,9 @@ def apply_domain_witness(term, witness):
     else:
         raise ValueError("unknown domain witness")
     transformed = replace(term, bounds=tuple(new_bounds))
-    return replace(transformed, factors=map_factors(term.factors, change, ranges(transformed)))
+    return replace(
+        transformed, factors=map_factors(term.factors, change, ranges(transformed), key=key)
+    )
 
 
 def prefix_terms(term, budget):

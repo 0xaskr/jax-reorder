@@ -39,14 +39,14 @@ def _differentiable(aval):
     return jax.dtypes.issubdtype(aval.dtype, np.inexact)
 
 
-def _activations(avals, symbolic):
-    """返回与原叶子位置对齐的非空激活掩码，不把整数叶子从接口中删除。"""
-    # active=True 表示传入动态切线/余切，False 表示符号零；不检查样本数值是否为零。
-    # symbolic 模式枚举非空激活组合，整数等不可微叶子始终不激活。
-    indices = [i for i, aval in enumerate(avals) if _differentiable(aval)]
+def _activations(avals, symbolic, *, include_float0=False):
+    """列出显式种子掩码；symbolic VJP 的 float0 也能作为显式余切传入。"""
+    # 输入切线只激活可微叶子；输出余切需区别显式 float0 与 SymbolicZero，
+    # 即使两者数值都是零，用户 bwd 也可以依据其类型选择不同规则。
+    indices = [i for i, aval in enumerate(avals) if include_float0 or _differentiable(aval)]
     if not indices:
         return ()
-    # k 个可微叶子最多形成 2**k - 1 个非空组合；先检查数量，再展开枚举。
+    # k 个可显式传入的叶子最多形成 2**k - 1 个非空组合；先检查数量，再展开枚举。
     count = 2 ** len(indices) - 1 if symbolic else 1
     if count > MAX_RULE_CASES:
         raise UnsupportedJaxprError(
@@ -178,7 +178,9 @@ def _vjp_rules(params, equation, parent):
     # nc 是 call_jaxpr 输入中的捕获前缀长度，不是该图 constvars 的长度。
     nc = params["num_consts"]
     activations = _activations(primal.in_avals[nc:], params["symbolic_zeros"])
-    cotangents = _activations(primal.out_avals, params["symbolic_zeros"])
+    cotangents = _activations(
+        primal.out_avals, params["symbolic_zeros"], include_float0=params["symbolic_zeros"]
+    ) or ((False,) * len(primal.out_avals),)
     # VJP 规则同时受输入激活模式和输出余切模式影响，需要验证两者的组合。
     if len(activations) * len(cotangents) > MAX_RULE_CASES:
         raise UnsupportedJaxprError(
@@ -218,8 +220,6 @@ def _vjp_rules(params, equation, parent):
         if len(graph.outvars) != nr + len(primal.outvars):
             raise InvalidJaxprError("derivative", "invalid custom VJP forward result count")
 
-        # 已知缺口：全整数输出使 cotangents 为空，当前不会保存上面物化的 fwd；
-        # 即使没有活跃余切，VJP 的前向输出仍需比较，后续须补齐这一分支。
         for ct_active in cotangents:
             # 两个边界显式保留。返回槽位与消费者一起比较，不能单独比较 bwd
             # 后遗漏 fwd 透传输入给 residual 的路径。
@@ -230,16 +230,30 @@ def _vjp_rules(params, equation, parent):
                     core.eval_jaxpr(graph, graph.consts, *_constant_values(bindings, xs), *xs[nc:])
                 )
 
+            if not primal.outvars:
+                # 空 pytree 的 VJP 执行 fwd，但 pullback 不调用 bwd；保留 fwd
+                # 边界中的全部残差计算，使隐藏的有序操作仍能被后续校验发现。
+                def forward_only(*xs, fwd=fwd, nr=nr):
+                    return fwd(*xs)[nr:]
+
+                inputs = tuple(_abstract(aval) for aval in primal.in_avals)
+                forward_graph = jax.make_jaxpr(forward_only)(*inputs)
+                result.append((active, ct_active, out_tree, residual_tree, forward_graph))
+                continue
+
             nr_full = len(forwards)
 
             def backward(*xs, ct_active=ct_active, params=params, nr_full=nr_full):
                 """补回省略的输出余切，调用用户反向规则并物化返回的显式零。"""
-                # 图输入只携带活跃余切，调用用户 bwd 前按原输出端口补回 SymbolicZero。
-                # 已知缺口：symbolic_zeros=False 时，整数输出应按 JAX 行为补 float0
-                # 数组；当前统一补 SymbolicZero，可能追踪到与实际执行不同的用户分支。
+                # 普通 VJP 必须实例化整数余切；symbolic 模式才把未显式传入的
+                # 余切补成 SymbolicZero。此处与锁定 JAX 的反向调用约定保持一致。
                 residuals, nonzero_cts = xs[:nr_full], iter(xs[nr_full:])
                 cts = tuple(
-                    next(nonzero_cts) if nz else cd.SymbolicZero(aval.to_ct_aval())
+                    next(nonzero_cts)
+                    if nz
+                    else cd.SymbolicZero(aval.to_ct_aval())
+                    if params["symbolic_zeros"]
+                    else ad_util.zeros_like_aval(aval.to_ct_aval())
                     for nz, aval in zip(ct_active, primal.out_avals, strict=True)
                 )
                 gradients, logs = params["bwd"].call_wrapped(*residuals, *cts)

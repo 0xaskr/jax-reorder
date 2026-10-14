@@ -18,6 +18,7 @@ from jax_reorder import (
     verify_algebraic_proof,
 )
 from jax_reorder.algebra import _prepare
+from jax_reorder.algebra_calls import CommonCalls
 from jax_reorder.algebra_ir import Budget
 from jax_reorder.algebra_lower import Lowerer
 from jax_reorder.algebra_normalize import PolynomialNormalizer
@@ -86,14 +87,25 @@ def test_old_structural_pairs_also_agree_in_the_expansion_engine(case):
     budget = Budget(10000)
     engine = PolynomialNormalizer(budget)
     sources, signatures, forms = [], [], []
-    for graph in (original, normalized):
-        prepared, correspondence = _prepare(graph)
+    prepared_pair = tuple(_prepare(graph) for graph in (original, normalized))
+    common_calls = (
+        None
+        if case.name in EXPANSION_REJECTIONS
+        else CommonCalls(
+            tuple(
+                (graph, *prepared)
+                for graph, prepared in zip((original, normalized), prepared_pair, strict=True)
+            ),
+            budget,
+        )
+    )
+    for prepared, correspondence in prepared_pair:
         if case.name in EXPANSION_REJECTIONS:
             with pytest.raises(UnsupportedJaxprError) as caught:
                 Lowerer(budget).graph(prepared)
             assert caught.value.path.startswith(EXPANSION_REJECTIONS[case.name])
             continue
-        lowered = Lowerer(budget).graph(prepared)
+        lowered = Lowerer(budget, common_calls).graph(prepared)
         roots = tuple(engine.normalize(expr) for expr in lowered.roots)
         sources.append(AlgebraSource(prepared, correspondence, roots))
         signatures.append(lowered.signature)

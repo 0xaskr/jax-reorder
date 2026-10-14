@@ -44,6 +44,14 @@ JAX 的延迟 VJP thunk 缓存图而不恢复 `out_trees` 的辅助状态。不�
 
 `custom_vjp` 的普通 JVP，以及动态 while 的反向求导，是 JAX 本身不适用的组合，报告 `trace_rejected`。规则无法物化、未知结构或预算不足报告 `unsupported`；CPU 编译拒绝单列 `cpu_compile_rejected`。图差异与数值反例是两个不同结论。
 
+## 整数输出的 VJP 物化修复
+
+2026-10-14 审查发现两个误报等价的适配缺口，修复及验证见[执行计划](../exec-plans/completed/review-correctness-fixes.md)。混合浮点/整数输出在 `symbolic_zeros=False` 时，整数输出的余切必须是实际 `float0` 零数组；只有 symbolic 模式才向用户反向规则传入 `SymbolicZero`。类型会影响用户规则的 Python 分支，因此不能用同一个对象表示两种模式。回归已将物化规则与公开 `jax.vjp` 的反向执行交叉核对，并拒绝实际梯度不同的规则。
+
+当全部输出都是整数或布尔时，自定义前向规则仍会在对浮点输入做 VJP 时执行，向 pullback 显式传入 `float0` 还会调用反向规则。必须保留完整前向、残差及反向图，不能返回空规则列表。symbolic 模式下整数余切也可能是显式 `float0` 或 `SymbolicZero`，输出模式枚举因此覆盖全部叶子的显式/符号组合；至少一个输出为显式余切时物化反向规则，并计入原有 64 个组合预算。普通模式将整数余切直接实例化为零数组。
+
+空输出 pytree 的 VJP 仍执行前向规则，但 pullback 不调用反向规则；单独保存其前向图和残差计算即可。回归包括不同前向值、不同反向值、相同规则、空输出内的有序操作，以及普通/symbolic 两种配置；未适配的 effect 仍显式拒绝。没有可微输入时，公开 JAX VJP 直接使用普通前向，不扩展其输入激活模式。
+
 ## 梯度累加顺序的边界
 
 不能从前向图匹配推断每种求导后图也匹配。[反馈回归](../../tests/test_feedback_bindings.py)有一个实例：同步交换 scan 的返回槽位，前向及 JVP 保持同图，但 JAX 转置按原槽位顺序累加余切向量，VJP 的 `add_any` 连接发生变化。结构模式分别返回 `equivalent`、`equivalent`、`different`；默认自动模式可以通过独立代数证明接受这次实数加法换序，并保留结构差异与浮点警告。数值抽样接近仍不能代替任何一层证明。

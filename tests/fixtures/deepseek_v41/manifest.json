@@ -1,0 +1,47 @@
+{
+  "repository": "https://github.com/Inferact/tpu-megakernels",
+  "source_repository": "https://github.com/jawadaminGOOG/tpu-megakernels",
+  "pull_request": "https://github.com/Inferact/tpu-megakernels/pull/3",
+  "pull_request_state_at_download": "OPEN",
+  "revision": "d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1",
+  "downloaded": "2026-10-14",
+  "model": "DeepSeek-V4.1-Flash",
+  "entrypoints": [
+    "hc_post",
+    "hc_pre",
+    "hc_mixes",
+    "hc_split_sinkhorn"
+  ],
+  "files": [
+    {
+      "path": "deepseek_v41/reference.py",
+      "sha256": "83c69145c795fe5e0902e7fb004409d6ecb4ea4179e20226bab3f3d742c0d83d",
+      "url": "https://github.com/jawadaminGOOG/tpu-megakernels/blob/d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1/deepseek_v41/reference.py"
+    },
+    {
+      "path": "deepseek_v41/config.py",
+      "sha256": "00ce72c6561caf80708455a66e661acc6879057ae968a286138f4a4e26808896",
+      "url": "https://github.com/jawadaminGOOG/tpu-megakernels/blob/d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1/deepseek_v41/config.py"
+    },
+    {
+      "path": "deepseek_v41/README.md",
+      "sha256": "15e6c55b21f6d246c0128e274ecfc883b1a0656975bbd20d7f50bf5579db7006",
+      "url": "https://github.com/jawadaminGOOG/tpu-megakernels/blob/d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1/deepseek_v41/README.md"
+    },
+    {
+      "path": "deepseek_v41/xla_decode.py",
+      "sha256": "e0b16ad2d51f26d77468ed2f8831953444fbe06639f0453714e51b62f17de478",
+      "url": "https://github.com/jawadaminGOOG/tpu-megakernels/blob/d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1/deepseek_v41/xla_decode.py"
+    },
+    {
+      "path": "tests/test_dsv41_reference_vs_shim.py",
+      "sha256": "7b2cc0493bac18f655dab6f5f1c3634d85e8426d45a6f4ac29d30be59fb5cec8",
+      "url": "https://github.com/jawadaminGOOG/tpu-megakernels/blob/d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1/tests/test_dsv41_reference_vs_shim.py"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "url": "https://github.com/jawadaminGOOG/tpu-megakernels/blob/d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1/LICENSE"
+    }
+  ]
+}

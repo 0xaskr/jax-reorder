@@ -1,5 +1,7 @@
 """AI 固定的无根组件、全图共享、对称搜索及资源边界。"""
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -8,6 +10,7 @@ from jax import lax
 from jax._src import core
 
 from jax_reorder import Status, canonicalize, compare_jaxprs
+from jax_reorder.correspondence import verify_correspondence
 
 
 def diamond(x, y):
@@ -129,3 +132,106 @@ def test_unused_constants_preserve_count_content_and_shared_bindings():
         == Status.DIFFERENT
     )
     assert compare_jaxprs(first, a).status == Status.DIFFERENT
+
+
+def dead_inputs_left(a, b, live):
+    lax.sin(a)
+    lax.sin(b)
+    return live
+
+
+def dead_inputs_right(b, a, live):
+    lax.sin(b)
+    lax.sin(a)
+    return live
+
+
+def private_dead_inputs(region):
+    """固定源码的同步换序，经各区域的实际 JAX 接口追踪。"""
+    if region == "jit":
+        left = jax.jit(dead_inputs_left, keep_unused=True)
+        right = jax.jit(dead_inputs_right, keep_unused=True)
+        return left, lambda x, y, z: right(y, x, z)
+    if region == "cond":
+        return (
+            lambda x, y, z: lax.cond(z > 0, dead_inputs_left, dead_inputs_left, x, y, z),
+            lambda x, y, z: lax.cond(z > 0, dead_inputs_right, dead_inputs_right, y, x, z),
+        )
+    if region == "scan":
+
+        def left(x, y, z):
+            return lax.scan(lambda c, _: (dead_inputs_left(x, y, c), ()), z, None, length=2)[0]
+
+        def right(x, y, z):
+            return lax.scan(lambda c, _: (dead_inputs_right(y, x, c), ()), z, None, length=2)[0]
+
+        return left, right
+    if region == "while":
+
+        def left(x, y, z):
+            return lax.while_loop(lambda c: c < 2, lambda c: dead_inputs_left(x, y, c) + 1, z)
+
+        def right(x, y, z):
+            return lax.while_loop(lambda c: c < 2, lambda c: dead_inputs_right(y, x, c) + 1, z)
+
+        return left, right
+    assert region == "shard_map"
+    mesh = jax.sharding.Mesh(np.asarray(jax.devices()), ("devices",))
+    spec = jax.sharding.PartitionSpec()
+    wrap = partial(jax.shard_map, mesh=mesh, in_specs=(spec, spec, spec), out_specs=spec)
+    left, right = wrap(dead_inputs_left), wrap(dead_inputs_right)
+    return left, lambda x, y, z: right(y, x, z)
+
+
+@pytest.mark.parametrize("region", ["jit", "cond", "scan", "while", "shard_map"])
+def test_private_inputs_used_only_by_unrooted_nodes_are_jointly_canonicalized(region):
+    left, right = private_dead_inputs(region)
+    args = jnp.float32(0.7), jnp.float32(-0.3), jnp.float32(0)
+    a, b = (jax.make_jaxpr(fn)(*args) for fn in (left, right))
+    before = str(a), str(b)
+    result = compare_jaxprs(a, b)
+    assert result.status == Status.EQUIVALENT, result
+    verify_correspondence(a, b, result.correspondence)
+    assert compare_jaxprs(b, a).status == Status.EQUIVALENT
+    assert before == (str(a), str(b))
+    for raw, normalized in ((a, result.left), (b, result.right)):
+        core.check_jaxpr(normalized.jaxpr)
+        assert canonicalize(normalized.jaxpr).graph == normalized.graph
+        np.testing.assert_array_equal(
+            core.eval_jaxpr(raw, raw.consts, *args),
+            core.eval_jaxpr(normalized.jaxpr, normalized.jaxpr.consts, *args),
+        )
+    wrong = jax.make_jaxpr(lambda x, y, z: left(x, x, z))(*args)
+    # 外部输出相同也不能合并两条独立输入与共享同一输入的完整图。
+    assert compare_jaxprs(a, wrong).status == Status.DIFFERENT
+    limited = compare_jaxprs(a, b, search_budget=1)
+    assert limited.status == Status.UNKNOWN
+    assert "interface search budget exceeded" in limited.issues[0].reason
+
+
+def test_unrooted_private_input_search_keeps_donation_attached_to_actual_value():
+    left, right = private_dead_inputs("jit")
+    args = jnp.float32(0.7), jnp.float32(-0.3), jnp.float32(0)
+    a, b = (jax.make_jaxpr(fn)(*args) for fn in (left, right))
+
+    def donated(graph, slots):
+        eq = graph.eqns[0]
+        return graph.replace(eqns=[eq.replace(params={**eq.params, "donated_invars": slots})])
+
+    a = donated(a, (True, False, False))
+    assert compare_jaxprs(a, donated(b, (False, True, False))).status == Status.EQUIVALENT
+    assert compare_jaxprs(a, donated(b, (True, False, False))).status == Status.DIFFERENT
+
+
+def test_cond_rooted_branch_anchors_override_unrooted_branch_input_numbers():
+    def left(x, y, z):
+        return lax.cond(z > 0, lambda a, b, c: a - b + c, dead_inputs_left, x, y, z)
+
+    def right(x, y, z):
+        return lax.cond(z > 0, lambda b, a, c: a - b + c, dead_inputs_right, y, x, z)
+
+    args = jnp.float32(3), jnp.float32(1), jnp.float32(0)
+    a, b = (jax.make_jaxpr(fn)(*args) for fn in (left, right))
+    result = compare_jaxprs(a, b, search_budget=1)
+    assert result.status == Status.EQUIVALENT, result
+    verify_correspondence(a, b, result.correspondence)

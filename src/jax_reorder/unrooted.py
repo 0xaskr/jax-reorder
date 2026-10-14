@@ -49,14 +49,15 @@ class _KeyRequest:
     value: object
 
 
-def order_key(value):
+def order_key(value, *, cache=None):
     """为已编码语义给出可排序键；不代替最终的完整语义比较。
 
     类型/Primitive/PRNG 实现原本按身份区分，最后的身份项仅打破同名对象
     的平局。这是进程内规范表示，不是可跨环境持久化的序列化格式。
     """
     # 工作栈先处理子键再合成父键；无序集合排序，有序元组维持原元素位置。
-    pending, values, cache = [("key", value)], [], {}
+    pending, values = [("key", value)], []
+    cache = {} if cache is None else cache
     while pending:
         action, item = pending.pop()
         if action == "key":

@@ -102,7 +102,7 @@ class Lowered:
 class Lowerer:
     """从输入向输出构造 DAG，索引范围保持符号。"""
 
-    def __init__(self, budget: Budget):
+    def __init__(self, budget: Budget, common_calls=None):
         """计数器只给临时求和索引新身份，不参与规范结果。"""
         self.budget = budget
         self.next_index = 0
@@ -110,6 +110,8 @@ class Lowerer:
         self.rules = set()
         self.region_depth = 0
         self.index_domains = {}
+        self.common_calls = common_calls
+        self.read_shapes = {}
 
     def _axes(self, aval):
         """首期只接纳给定签名中的具体非负维度。"""
@@ -153,9 +155,9 @@ class Lowerer:
 
     def _input(self, aval, identity):
         """读取外部输入或固定循环形参，身份由有序接口锚定。"""
-        return self._tensor(
-            aval, Expr("atom", (("input", identity, encode(aval)), self._axes(aval)))
-        )
+        semantic = ("input", identity, encode(aval))
+        self.read_shapes[semantic] = tuple(aval.shape)
+        return self._tensor(aval, Expr("atom", (semantic, self._axes(aval))))
 
     def _constant(self, value, aval):
         """保留数组完整内容；有限实数标量按实际 dtype 值精确解释。"""
@@ -167,7 +169,9 @@ class Lowerer:
             # 锁定 CPU 浮点类型均可无损提升为 Python binary64 再取精确比值。
             body = Expr("constant", ratio(Fraction.from_float(float(array))))
         else:
-            body = Expr("atom", (("constant", encode(aval), encode(array)), self._axes(aval)))
+            semantic = ("constant", encode(aval), encode(array))
+            self.read_shapes[semantic] = tuple(aval.shape)
+            body = Expr("atom", (semantic, self._axes(aval)))
         return self._tensor(aval, body)
 
     def _read(self, value, indices):
@@ -425,6 +429,8 @@ class Lowerer:
             bindings = tuple(
                 self._input(v.aval, ("argument", i)) for i, v in enumerate(graph.invars)
             )
+        from .algebra_jit import default_jit, transparent_jit
+        from .algebra_padding import lower_padding
         from .algebra_piecewise import lower_piecewise
         from .algebra_scalar import lower_scalar
         from .algebra_scan import lower_scan
@@ -435,6 +441,7 @@ class Lowerer:
             for v, c in zip(graph.constvars, graph.consts, strict=True)
         )
         barriers = []
+        inlined_jits = set()
         for eq in graph.eqns:
             self.budget.spend(path="algebra.lower")
             values = tuple(
@@ -442,10 +449,40 @@ class Lowerer:
                 for v in eq.invars
             )
             params = semantic_parameters(eq, scope="primal", parent=graph)
+            if (
+                self.common_calls is not None
+                and default_jit(eq, params)
+                and eq in self.common_calls.invocations
+            ):
+                # 已复核相同的完整子图可以用函数合同复用；实参和全部返回口仍保留。
+                key, inputs, outputs = self.common_calls.invocations[eq]
+                header = ("common_jit", key)
+                arguments = tuple(values[i].body for i in inputs)
+                results = [None] * len(outputs)
+                for port, mapped in enumerate(outputs):
+                    var = eq.outvars[mapped]
+                    self.read_shapes[(header, port)] = tuple(var.aval.shape)
+                    results[mapped] = self._tensor(
+                        var.aval,
+                        Expr("atom", ((header, port), self._axes(var.aval)), arguments, True),
+                    )
+                barriers.append(Expr("atom", ((header, "invocation"), ()), arguments, False))
+                environment.update(zip(eq.outvars, results, strict=True))
+                self.rules.add("common_jit")
+                continue
+            if transparent_jit(eq, values, params):
+                # 组合前向与反向区域后，私有残差形状不再成为外部数学接口。
+                # 子图完整转换，内部循环边界和部分函数检查不能随 JIT 一起消失。
+                child = self.graph(params["jaxpr"], values)
+                barriers.extend(child.barriers)
+                environment.update(zip(eq.outvars, child.outputs, strict=True))
+                inlined_jits.add(eq)
+                self.rules.add("transparent_jit")
+                continue
             converted = self._arithmetic(eq, values)
             adapted = None
             if converted is None:
-                for adapter in (lower_piecewise, lower_scalar, lower_scan):
+                for adapter in (lower_piecewise, lower_scalar, lower_padding, lower_scan):
                     adapted = adapter(self, eq, values, params)
                     if adapted is not None:
                         break
@@ -475,7 +512,7 @@ class Lowerer:
                 used.update(v for v in eq.invars if isinstance(v, core.Var))
             elif any(not environment[v].body.total for v in eq.outvars):
                 # 调用/循环已作为独立边界保留；其他部分函数不凭输出不可达而删除。
-                if eq.primitive not in (
+                if eq in inlined_jits or eq.primitive not in (
                     pjit.jit_p,
                     lax.cond_p,
                     lax.scan_p,

@@ -199,6 +199,188 @@ def test_integer_pytree_leaf_and_explicit_zero_cotangent():
     np.testing.assert_array_equal(gradient, np.full((2,), 3.0))
 
 
+def mixed_output_vjp(scale, dtype, symbolic):
+    @jax.custom_vjp
+    def function(x):
+        return x * x, jnp.zeros_like(x, dtype=dtype)
+
+    def fwd(x):
+        x = x.value if symbolic else x
+        return (x * x, jnp.zeros_like(x, dtype=dtype)), ()
+
+    def bwd(residual, cotangents):
+        real, discrete = cotangents
+        if isinstance(real, cd.SymbolicZero):
+            return (None,)
+        return (real if isinstance(discrete, cd.SymbolicZero) else scale * real,)
+
+    function.defvjp(fwd, bwd, symbolic_zeros=symbolic)
+    return function
+
+
+@pytest.mark.parametrize("symbolic", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_])
+@pytest.mark.parametrize("shape", [(), (2,)])
+def test_mixed_output_vjp_materializes_actual_float0_cotangents(symbolic, dtype, shape):
+    left, right = (mixed_output_vjp(scale, dtype, symbolic) for scale in (2, 3))
+    x = jnp.full(shape, 2, dtype=jnp.float32)
+    seed = jnp.full(shape, 3, dtype=jnp.float32)
+    zero = np.zeros(shape, dtype=jax.dtypes.float0)
+    a, b = (jax.make_jaxpr(fn)(x) for fn in (left, right))
+    actual = [jax.vjp(fn, x)[1]((seed, zero))[0] for fn in (left, right)]
+    np.testing.assert_array_equal(actual[0], 2 * seed)
+    np.testing.assert_array_equal(actual[1], 3 * seed)
+    assert compare_jaxprs(a, b).status == Status.DIFFERENT
+    assert compare_jaxprs(a, a).status == Status.EQUIVALENT
+    assert (
+        compare_functions(left, right, x, modes=("vjp",), equivalence="structural").status
+        == Status.DIFFERENT
+    )
+    rules = semantic_parameters(a.eqns[0], parent=a)["rules"]
+    if symbolic:
+        assert {rule[1] for rule in rules} == {(False, True), (True, False), (True, True)}
+    for _, active, _, _, graph in rules:
+        explicit = tuple(
+            value for enabled, value in zip(active, (seed, zero), strict=True) if enabled
+        )
+        gradient = core.eval_jaxpr(graph, graph.consts, x, *explicit)[-1]
+        expected = 0 * seed if not active[0] else seed if symbolic and not active[1] else 2 * seed
+        np.testing.assert_array_equal(gradient, expected)
+
+
+def discrete_output_vjp(offset, scale, dtype, symbolic):
+    @jax.custom_vjp
+    def function(x):
+        return x.astype(dtype)
+
+    def fwd(x):
+        x = x.value if symbolic else x
+        return (x + offset).astype(dtype), (x, x + 1)
+
+    def bwd(residual, cotangent):
+        x, _ = residual
+        return (jnp.full_like(x, scale),)
+
+    function.defvjp(fwd, bwd, symbolic_zeros=symbolic)
+    return function
+
+
+@pytest.mark.parametrize("symbolic", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_])
+def test_discrete_output_vjp_keeps_forward_and_backward_rules(symbolic, dtype):
+    functions = [
+        discrete_output_vjp(offset, scale, dtype, symbolic)
+        for offset, scale in ((0, 2), (1, 2), (0, 3))
+    ]
+    x = jnp.float32(0)
+    graphs = [jax.make_jaxpr(fn)(x) for fn in functions]
+    outputs, gradients = [], []
+    for function in functions:
+        value, pullback = jax.vjp(function, x)
+        outputs.append(value)
+        gradients.append(pullback(np.zeros((), dtype=jax.dtypes.float0))[0])
+    assert outputs[0] != outputs[1]
+    assert gradients[0] != gradients[2]
+    assert compare_jaxprs(graphs[0], graphs[0]).status == Status.EQUIVALENT
+    for changed in graphs[1:]:
+        assert compare_jaxprs(graphs[0], changed).status == Status.DIFFERENT
+    rules = semantic_parameters(graphs[0].eqns[0], parent=graphs[0])["rules"]
+    assert len(rules) == 1
+    _, active, _, _, graph = rules[0]
+    inputs = (x, np.zeros((), dtype=jax.dtypes.float0)) if active[0] else (x,)
+    value, gradient = core.eval_jaxpr(graph, graph.consts, *inputs)
+    np.testing.assert_array_equal(value, outputs[0])
+    np.testing.assert_array_equal(gradient, gradients[0])
+
+
+@pytest.mark.parametrize("symbolic", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_no_real_output_still_checks_latent_ordered_forward_rule(symbolic, empty):
+    @jax.custom_vjp
+    def function(x):
+        return () if empty else x.astype(jnp.int32)
+
+    def fwd(x):
+        x = x.value if symbolic else x
+        lax.dce_sink(x)
+        return function(x), ()
+
+    def bwd(residual, cotangent):
+        return (None,)
+
+    function.defvjp(fwd, bwd, symbolic_zeros=symbolic)
+    graph = jax.make_jaxpr(function)(jnp.float32(2))
+    result = compare_jaxprs(graph, graph)
+    assert result.status == Status.UNKNOWN
+    assert "latent ordered" in result.issues[0].reason
+
+
+@pytest.mark.parametrize("symbolic", [False, True])
+def test_empty_output_keeps_forward_without_calling_inactive_backward(symbolic):
+    @jax.custom_vjp
+    def function(x):
+        return ()
+
+    def fwd(x):
+        x = x.value if symbolic else x
+        return (), x + 1
+
+    def bwd(residual, cotangent):
+        raise AssertionError("JAX does not call the backward rule for an empty output tree")
+
+    function.defvjp(fwd, bwd, symbolic_zeros=symbolic)
+    x = jnp.float32(2)
+    _, pullback = jax.vjp(function, x)
+    np.testing.assert_array_equal(pullback(()), (0,))
+    graph = jax.make_jaxpr(function)(x)
+    assert compare_jaxprs(graph, graph).status == Status.EQUIVALENT
+    rules = semantic_parameters(graph.eqns[0], parent=graph)["rules"]
+    assert len(rules) == 1
+    forward = rules[0][-1]
+    assert forward.eqns and not forward.outvars
+
+
+def test_symbolic_float0_output_combinations_obey_rule_budget():
+    @jax.custom_vjp
+    def function(x):
+        return tuple((x + i).astype(jnp.int32) for i in range(7))
+
+    def fwd(x):
+        return function(x.value), ()
+
+    def bwd(residual, cotangents):
+        return (None,)
+
+    function.defvjp(fwd, bwd, symbolic_zeros=True)
+    x = jnp.float32(2)
+    _, pullback = jax.vjp(function, x)
+    seeds = (np.zeros((), dtype=jax.dtypes.float0),) * 7
+    np.testing.assert_array_equal(pullback(seeds), (0,))
+    graph = jax.make_jaxpr(function)(x)
+    result = compare_jaxprs(graph, graph)
+    assert result.status == Status.UNKNOWN
+    assert "127 cases" in result.issues[0].reason
+    assert "budget exceeded" in result.issues[0].reason
+
+
+def test_discrete_output_does_not_hide_invalid_backward_interface():
+    @jax.custom_vjp
+    def function(x):
+        return x.astype(jnp.int32)
+
+    def fwd(x):
+        return function(x), ()
+
+    def bwd(residual, cotangent):
+        return ()
+
+    function.defvjp(fwd, bwd)
+    graph = jax.make_jaxpr(function)(jnp.float32(2))
+    result = compare_jaxprs(graph, graph)
+    assert result.status == Status.UNKNOWN
+    assert "rule tracing rejected" in result.issues[0].reason
+
+
 def test_invalid_backward_interface_is_not_accepted_as_forward_equivalence():
     @jax.custom_vjp
     def invalid(x, y):

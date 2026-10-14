@@ -32,4 +32,4 @@
 | DOC-001 | `.agents/README.md` 仍有 scaffold 旧描述；当前工作区该目录只读，本轮以 AGENTS/架构/开发文档为当前事实来源 | P2 | 待处理 | [项目入口](../../AGENTS.md)、[当前架构](../../ARCHITECTURE.md) |
 | DOC-002 | 代数功能已实现，受保护的 README、ARCHITECTURE、AGENTS 和 docs/PLANS 部分说明及完成索引尚未同步；用户明确要求不修改，待后续具体授权 | P2 | 待处理 | [当前功能设计](../development-docs/algebraic-equivalence.md)、[验收归档](completed/algebraic-equivalence.md) |
 | ALG-001 | 符号 reshape/静态切片、连续域合并已接入；动态索引、对角读取、任意步长覆盖、额外嵌套原语及特殊精度/分片仍待适配 | P2 | 待处理 | [代数边界与原语回归](../development-docs/algebraic-equivalence.md#当前边界)、[结构蕴含测试](../../tests/test_algebra_structural.py) |
-| ALG-002 | 独立 scan 累加和已审核选择包装已适配；一般递推、变化 carry 的历史输出、jit 残差接口变化及其他跨区域改写仍无通用证明，真实模型新代数改写未验收 | P2 | 待处理 | [代数设计](../development-docs/algebraic-equivalence.md#当前边界) |
+| ALG-002 | 独立 scan 累加、已审核选择包装和严格默认纯 JIT 的残差组合已适配；DeepSeek-V4.1-Flash mHC 的矩阵/分块改写可分别证明前向与一阶求导。一般递推、变化 carry 的历史输出、非默认调用及其他跨区域改写仍无通用证明 | P2 | 待处理 | [代数设计](../development-docs/algebraic-equivalence.md#当前边界)、[真实 mHC 层](../development-docs/deepseek-v41-layer.md) |
