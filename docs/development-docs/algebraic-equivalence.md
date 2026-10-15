@@ -108,7 +108,7 @@ SymPy 只生成受限数学变换候选；接受结果必须附独立可重放�
 
 完整 GLM 负例还需要精确处理 approximate top-k、动态 gather 和 scan。局部 QK 或 PV 的
 结论不提升成完整 layer 结论；若本轮不能建立源输入到最终输出的证据，保留具体 unknown。
-工作进度见[执行计划](../exec-plans/active/symbolic-math-integration.md)。
+工作进度见[执行计划](../exec-plans/completed/symbolic-math-integration.md)。
 
 实现与验收：[CAS 候选](../../src/jax_reorder/algebra_sympy.py)、
 [标量证据复核](../../src/jax_reorder/algebra_scalar_proof.py)、

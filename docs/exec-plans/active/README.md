@@ -1,12 +1,12 @@
 # 进行中的计划
 
-当前进行中的执行计划：
+当前没有进行中的执行计划。
 
-- [数学等价后端接入、完整验证与 main 发布](symbolic-math-integration.md)：实现和全量 2095 项验证完成，按用户最新授权直接提交并推送 main。
+[数学等价后端接入、完整验证与 main 发布](../completed/symbolic-math-integration.md)已完成：SymPy 候选与独立复核、完整多项式输出的不等价证据、guarded-softmax/PV 规则已接入。全量 2095 passed；GLM 三组签名均为 5 个正例已证明和 5 个负例 unknown。按用户最新授权直接推送 main。
 
-[开源数学等价后端的并行评估](../completed/open-source-equivalence-backends.md)已完成：三个 subagent 与主代理覆盖 21 个候选/组件，运行符号探针与真实 GLM QK/PV helper 的 jaxpr→SymPy 转换。完整 layer、生产适配和独立证据复核仍待完成，见 ALG-004。
+[开源数学等价后端的并行评估](../completed/open-source-equivalence-backends.md)已完成：三个 subagent 与主代理覆盖 21 个候选/组件，运行符号探针与真实 GLM QK/PV helper 的 jaxpr→SymPy 转换。该评估阶段的生产适配工作已在上述接入计划推进；当前保留边界见 ALG-004。
 
-[`-inf` mask 的受限代数支持](../completed/negative-infinity-masks.md)已完成：保留特殊值及其依赖语义，阻止非有限路径进入实数乘加展开；新增 41 项回归，全量 1952 passed。GLM 图比较现为 4 个已证明正例和 6 个 unknown，剩余边界见 ALG-003。
+[`-inf` mask 的受限代数支持](../completed/negative-infinity-masks.md)已完成：保留特殊值及其依赖语义，阻止非有限路径进入实数乘加展开；新增 41 项回归，全量 1952 passed。该阶段 GLM 图比较为 4 个已证明正例和 6 个 unknown；最新结果与剩余边界见上述接入记录及 ALG-003。
 
 [GLM-5.2 核心层的 jaxpr 健壮性测试纠偏](../completed/glm52-jaxpr-robustness.md)保存初始结果：仅抽象追踪核心的 5+5 改写，当时为 2 个结构正例与 8 个 unknown；后续 `-inf` 支持与最新结果见上述完成计划。
 
