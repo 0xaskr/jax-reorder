@@ -126,6 +126,16 @@ class Term(_ImmutableDag):
 
 
 @dataclass(frozen=True)
+class ScalarRewrite:
+    """受限标量恒等式的见证；位置指向上一步项表，结果须独立重放。"""
+
+    kind: str
+    position: int
+    result: tuple[Term, ...]
+    data: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class AlgebraStep:
     """一个表达式的局部推导，orders 提供每个展开项的合法索引置换。"""
 
@@ -134,6 +144,7 @@ class AlgebraStep:
     result: tuple[Term, ...]
     orders: tuple[tuple[int, ...], ...]
     domains: tuple[tuple[tuple, ...], ...] = ()
+    scalar_rewrites: tuple[ScalarRewrite, ...] = ()
 
 
 class Budget:

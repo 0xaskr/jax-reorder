@@ -217,3 +217,68 @@ def test_custom_vjp_forward_and_inapplicable_jvp_are_reported_separately():
 def test_invalid_mode_specification_is_rejected(modes):
     with pytest.raises(ValueError, match="modes"):
         compare_functions(lax.neg, lax.neg, jnp.float32(1), modes=modes)
+
+
+def test_mathematical_inequivalence_retains_structural_report_and_output_evidence():
+    from jax_reorder import verify_inequivalence_proof
+
+    x = jax.ShapeDtypeStruct((3,), jnp.float32)
+    result = compare_functions(lambda x: x, lambda x: 2 * x, x)
+    assert result.status == Status.INEQUIVALENT
+    assert result.equivalence_kind is None
+    mode = result.modes[0]
+    assert mode.comparison.status == Status.DIFFERENT
+    assert mode.failure_kind is None
+    assert mode.difference == "algebra.outputs[0]"
+    assert mode.algebra.proof is None
+    verify_inequivalence_proof(mode.left.jaxpr, mode.right.jaxpr, mode.algebra.inequivalence_proof)
+
+
+def test_proven_inequivalence_is_preserved_when_another_requested_mode_is_unknown(monkeypatch):
+    import jax_reorder.functions as functions
+
+    original_trace = functions.trace_function
+
+    def reject_jvp(*args, **kwargs):
+        if kwargs.get("mode") == "jvp":
+            raise NotImplementedError("unavailable JVP")
+        return original_trace(*args, **kwargs)
+
+    monkeypatch.setattr(functions, "trace_function", reject_jvp)
+    result = functions.compare_functions(
+        lambda x: x,
+        lambda x: 2 * x,
+        jax.ShapeDtypeStruct((), jnp.float32),
+        modes=("forward", "jvp"),
+    )
+    assert result.status == Status.INEQUIVALENT
+    assert [m.status for m in result.modes] == [Status.INEQUIVALENT, Status.UNKNOWN]
+    assert result.modes[1].failure_kind == "trace_rejected"
+    assert result.unverified_modes == ("vjp",)
+
+
+def test_derivative_inequivalence_does_not_change_the_forward_verdict():
+    @jax.custom_jvp
+    def first(x):
+        return x
+
+    @first.defjvp
+    def first_rule(primals, tangents):
+        return primals[0], tangents[0]
+
+    @jax.custom_jvp
+    def second(x):
+        return x
+
+    @second.defjvp
+    def second_rule(primals, tangents):
+        return primals[0], 2 * tangents[0]
+
+    result = compare_functions(
+        first, second, jax.ShapeDtypeStruct((), jnp.float32), modes=("forward", "jvp")
+    )
+    assert result.status == Status.INEQUIVALENT
+    forward, jvp = result.modes
+    assert forward.status == Status.EQUIVALENT and forward.difference is None
+    assert jvp.status == Status.INEQUIVALENT
+    assert jvp.algebra.inequivalence_proof.output == 1

@@ -185,6 +185,9 @@ def lower_scan(lowerer, eq, values, params):
     ):
         return None
     ft_in, ft_out, body = params["ft_in"], params["ft_out"], params["jaxpr"]
+    if lowerer._nonfinite_graph(body):
+        # 后续迭代可能收到 -inf/NaN；不能按有限实数的独立累加器消去反馈。
+        return None
     if (
         not ft_in.unpackable
         or not ft_out.unpackable

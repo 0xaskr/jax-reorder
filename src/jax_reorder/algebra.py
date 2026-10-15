@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 
 from .algebra_calls import CommonCalls
+from .algebra_inequivalence import PolynomialInequivalenceProof, try_prove_inequivalent
 from .algebra_ir import Budget
 from .algebra_lower import Lowerer
 from .algebra_normalize import PolynomialNormalizer
@@ -12,12 +13,14 @@ from .correspondence import build_correspondence
 from .errors import JaxprError, UnsupportedJaxprError
 
 ASSUMPTIONS = (
-    "real floating-point values are interpreted as ideal real numbers",
-    "participating expressions are finite and defined in the declared real interpretation",
+    "finite floating-point subexpressions are interpreted as ideal real numbers",
+    "expressions expanded algebraically are finite and defined in the declared real interpretation",
+    "negative infinity constants and possibly non-finite dependent operations "
+    "retain their semantics",
     "only the supplied input signature, static arguments and trace environment are covered",
 )
 FLOAT_WARNING = (
-    "Algebraic equivalence uses ideal real arithmetic. Floating-point commutation, "
+    "Algebraic comparison uses ideal real arithmetic. Floating-point commutation, "
     "reassociation and distribution may change rounding, overflow, NaN/Inf and signed zero; "
     "neither small error nor bitwise equivalence is guaranteed."
 )
@@ -25,7 +28,7 @@ FLOAT_WARNING = (
 
 @dataclass(frozen=True)
 class AlgebraComparison:
-    """代数结果和复核证据；失败仅表示未完成证明，不是数学不等价。"""
+    """带独立正/负证据的数学比较；证明失败保留为 unknown。"""
 
     status: Status
     issues: tuple[Issue, ...] = ()
@@ -34,6 +37,7 @@ class AlgebraComparison:
     warnings: tuple[str, ...] = (FLOAT_WARNING,)
     proof: AlgebraProof | None = field(default=None, repr=False)
     work: int = 0
+    inequivalence_proof: PolynomialInequivalenceProof | None = field(default=None, repr=False)
 
     @property
     def equivalence_kind(self):
@@ -83,7 +87,7 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000):
         if structural.status == Status.UNKNOWN:
             return AlgebraComparison(Status.UNKNOWN, structural.issues)
         normalizer = PolynomialNormalizer(budget)
-        sources, signatures = [], []
+        sources, signatures, lowered_graphs = [], [], []
         prepared = tuple(_prepare(original) for original in (left, right))
         common_calls = CommonCalls(
             tuple(
@@ -95,6 +99,7 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000):
         for graph, correspondence in prepared:
             lowerer = Lowerer(budget, common_calls)
             lowered = lowerer.graph(graph)
+            lowered_graphs.append(lowered)
             rules.update(lowerer.rules)
             roots = tuple(normalizer.normalize(expr) for expr in lowered.roots)
             sources.append(AlgebraSource(graph, correspondence, roots))
@@ -105,12 +110,25 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000):
             )
         forms = [tuple(normalizer.steps[i].result for i in source.roots) for source in sources]
         if forms[0] != forms[1]:
+            negative = try_prove_inequivalent(
+                left, right, sources=tuple(sources), lowered=tuple(lowered_graphs), budget=budget
+            )
+            if negative is not None:
+                return AlgebraComparison(
+                    Status.INEQUIVALENT,
+                    rules=tuple(sorted(rules | {"polynomial:nonzero_output_coefficient"})),
+                    inequivalence_proof=negative,
+                    work=budget.used,
+                )
             raise UnsupportedJaxprError(
                 "algebra.outputs", "normal forms differ; no algebraic proof found"
             )
         proof = AlgebraProof(*sources, tuple(normalizer.steps), algebra_budget)
         verify_algebraic_proof(left, right, proof)
         rules.update(step.expression.op for step in proof.steps)
+        rules.update(
+            f"scalar:{rewrite.kind}" for step in proof.steps for rewrite in step.scalar_rewrites
+        )
         return AlgebraComparison(
             Status.EQUIVALENT, rules=tuple(sorted(rules)), proof=proof, work=budget.used
         )

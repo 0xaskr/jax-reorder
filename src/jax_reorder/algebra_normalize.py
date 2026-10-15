@@ -9,6 +9,7 @@ from .algebra_domains import apply_domain_witness, prefix_terms, ranges, transla
 from .algebra_indices import coordinates, map_factors, scalar_factor, used_axes
 from .algebra_ir import AlgebraStep, Budget, Expr, Factor, Index, Term, ratio
 from .algebra_padding import simplify_prefix_factors
+from .algebra_sympy import rewrite as rewrite_scalar
 from .errors import UnsupportedJaxprError
 from .unrooted import order_key
 
@@ -38,6 +39,7 @@ class PolynomialNormalizer:
             premises = tuple(self.cache[child] for child in expr.args)
             children = tuple(self.steps[i].result for i in premises)
             raw = self._expand(expr, children)
+            raw, scalar_rewrites = rewrite_scalar(raw, self.budget, self._key)
             orders, terms, domains = [], [], []
             for original in raw:
                 converted, witnesses = self._domains(original)
@@ -49,7 +51,9 @@ class PolynomialNormalizer:
             result = self._collect(terms)
             self.budget.spend(path="algebra.proof")
             self.cache[expr] = len(self.steps)
-            self.steps.append(AlgebraStep(expr, premises, result, tuple(orders), tuple(domains)))
+            self.steps.append(
+                AlgebraStep(expr, premises, result, tuple(orders), tuple(domains), scalar_rewrites)
+            )
         return self.cache[expression]
 
     def _expand(self, expr, children):

@@ -385,6 +385,8 @@ def compare_function_traces(
         failure = "algebra_incomplete" if status == Status.UNKNOWN else None
         if status == Status.EQUIVALENT:
             difference = None
+        elif status == Status.INEQUIVALENT:
+            difference = f"algebra.outputs[{algebra.inequivalence_proof.output}]"
     return ModeComparison(
         left.mode,
         status,
@@ -425,7 +427,8 @@ def compare_functions(
 
     right_args / right_kwargs 为 None 时复用左侧的调用签名；显式传入空容器
     则表示右侧确实使用空参数。各模式保留独立结论，汇总优先级为
-    unknown、different、equivalent。
+    inequivalent、unknown、different、equivalent。inequivalent 表示至少一个请求模式
+    有数学不等价证据，具体模式保留在 modes 中，不从求导差异外推前向结论。
     """
     modes = tuple(modes)
     if equivalence not in ("auto", "structural"):
@@ -511,10 +514,12 @@ def compare_functions(
                     *traces, equivalence=equivalence, algebra_budget=algebra_budget
                 )
             )
-    # 汇总优先报告未完成的检查；已发现的结构差异仍保留在对应 ModeComparison 中。
+    # 一个请求模式的完整反例即可否定全部请求模式等价；其余未知模式仍逐项报告。
     statuses = {result.status for result in results}
     status = (
-        Status.UNKNOWN
+        Status.INEQUIVALENT
+        if Status.INEQUIVALENT in statuses
+        else Status.UNKNOWN
         if Status.UNKNOWN in statuses
         else Status.DIFFERENT
         if Status.DIFFERENT in statuses

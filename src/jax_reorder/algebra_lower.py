@@ -4,7 +4,7 @@
 张量中间值保持独立自由轴，读取时只替换当前表达式的自由索引。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from math import prod
 
@@ -70,6 +70,7 @@ class Tensor:
     shape: tuple[int, ...]
     dtype: object
     body: Expr
+    nonfinite: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,69 @@ class Lowerer:
         self.index_domains = {}
         self.common_calls = common_calls
         self.read_shapes = {}
+        self.nonfinite_graphs = {}
+        self.finite_values = {}
+
+    def _record_finiteness(self, value, finite, *, possible=False):
+        """有限值事实不改变部分求值标记，因而不能授权删除内部未定义路径。"""
+        if finite:
+            value = replace(value, nonfinite=False)
+        else:
+            value = self._mark_nonfinite(value, possible)
+        self.finite_values[value] = bool(finite)
+        return value
+
+    def _nonfinite_parameters(self, value):
+        """gather fill_value 等参数也能产生非有限值，不能只检查 SSA 常量。"""
+        if isinstance(value, (float, complex, np.number, np.ndarray)):
+            array = np.asarray(value)
+            return jax.dtypes.issubdtype(array.dtype, np.inexact) and not np.all(np.isfinite(array))
+        if isinstance(value, dict):
+            return any(self._nonfinite_parameters(v) for v in value.values())
+        if isinstance(value, (tuple, list)):
+            return any(self._nonfinite_parameters(v) for v in value)
+        return False
+
+    def _nonfinite_graph(self, graph):
+        """检查共同调用中的非有限常量与复数极点；循环反馈采用保守上界。"""
+        if graph in self.nonfinite_graphs:
+            return self.nonfinite_graphs[graph]
+        from .correspondence import _parameter_view
+
+        def nonfinite(value, aval):
+            return jax.dtypes.issubdtype(aval.dtype, np.inexact) and not np.all(
+                np.isfinite(np.asarray(value, dtype=aval.dtype))
+            )
+
+        found = any(
+            nonfinite(value, var.aval)
+            for var, value in zip(graph.constvars, graph.consts, strict=True)
+        )
+        for eq in graph.eqns:
+            self.budget.spend(path="algebra.nonfinite_graph")
+            found |= eq.primitive is lax.tanh_p and any(
+                jax.dtypes.issubdtype(var.aval.dtype, np.complexfloating) for var in eq.invars
+            )
+            found |= self._nonfinite_parameters(eq.params)
+            found |= any(
+                nonfinite(var.val, var.aval) for var in eq.invars if isinstance(var, core.Literal)
+            )
+            _, children = _parameter_view(
+                eq, lambda _: None, derivative_scope="primal", parent=graph
+            )
+            for child in children.values():
+                found |= self._nonfinite_graph(child)
+        found |= any(
+            nonfinite(var.val, var.aval) for var in graph.outvars if isinstance(var, core.Literal)
+        )
+        self.nonfinite_graphs[graph] = bool(found)
+        return bool(found)
+
+    def _mark_nonfinite(self, value, possible):
+        """标记与 total 分开：部分实数函数不一定含无穷，非有限值不能消项。"""
+        if possible and jax.dtypes.issubdtype(value.dtype, np.inexact):
+            return replace(value, body=replace(value.body, total=False), nonfinite=True)
+        return value
 
     def _axes(self, aval):
         """首期只接纳给定签名中的具体非负维度。"""
@@ -153,18 +217,32 @@ class Lowerer:
         cache[expression] = result
         return result
 
-    def _input(self, aval, identity):
+    def _input(self, aval, identity, *, nonfinite=False):
         """读取外部输入或固定循环形参，身份由有序接口锚定。"""
         semantic = ("input", identity, encode(aval))
         self.read_shapes[semantic] = tuple(aval.shape)
-        return self._tensor(aval, Expr("atom", (semantic, self._axes(aval))))
+        return self._record_finiteness(
+            self._tensor(aval, Expr("atom", (semantic, self._axes(aval)))),
+            identity[0] == "argument" and not nonfinite,
+            possible=nonfinite,
+        )
 
     def _constant(self, value, aval):
         """保留数组完整内容；有限实数标量按实际 dtype 值精确解释。"""
         array = np.asarray(value, dtype=aval.dtype)
         real = jax.dtypes.issubdtype(aval.dtype, np.floating)
+        if jax.dtypes.issubdtype(aval.dtype, np.complexfloating) and not np.all(np.isfinite(array)):
+            raise UnsupportedJaxprError("algebra.constant", "non-finite complex constant")
         if real and not np.all(np.isfinite(array)):
-            raise UnsupportedJaxprError("algebra.constant", "non-finite constant")
+            if not np.all(np.isfinite(array) | np.isneginf(array)):
+                raise UnsupportedJaxprError("algebra.constant", "non-finite constant")
+            semantic = ("negative_infinity_constant", encode(aval), encode(array))
+            self.read_shapes[semantic] = tuple(aval.shape)
+            self.rules.add("negative_infinity_constant")
+            return self._mark_nonfinite(
+                self._tensor(aval, Expr("atom", (semantic, self._axes(aval)), total=False)),
+                True,
+            )
         if real and array.shape == ():
             # 锁定 CPU 浮点类型均可无损提升为 Python binary64 再取精确比值。
             body = Expr("constant", ratio(Fraction.from_float(float(array))))
@@ -172,7 +250,7 @@ class Lowerer:
             semantic = ("constant", encode(aval), encode(array))
             self.read_shapes[semantic] = tuple(aval.shape)
             body = Expr("atom", (semantic, self._axes(aval)))
-        return self._tensor(aval, body)
+        return self._record_finiteness(self._tensor(aval, body), bool(np.all(np.isfinite(array))))
 
     def _read(self, value, indices):
         """读取已构造张量，不枚举索引域中的元素。"""
@@ -242,6 +320,15 @@ class Lowerer:
         if not self._algebra_allowed(eq, values):
             return None
         primitive, params = eq.primitive, eq.params
+        if any(v.nonfinite for v in values) and primitive not in {
+            lax.broadcast_in_dim_p,
+            lax.transpose_p,
+            lax.squeeze_p,
+            lax.reshape_p,
+            lax.slice_p,
+        }:
+            # 保留非有限运算的顺序与分组；x-x、0*x、分配律不适用于 NaN/Inf。
+            return None
         aval = eq.outvars[0].aval
         indices = self._axes(aval)
         total = all(v.body.total for v in values)
@@ -400,6 +487,11 @@ class Lowerer:
             empty2_p,
         }
         total = eq.primitive in total_primitives and all(v.body.total for v in values)
+        if eq.primitive is lax.tanh_p and not all(
+            jax.dtypes.issubdtype(value.dtype, np.floating) for value in values
+        ):
+            # Complex tanh has poles, even though all input components are finite.
+            total = False
         header = (
             "apply",
             eq.primitive,
@@ -429,6 +521,7 @@ class Lowerer:
             bindings = tuple(
                 self._input(v.aval, ("argument", i)) for i, v in enumerate(graph.invars)
             )
+        from .algebra_finiteness import analyze
         from .algebra_jit import default_jit, transparent_jit
         from .algebra_padding import lower_padding
         from .algebra_piecewise import lower_piecewise
@@ -440,6 +533,14 @@ class Lowerer:
             (v, self._constant(c, v.aval))
             for v, c in zip(graph.constvars, graph.consts, strict=True)
         )
+        finiteness = analyze(self, graph, bindings)
+
+        def record(eq, results, possible=False):
+            return tuple(
+                self._record_finiteness(value, finiteness[var].finite, possible=possible)
+                for var, value in zip(eq.outvars, results, strict=True)
+            )
+
         barriers = []
         inlined_jits = set()
         for eq in graph.eqns:
@@ -449,6 +550,7 @@ class Lowerer:
                 for v in eq.invars
             )
             params = semantic_parameters(eq, scope="primal", parent=graph)
+            nonfinite = any(v.nonfinite for v in values) or self._nonfinite_parameters(params)
             if (
                 self.common_calls is not None
                 and default_jit(eq, params)
@@ -456,17 +558,22 @@ class Lowerer:
             ):
                 # 已复核相同的完整子图可以用函数合同复用；实参和全部返回口仍保留。
                 key, inputs, outputs = self.common_calls.invocations[eq]
+                nonfinite |= self._nonfinite_graph(params["jaxpr"])
                 header = ("common_jit", key)
                 arguments = tuple(values[i].body for i in inputs)
                 results = [None] * len(outputs)
                 for port, mapped in enumerate(outputs):
                     var = eq.outvars[mapped]
                     self.read_shapes[(header, port)] = tuple(var.aval.shape)
-                    results[mapped] = self._tensor(
-                        var.aval,
-                        Expr("atom", ((header, port), self._axes(var.aval)), arguments, True),
+                    results[mapped] = self._mark_nonfinite(
+                        self._tensor(
+                            var.aval,
+                            Expr("atom", ((header, port), self._axes(var.aval)), arguments, True),
+                        ),
+                        nonfinite,
                     )
                 barriers.append(Expr("atom", ((header, "invocation"), ()), arguments, False))
+                results = record(eq, results, nonfinite)
                 environment.update(zip(eq.outvars, results, strict=True))
                 self.rules.add("common_jit")
                 continue
@@ -475,7 +582,7 @@ class Lowerer:
                 # 子图完整转换，内部循环边界和部分函数检查不能随 JIT 一起消失。
                 child = self.graph(params["jaxpr"], values)
                 barriers.extend(child.barriers)
-                environment.update(zip(eq.outvars, child.outputs, strict=True))
+                environment.update(zip(eq.outvars, record(eq, child.outputs), strict=True))
                 inlined_jits.add(eq)
                 self.rules.add("transparent_jit")
                 continue
@@ -483,6 +590,10 @@ class Lowerer:
             adapted = None
             if converted is None:
                 for adapter in (lower_piecewise, lower_scalar, lower_padding, lower_scan):
+                    if adapter in (lower_padding, lower_scan) and any(
+                        value.nonfinite for value in values
+                    ):
+                        continue
                     adapted = adapter(self, eq, values, params)
                     if adapted is not None:
                         break
@@ -501,6 +612,7 @@ class Lowerer:
                 barriers.append(barrier)
             else:
                 results = self._opaque(eq, values, params)
+            results = record(eq, results, nonfinite)
             environment.update(zip(eq.outvars, results, strict=True))
         outputs = tuple(
             self._constant(v.val, v.aval) if isinstance(v, core.Literal) else environment[v]
@@ -536,6 +648,16 @@ class Lowerer:
         try:
             parameters = dict(params)
             arguments = []
+            from .correspondence import _parameter_view
+
+            _, children = _parameter_view(
+                eq, lambda _: None, parameters=params, derivative_scope="primal"
+            )
+            nonfinite = (
+                any(v.nonfinite for v in values)
+                or self._nonfinite_parameters(params)
+                or any(self._nonfinite_graph(child) for child in children.values())
+            )
             if eq.primitive is pjit.jit_p:
                 child = parameters.pop("jaxpr")
                 parameters.pop("name")  # JAX 已审查的诊断名称。
@@ -560,7 +682,7 @@ class Lowerer:
                 nc, nb = parameters.pop("cond_nconsts"), parameters.pop("body_nconsts")
                 initial = values[nc + nb :]
                 carry = tuple(
-                    self._input(v.aval, ("while_carry", depth, i))
+                    self._input(v.aval, ("while_carry", depth, i), nonfinite=nonfinite)
                     for i, v in enumerate(body.invars[nb:])
                 )
                 arguments.extend(
@@ -582,21 +704,25 @@ class Lowerer:
                     self._port(v, ("scan_input", ft_in.vals[i])) for i, v in enumerate(values)
                 )
                 carry = tuple(
-                    self._input(v.aval, ("scan_carry", depth, i))
+                    self._input(v.aval, ("scan_carry", depth, i), nonfinite=nonfinite)
                     for i, v in enumerate(body.invars[nc : nc + nk])
                 )
                 slices = tuple(
-                    self._tensor(
-                        var.aval,
-                        Expr(
-                            "atom",
-                            (
-                                ("scan_slice", value.signature, encode(var.aval)),
-                                self._axes(var.aval),
+                    self._record_finiteness(
+                        self._tensor(
+                            var.aval,
+                            Expr(
+                                "atom",
+                                (
+                                    ("scan_slice", value.signature, encode(var.aval)),
+                                    self._axes(var.aval),
+                                ),
+                                (value.body,),
+                                value.body.total,
                             ),
-                            (value.body,),
-                            value.body.total,
                         ),
+                        self.finite_values.get(value, False),
+                        possible=value.nonfinite,
                     )
                     for var, value in zip(body.invars[nc + nk :], bound[nc + nk :], strict=True)
                 )
@@ -626,7 +752,7 @@ class Lowerer:
                 for port, v in enumerate(eq.outvars)
             )
             self.rules.add(f"region:{eq.primitive}")
-            return outputs, barrier
+            return tuple(self._mark_nonfinite(v, nonfinite) for v in outputs), barrier
         finally:
             self.region_depth = depth
 
@@ -641,7 +767,10 @@ class Lowerer:
             (value.body,),
             value.body.total,
         )
-        return Tensor(value.signature, value.shape, value.dtype, body)
+        return self._record_finiteness(
+            Tensor(value.signature, value.shape, value.dtype, body, value.nonfinite),
+            self.finite_values.get(value, False),
+        )
 
     def _bag(self, values):
         """私有捕获的集合保留每次绑定及其重数，不依赖捕获顺序。"""

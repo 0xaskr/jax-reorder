@@ -46,11 +46,27 @@
 
 ## 当前边界
 
+`-inf` mask 已加入受限支持，设计与验收见[完成计划](../exec-plans/completed/negative-infinity-masks.md)。
+负无穷及含负无穷的捕获数组保留 dtype、shape、完整内容，不进入有理数系数。
+内部 Tensor 的 `nonfinite` 标记表示可能依赖显式非有限值，与部分函数的 `total` 独立。
+标记沿浮点/复数结果传播；比较和索引等整数/布尔结果仍保留完整调用语义。
+可能非有限的乘加、消项、幂、归约和点积保持原语，索引视图及有限子表达式仍可规范化。
+
+共同 JIT、循环体的字面量、捕获数组以及 gather `fill_value` 等参数都检查非有限值。
+含这些值的循环保守标记浮点 carry 和区域输出，禁止按独立有限累加器消去循环。
+不假设 softmax 输出必定有限，也不删除全 mask 行后续的 where 防护。
+NaN / 正无穷字面量及捕获常量仍拒绝展开；原有纯调用中的参数保持精确身份并传播标记。
+有限输入和有限代数子表达式仍是证明前提，这不是一般 IEEE 浮点等价算法。
+
+[回归](../../tests/test_algebra_negative_infinity.py)覆盖有限分支经过 mask/softmax/top-k 的改写，
+不同谓词、分支、常量、`x-x` / `0*x` 的错误消项，共同 JIT、循环后续迭代、
+gather 非有限填充值、全 mask 行防护以及证明篡改。独立校验器从原图重建这些边界。
+
 - 新增规则用于实数浮点的理想实数解释。整数、复数、特殊精度、布局和分片保留原边界；布尔谓词及实数类型转换接入显式标量函数；结构等价仍可直接通过。
 - 代数转换要求静态 shape 和有限独立矩形求和域。reshape 和静态切片已转换为符号索引，动态索引域、对角读取以及其他未经适配的索引变换仍无完整规则。
 - token、有序操作和未适配的嵌套原语不进入代数展开；原结构层能够证明的图仍通过结构证据接受。公开原语清单中的 27 个此类用例有明确拒绝断言，没有因转换失败而跳过检查。
 - 除已审核的默认纯 JIT 组合及条件/scan 适配外，区域边界、调用参数、反馈与返回接口保持固定。未适配的求导区域结构变化仍可能返回 `unknown`；前向局部改写不保证任意变换后的区域接口仍相同。动态 while 的 VJP 由锁定 JAX 拒绝，单独记为 `trace_rejected`。
-- 并非任意数学恒等式的完备判定。多项式展开、同色索引搜索和深度均可能触发明确停止；`unknown` 不能解释为数学不等价。真实模型的新代数改写和 GPU/TPU 执行不在本期验收内。
+- 并非任意数学恒等式的完备判定。多项式展开、同色索引搜索和深度均可能触发明确停止；`unknown` 不能解释为数学不等价。其他模型改写和 GPU/TPU 执行没有整体保证；真实 GLM 的当前验收范围见下方后端接入及核心层记录。
 
 详见[后续核心设计及当前边界](algebraic-reduction-gaps.md)。
 
@@ -60,7 +76,51 @@
 
 数值实验单独保存实数等价但浮点不同的见证，不作为证明替代品。[结构蕴含回归](../../tests/test_algebra_structural.py)把原有 182 组公开原语 IR 与其结构规范化结果成对送入代数入口，全部要求等价；其中 155 组另外直接通过转换、展开和独立证明，其余 27 组明确断言适配边界。加上预算直通、函数三模式和篡改证据，共 371 项通过。
 
-最终全量 pytest 为 **1600 passed，1 warning，426.75 秒**；Ruff、格式、tracing/BFS/cond 示例、原语及适配清单、双/四 CPU 各 22 组通信验证均通过。唯一 warning 来自保留的上游 Pallas 弃用接口。具体命令记录在执行计划中。[代数示例](../../examples/algebraic_equivalence.py)的分配律、矩阵与乘加归约均通过 forward/JVP/VJP 证明、独立复核及 CPU 编译。
+初期代数功能阶段的全量 pytest 为 **1600 passed，1 warning，426.75 秒**；Ruff、格式、tracing/BFS/cond 示例、原语及适配清单、双/四 CPU 各 22 组通信验证均通过。唯一 warning 来自保留的上游 Pallas 弃用接口。具体命令记录在执行计划中。[代数示例](../../examples/algebraic_equivalence.py)的分配律、矩阵与乘加归约均通过 forward/JVP/VJP 证明、独立复核及 CPU 编译。
+
+## SymPy 接入与数学不等价证据（2026-10-15）
+
+本轮延续既有 `Lowerer → Expr/Term → PolynomialNormalizer → proof checker`，不另建实验版 jaxpr 前端。
+SymPy 只生成受限数学变换候选；接受结果必须附独立可重放的局部证据。禁止以
+`equals()`、随机求值、无条件 `simplify()` 或 CAS 搜索失败作为判等/不等价依据。
+
+- 标量改写在每步原始项表产生后、域双射和绑定轴规范化之前执行；原始 Expr、premises、
+  原图对应和有序输出仍绑定源图。证据检查器不导入 SymPy 或调用规范化搜索。
+- 正式依赖为 SymPy 1.14。首批覆盖有限实数 exp 的加法/乘法恒等式和零点、非零常数除法、
+  两个有限 exp 的商，以及有非零证据的同式相除。`exp_defined` 在子证据已消除部分性后
+  复核 exp 的数学总性，使 `exp(x/2)` 与 `exp(x*0.5)` 等组合也能完成证明。
+  `total` 不是非零证据；`x/x` 不能无条件化为 1。非有限原子不可转换成可任意消去的实符号。
+  SymPy 符号映射保留完整 Factor、Index 和 scope 身份，有限和继续由既有索引证明处理。
+- 新的数学不等价状态与结构 `different` 分离。负证据首先支持完整真实输出的实数多项式，
+  变量只来自可追溯输入元素，系数精确有理。区域 barriers、未解释函数和中间节点不同均不能
+  提供完整程序反例；不支持的数学域继续返回定位明确的 unknown。
+  `PolynomialInequivalenceProof` 绑定原图、真实输出槽位、合法坐标、输入元素单项式和非零
+  差系数；独立验证器按指定单项式计算系数，不复用候选展开。结论是存在输入使两函数不同，
+  不是每个输入都不同。当前要求全部输出是有限实数多项式且没有区域 barriers；张量常量、
+  未解释函数、整数/复数和带条件定义域仍拒绝。大输出域惰性取坐标，大归约在枚举前计预算。
+- guarded-softmax 的有限性规则必须验证同一 mask、有限 logits、匹配的 max/sum 归约域、
+  广播和最后的零分支；全 mask 行依靠最终 guard 定义为零。错 guard/错轴不能获得此事实。
+  独立校验从源图重建有限性，不能信任外部传入的 nonfinite 标记。
+  新的有限性事实不修改部分求值 `Expr.total`。默认 NaN gather fill、窄化转换和循环 carry
+  仍保守处理；只有审核过的有限输入/常量/扫描切片才能提供有限性事实。
+- 预算覆盖转换、表达式增长和证据复核。测试包括正负例、空域、未满足定义域、索引捕获、
+  非有限值、证据篡改，以及禁用 CAS/规范化器后仍可复核的独立性检查。
+
+完整 GLM 负例还需要精确处理 approximate top-k、动态 gather 和 scan。局部 QK 或 PV 的
+结论不提升成完整 layer 结论；若本轮不能建立源输入到最终输出的证据，保留具体 unknown。
+工作进度见[执行计划](../exec-plans/active/symbolic-math-integration.md)。
+
+实现与验收：[CAS 候选](../../src/jax_reorder/algebra_sympy.py)、
+[标量证据复核](../../src/jax_reorder/algebra_scalar_proof.py)、
+[数学不等价证据](../../src/jax_reorder/algebra_inequivalence.py)、
+[有限性规则](../../src/jax_reorder/algebra_finiteness.py)。
+对应回归为 [CAS](../../tests/test_algebra_sympy.py)、
+[负证据](../../tests/test_algebra_inequivalence.py) 与
+[guarded softmax](../../tests/test_algebra_finiteness.py)。
+
+本轮冻结后的全量验证为 **2095 passed，1 warning，944.74 秒**；Ruff、169 个 Python 文件
+格式、依赖锁一致性、tracing 示例、文档链接和差异检查通过。GLM 三组抽象签名均为
+5 个正例已证明、5 个负例 unknown，且禁止编译/eager 执行。
 
 ## 实施中发现并修复的前置问题
 

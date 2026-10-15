@@ -16,6 +16,7 @@ from .algebra_indices import coordinates, leaves, map_factors, scalar_factor, us
 from .algebra_ir import AlgebraStep, Budget, Factor, Index, Term, ratio
 from .algebra_lower import Lowerer
 from .algebra_padding import simplify_prefix_factors
+from .algebra_scalar_proof import replay as replay_scalar
 from .correspondence import GraphCorrespondence, verify_correspondence
 from .errors import CorrespondenceError
 from .unrooted import order_key
@@ -151,6 +152,7 @@ def _check_term(term, order, key=order_key):
 def _check_step(step, children, budget, key=order_key):
     """独立汇总经见证转换的每一项，精确核对结果及消项定义域。"""
     originals = _raw_rule(step, children, budget, key)
+    originals = replay_scalar(originals, step.scalar_rewrites, budget, key)
     _require(len(step.domains) == len(originals), "missing domain witnesses")
     raw = []
     for original, witnesses in zip(originals, step.domains, strict=True):

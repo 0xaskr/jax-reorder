@@ -97,6 +97,7 @@ class Status(StrEnum):
 
     # 使用字符串枚举，调用方可以直接以 .value 写入结构化报告。
     EQUIVALENT = "equivalent"
+    INEQUIVALENT = "inequivalent"
     DIFFERENT = "different"
     UNKNOWN = "unknown"
 

@@ -107,6 +107,8 @@ def _select_absolute(lowerer, eq, values):
     """证明正半轴取 x、负半轴取 -x；零点两者都等于实数零。"""
     if eq.primitive is not lax.select_n_p or eq.params or len(values) != 3:
         return None
+    if any(value.nonfinite for value in values):
+        return None
     condition, false_value, true_value = values
     aval = eq.outvars[0].aval
     if condition.dtype != np.dtype("bool") or not lowerer._algebra_allowed(
@@ -254,6 +256,7 @@ def lower_piecewise(lowerer, eq, values, params):
         eq.primitive is lax.abs_p
         and not params
         and len(values) == 1
+        and not values[0].nonfinite
         and lowerer._algebra_allowed(eq, values)
     ):
         aval = eq.outvars[0].aval

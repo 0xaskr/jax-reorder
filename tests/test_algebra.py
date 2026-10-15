@@ -16,6 +16,7 @@ from jax_reorder import (
     compare_functions,
     compare_jaxprs,
     trace_function,
+    verify_inequivalence_proof,
 )
 
 
@@ -26,9 +27,11 @@ def signature(shape=(), dtype=jnp.float32):
 
 def algebra(left, right, *args, **options):
     """从实际 JAX 追踪图调用底层代数入口。"""
-    return compare_algebraic_jaxprs(
-        jax.make_jaxpr(left)(*args), jax.make_jaxpr(right)(*args), **options
-    )
+    a, b = jax.make_jaxpr(left)(*args), jax.make_jaxpr(right)(*args)
+    result = compare_algebraic_jaxprs(a, b, **options)
+    if result.status == Status.INEQUIVALENT:
+        verify_inequivalence_proof(a, b, result.inequivalence_proof)
+    return result
 
 
 POLYNOMIALS = [
@@ -132,7 +135,8 @@ def test_product_of_independent_sums_retains_all_cross_terms():
     )
     assert result.status == Status.EQUIVALENT, result
     wrong = algebra(lambda a, b: jnp.sum(a) * jnp.sum(b), lambda a, b: jnp.sum(a * b), x, x)
-    assert wrong.status == Status.UNKNOWN
+    assert wrong.status == Status.INEQUIVALENT
+    assert wrong.inequivalence_proof is not None
 
 
 @pytest.mark.parametrize(
@@ -144,13 +148,24 @@ def test_product_of_independent_sums_retains_all_cross_terms():
         ((lambda a, b: a + b[:, None], lambda a, b: a + b[None, :]), ((3, 3), (3,))),
         ((lambda a, b: (a, b), lambda a, b: (b, a)), ((3,), (3,))),
         ((lambda a, b: a @ b, lambda a, b: a @ b.T), ((3, 3), (3, 3))),
-        ((lambda a, b: jnp.max(a + b), lambda a, b: jnp.max(a) + jnp.max(b)), ((3,), (3,))),
     ],
 )
-def test_wrong_index_connections_and_unsupported_rules_are_not_proofs(pair, shapes):
+def test_wrong_index_connections_have_complete_output_negative_proofs(pair, shapes):
     result = algebra(*pair, *(signature(s) for s in shapes))
-    assert result.status == Status.UNKNOWN, result
+    assert result.status == Status.INEQUIVALENT, result
     assert result.proof is None
+    assert result.inequivalence_proof is not None
+
+
+def test_unsupported_maximum_difference_remains_unknown():
+    result = algebra(
+        lambda a, b: jnp.max(a + b),
+        lambda a, b: jnp.max(a) + jnp.max(b),
+        signature((3,)),
+        signature((3,)),
+    )
+    assert result.status == Status.UNKNOWN
+    assert result.proof is None and result.inequivalence_proof is None
 
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.complex64])

@@ -12,6 +12,7 @@ from jax_reorder import (
     compare_algebraic_jaxprs,
     compare_functions,
     verify_algebraic_proof,
+    verify_inequivalence_proof,
 )
 
 
@@ -95,14 +96,16 @@ def test_views_compose_without_source_operator_patterns():
     ],
 )
 def test_domain_gaps_overlap_repetition_and_stride_never_match_full_sum(wrong):
-    _, _, result = compare(jnp.sum, wrong, (5, 4))
-    assert result.status == Status.UNKNOWN, result
+    a, b, result = compare(jnp.sum, wrong, (5, 4))
+    assert result.status == Status.INEQUIVALENT, result
+    verify_inequivalence_proof(a, b, result.inequivalence_proof)
 
 
 def test_output_positions_and_shape_mappings_remain_observable():
     for wrong in (lambda x: x.T.reshape(3, 4), lambda x: x.reshape(4, 3).T):
-        _, _, result = compare(lambda x: x, wrong, (3, 4))
-        assert result.status == Status.UNKNOWN, result
+        a, b, result = compare(lambda x: x, wrong, (3, 4))
+        assert result.status == Status.INEQUIVALENT, result
+        verify_inequivalence_proof(a, b, result.inequivalence_proof)
     _, _, result = compare(lambda x: jnp.sin(jnp.sum(x)), lambda x: jnp.sum(jnp.sin(x)), (5,))
     assert result.status == Status.UNKNOWN, result
 

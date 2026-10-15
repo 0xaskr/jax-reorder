@@ -17,10 +17,12 @@ verify_correspondence 可独立复核这份证据，不重新执行规范化。
 
 函数入口默认在结构不同时尝试索引代数证明；equivalence="structural" 保留结构语义。
 代数结论使用带明确浮点警告的理想实数解释，不代表一般 Python 或逐位浮点等价。
-different 表示图或函数契约有差异，不直接证明数学公式不等价；unknown 表示检查未完成。
+inequivalent 表示有完整输出的数学不等价证据；different 仅表示图或函数契约有差异；
+unknown 表示检查未完成。
 """
 
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs
+from .algebra_inequivalence import PolynomialInequivalenceProof, verify_inequivalence_proof
 from .algebra_proof import AlgebraProof, verify_algebraic_proof
 from .canonical import Canonicalized, Comparison, Status, canonicalize, compare_jaxprs
 from .correspondence import EquationCorrespondence, GraphCorrespondence, verify_correspondence
@@ -47,7 +49,8 @@ __all__ = [
     "FunctionTrace",  # 单模式追踪产物：函数契约、环境、物化 jaxpr 和动态输入抽象签名。
     "GraphCorrespondence",  # 整张原图的对应证据：输入、常量、方程及输出的左到右双射。
     "ModeComparison",  # 单个 forward/JVP/VJP 模式的报告，保留图比较、失败类别和追踪结果。
-    "Status",  # 统一状态枚举：EQUIVALENT（等价）、DIFFERENT（不同）、UNKNOWN（无法判定）。
+    "PolynomialInequivalenceProof",  # 绑定完整输出的非零多项式系数证据。
+    "Status",  # equivalent、inequivalent、different（结构/契约）与 unknown。
     "InvalidJaxprError",  # 图不合法：重复定义、悬空引用、依赖环或 JAX 类型检查失败。
     "JaxprError",  # 图处理异常基类，携带 path 和 reason，便于统一捕获和定位问题。
     "CorrespondenceError",  # 对应证据缺失、映射不完整或绑定不保持语义时的错误。
@@ -60,6 +63,7 @@ __all__ = [
     "trace_function",  # 按输入签名及指定 forward/JVP/VJP 模式追踪一个函数，返回 FunctionTrace。
     "verify_correspondence",  # 直接核对原图及给定映射；校验通过返回 None，失败抛出异常。
     "verify_algebraic_proof",  # 从原图复核代数证据；不执行规范化搜索。
+    "verify_inequivalence_proof",  # 从原图独立复核完整输出的数学不等价证据。
 ]
 
 # 包自身版本；JAX/jaxlib 的受审查版本由规范化和对应校验入口另行检查。
