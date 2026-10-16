@@ -75,9 +75,11 @@ def measure(outputs):
     }
 
 
-def jax2sympy_probe():
-    from jax2sympy import jaxpr_to_sympy_expressions as convert
-    from jax2sympy.primitive_mapping import primitive_to_sympy_op
+def jax2sympy_probe(*, convert=None, mappings=None):
+    if convert is None:
+        from jax2sympy import jaxpr_to_sympy_expressions as convert
+    if mappings is None:
+        from jax2sympy.primitive_mapping import primitive_to_sympy_op as mappings
 
     scalar = jax.ShapeDtypeStruct((), jnp.float32)
     vector = jax.ShapeDtypeStruct((3,), jnp.float32)
@@ -200,8 +202,8 @@ def jax2sympy_probe():
     except Exception as error:
         default_mapping = f"{type(error).__name__}: {error}"
     return {
-        "primitive_mapping_count": len(primitive_to_sympy_op),
-        "primitive_mappings": sorted(primitive_to_sympy_op),
+        "primitive_mapping_count": len(mappings),
+        "primitive_mappings": sorted(mappings),
         "default_mapping_repeat": default_mapping,
         "records": records,
         "caveats": [

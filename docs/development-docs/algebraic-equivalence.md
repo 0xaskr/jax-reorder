@@ -10,9 +10,12 @@
 用户已要求恢复实施。下文“仅候选、独立复核”的内容保留为旧后端的设计记录；
 架构评估与本地 fork 探针见[复用报告](equivalence-backends/architecture-reuse.md)，迁移进展在计划中记录。
 
-新转换路径以仓库内 jax2sympy fork 的 SSA 遍历/分派为入口。构造器返回 SymPy 的 Indexed/Sum
-元素公式及原始定义条件，shape 和输出坐标独立保存；不先生成旧 PolynomialNormalizer 的项表。
-逐点算子复用上游映射，轴布局和区域绑定逐项适配。转换缺失明确 unknown，不删除不透明依赖。
+新转换路径已将 jax2sympy 的 SSA 遍历和 36 个逐点映射直接并入 SymbolicBuilder，精确常量转换一并保留。
+构造器返回 SymPy 的 Indexed/Sum 元素公式及原始定义条件，shape 和输出坐标独立保存；
+轴布局和区域绑定逐项适配。转换缺失明确 unknown，不删除不透明依赖。
+原有完整数组映射及逐元素转换入口迁至 algebra_explicit.py，供公式基准与后续扩展使用；
+它不跟踪定义条件，不参与生产数学判等。两个承载文件的开头保留来源、固定 revision 和完整 MIT 声明，
+不再保留 vendor 包或 manifest。重构记录见[迁移计划](../exec-plans/completed/inline-symbolic-converter.md)。
 
 查询在可终止的独立进程中运行，覆盖符号构造和化简的墙钟预算；传入的是已经结构校验的图数据，
 不执行 JAX 数组。所有输出及条件通过才判等，完整最终输出的不恒等才作负结论。
@@ -34,9 +37,9 @@
 | 模块 | 当前职责 |
 | --- | --- |
 | [algebra.py](../../src/jax_reorder/algebra.py) | 结构快路径、函数契约、共享调用的端口对应和新结果汇总 |
-| [_vendor/jax2sympy](../../src/jax_reorder/_vendor/jax2sympy/translate.py) | 固定 MIT 上游的 SSA 遍历/primitive 分派，新增 builder 接口；原逐元素接口用于小图对照 |
+| [algebra_explicit.py](../../src/jax_reorder/algebra_explicit.py) | 完整数组映射与逐元素转换参考接口，保留尚未用于生产的转换代码 |
 | [algebra_transport.py](../../src/jax_reorder/algebra_transport.py) | 校验后的图、常量、参数与区域接口冻结为独立进程输入 |
-| [algebra_symbolic.py](../../src/jax_reorder/algebra_symbolic.py) | Indexed/Sum、坐标布局、Piecewise、原始条件、不透明定义与词法作用域 |
+| [algebra_symbolic.py](../../src/jax_reorder/algebra_symbolic.py) | SSA 遍历、精确常量、直接标量映射、Indexed/Sum、原始条件与词法作用域 |
 | [algebra_symbolic_regions.py](../../src/jax_reorder/algebra_symbolic_regions.py) | cond、独立 scan 累加、受限符号展开和 while 绑定 |
 | [algebra_trusted.py](../../src/jax_reorder/algebra_trusted.py) | SymPy ArrayExpr/逻辑/恒等查询、完整输出汇总与可终止 worker |
 
@@ -108,7 +111,7 @@ Nerva 两套固定源码及许可证仅位于测试 fixture；hash 检查后从�
 覆盖 softmax/log-softmax、激活、Hadamard/矩阵乘法、平方损失及梯度；比较期间阻断 JAX 后端执行。
 输入为有限实数解释的 float32 `(2,3)` 抽象矩阵；softmax 按行归一化，矩阵乘法右输入为 `(3,2)`。
 平方损失输出标量，梯度输出 `(2,3)`；其余输出契约由两端公式逐坐标核对，没有添加正值输入假设。
-[上游转换基线](../../tests/test_jax2sympy_vendor.py)保留 23 项探针，
+[逐元素转换基线](../../tests/test_symbolic_explicit.py)保留 23 项探针，
 [新后端测试](../../tests/test_trusted_sympy.py)覆盖实际查询、资源恢复、域和绑定边界。
 
 运行 [规模脚本](../../tools/experiments/equivalence_backends/trusted_sympy_scaling.py)：

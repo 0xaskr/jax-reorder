@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import sympy as sp
 
-from jax_reorder._vendor.jax2sympy import jaxpr_to_sympy_expressions
+from jax_reorder.algebra_explicit import jaxpr_to_sympy_expressions
 from jax_reorder.algebra_symbolic import SymbolicBuilder
 from jax_reorder.algebra_transport import freeze
 

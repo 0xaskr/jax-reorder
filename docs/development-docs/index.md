@@ -7,6 +7,7 @@
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
 | 可信 SymPy 数学判等、定义条件与结果接口 | [algebraic-equivalence.md](algebraic-equivalence.md) |
 | 开源数学等价后端的并行评估与符号探针 | [open-source-equivalence-backends.md](open-source-equivalence-backends.md) |
+| 符号计算与代码等价研究概览及论文入口 | [2026-10-16 research](equivalence-backends/symbolic-code-equivalence-research-2026-10-16.md) |
 | 可修改的 JAX 转换器、符号张量与 Nerva 成套公式资产 | [architecture-reuse.md](equivalence-backends/architecture-reuse.md) |
 | 旧标量索引 IR 与证明器的历史设计 | [algebraic-reduction-gaps.md](algebraic-reduction-gaps.md) |
 | DeepSeek-V4.1-Flash 原始 mHC 层的代数改写与验证 | [deepseek-v41-layer.md](deepseek-v41-layer.md) |

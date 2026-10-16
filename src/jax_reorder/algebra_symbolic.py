@@ -1,15 +1,40 @@
-"""Shape-preserving SymPy construction for the locally maintained jax2sympy front end."""
+# Traversal and scalar mappings adapted from johnviljoen/jax2sympy,
+# revision 2cb6a6568716b26af0abd542a941f87ae0580e25.
+# MIT License
+#
+# Copyright (c) 2026 John Viljoen
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+# LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+# WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+"""Shape-preserving SymPy construction from validated JAX graphs."""
 
 from dataclasses import dataclass, replace
+from functools import reduce
 from itertools import product
 from math import prod
+from operator import add, mul, neg, sub, truediv
 
 import numpy as np
 import sympy as sp
 from jax import dtypes, lax
 
-from ._vendor.jax2sympy.primitive_mapping import primitive_to_sympy_op
-from ._vendor.jax2sympy.translate import exact_array, jaxpr_to_sympy_expressions
 from .algebra_budget import Budget
 from .algebra_finiteness import Finiteness, Source
 from .errors import UnsupportedJaxprError
@@ -24,6 +49,20 @@ def coordinates(shape):
 
 def dtype_kind(dtype):
     return "f" if dtypes.issubdtype(dtype, np.floating) else np.dtype(dtype).kind
+
+
+def _exact_array(value):
+    def exact_scalar(x):
+        x = np.asarray(x).item()
+        if isinstance(x, (bool, np.bool_)):
+            return sp.true if x else sp.false
+        if isinstance(x, (int, np.integer)):
+            return sp.Integer(int(x))
+        if isinstance(x, (float, np.floating)) and np.isfinite(x):
+            return sp.Rational(float(x))
+        return sp.sympify(x)
+
+    return np.vectorize(exact_scalar, otypes=[object])(np.asarray(value))
 
 
 def rename_bounds(expression, *, fresh=False):
@@ -141,11 +180,44 @@ class SymbolicTensor:
         )
 
 
-SCALAR = frozenset(
-    "add sub mul div neg pow integer_pow sign square abs exp log sin cos tan asin "
-    "acos atan sinh cosh tanh sqrt eq ne lt le gt ge not and or max min "
-    "logaddexp atan2 add_any".split()
-)
+SCALAR = {
+    "add": add,
+    "sub": sub,
+    "mul": mul,
+    "div": truediv,
+    "neg": neg,
+    "pow": pow,
+    "integer_pow": pow,
+    "sign": sp.sign,
+    "square": lambda a: a**2,
+    "abs": sp.Abs,
+    "exp": sp.exp,
+    "log": sp.log,
+    "sin": sp.sin,
+    "cos": sp.cos,
+    "tan": sp.tan,
+    "asin": sp.asin,
+    "acos": sp.acos,
+    "atan": sp.atan,
+    "sinh": sp.sinh,
+    "cosh": sp.cosh,
+    "tanh": sp.tanh,
+    "sqrt": sp.sqrt,
+    "eq": sp.Eq,
+    "ne": sp.Ne,
+    "lt": sp.StrictLessThan,
+    "le": sp.LessThan,
+    "gt": sp.StrictGreaterThan,
+    "ge": sp.GreaterThan,
+    "not": sp.Not,
+    "and": sp.And,
+    "or": sp.Or,
+    "max": sp.Max,
+    "min": sp.Min,
+    "logaddexp": lambda a, b: sp.log(sp.exp(a) + sp.exp(b)),
+    "atan2": sp.atan2,
+    "add_any": lambda *args: reduce(add, args),
+}
 
 
 class SymbolicBuilder:
@@ -189,7 +261,7 @@ class SymbolicBuilder:
                 "algebra.constant", "positive infinity and NaN literals are not represented"
             )
         self.budget.spend(max(1, array.size), path="algebra.constants")
-        exact = exact_array(array)
+        exact = _exact_array(array)
         if array.size == 0:
             expression = sp.S.Zero
         elif array.size == 1 or np.all(array == array.flat[0]):
@@ -221,8 +293,37 @@ class SymbolicBuilder:
         )
 
     def graph(self, graph, inputs=None):
-        bindings = None if inputs is None else dict(zip(graph.invars, inputs, strict=True))
-        return jaxpr_to_sympy_expressions(graph, var2sym=bindings, builder=self)[0]
+        environment = {} if inputs is None else dict(zip(graph.invars, inputs, strict=True))
+        for position, var in enumerate(graph.invars):
+            if var not in environment:
+                environment[var] = self.input(var.aval, position)
+        for var, value in zip(graph.constvars, graph.consts, strict=True):
+            environment[var] = self.constant(value, var.aval)
+
+        def read(var):
+            if hasattr(var, "val"):
+                return self.constant(var.val, var.aval)
+            return environment[var]
+
+        for position, equation in enumerate(graph.eqns):
+            self.budget.spend(path=f"algebra.convert.eqns[{position}]")
+            values = [read(var) for var in equation.invars]
+            outputs = self.operation(equation, values, position)
+            for var, output in zip(equation.outvars, outputs, strict=True):
+                if tuple(var.aval.shape) != output.shape:
+                    raise ValueError("symbolic output shape differs from the jaxpr")
+                environment[var] = output
+
+        # Unused partial computations still constrain the original program's domain.
+        used = {var for var in graph.outvars if not hasattr(var, "val")}
+        unused = []
+        for equation in reversed(graph.eqns):
+            if any(var in used for var in equation.outvars):
+                used.update(var for var in equation.invars if not hasattr(var, "val"))
+            else:
+                unused.extend(environment[var] for var in equation.outvars)
+        unused.extend(environment[var] for var in graph.invars if var not in used)
+        return self.finish([read(var) for var in graph.outvars], unused)
 
     def finish(self, outputs, unused):
         from .algebra_trusted import _domain
@@ -632,10 +733,8 @@ class SymbolicBuilder:
                 domain &= sp.Ne(sp.cos(args[0]), 0)
             elif name == "atan2":
                 domain &= sp.Or(sp.Ne(args[0], 0), sp.Ne(args[1], 0))
-            expression = primitive_to_sympy_op[name](
-                [np.asarray(x, dtype=object) for x in args], eq
-            )
-            expression = sp.sympify(np.asarray(expression).item())
+            scalar_args = (*args, params["y"]) if name == "integer_pow" else args
+            expression = sp.sympify(SCALAR[name](*scalar_args))
             if dtype_kind(aval.dtype) in "iu" and not expression.free_symbols:
                 limits = np.iinfo(aval.dtype)
                 if not expression.is_Integer or not limits.min <= expression <= limits.max:
@@ -654,7 +753,7 @@ class SymbolicBuilder:
                 return result(sp.Piecewise((1, expression), (0, True)), domain)
             if not expression.free_symbols:
                 converted = np.asarray(float(expression), dtype=aval.dtype)
-                return result(exact_array(converted).item(), domain)
+                return result(_exact_array(converted).item(), domain)
             if dtype_kind(value.dtype) == dtype_kind(aval.dtype) == "f":
                 function = sp.Function(f"cast_{value.dtype}_to_{aval.dtype}", real=True)
                 self.rules.add("scalar:convert_element_type")
