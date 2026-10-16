@@ -8,11 +8,11 @@ import jax.numpy as jnp
 import pytest
 import sympy
 from jax._src import compiler, dispatch
+from legacy_algebra import compare_algebraic_jaxprs
 
 from jax_reorder import (
     CorrespondenceError,
     Status,
-    compare_algebraic_jaxprs,
     verify_algebraic_proof,
 )
 from jax_reorder.algebra_ir import Budget, Expr, Factor, Index, Term

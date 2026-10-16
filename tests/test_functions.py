@@ -220,8 +220,6 @@ def test_invalid_mode_specification_is_rejected(modes):
 
 
 def test_mathematical_inequivalence_retains_structural_report_and_output_evidence():
-    from jax_reorder import verify_inequivalence_proof
-
     x = jax.ShapeDtypeStruct((3,), jnp.float32)
     result = compare_functions(lambda x: x, lambda x: 2 * x, x)
     assert result.status == Status.INEQUIVALENT
@@ -231,7 +229,8 @@ def test_mathematical_inequivalence_retains_structural_report_and_output_evidenc
     assert mode.failure_kind is None
     assert mode.difference == "algebra.outputs[0]"
     assert mode.algebra.proof is None
-    verify_inequivalence_proof(mode.left.jaxpr, mode.right.jaxpr, mode.algebra.inequivalence_proof)
+    assert mode.algebra.backend_result.output == 0
+    assert any(query.answer is False for query in mode.algebra.backend_result.queries)
 
 
 def test_proven_inequivalence_is_preserved_when_another_requested_mode_is_unknown(monkeypatch):
@@ -281,4 +280,4 @@ def test_derivative_inequivalence_does_not_change_the_forward_verdict():
     forward, jvp = result.modes
     assert forward.status == Status.EQUIVALENT and forward.difference is None
     assert jvp.status == Status.INEQUIVALENT
-    assert jvp.algebra.inequivalence_proof.output == 1
+    assert jvp.algebra.backend_result.output == 1

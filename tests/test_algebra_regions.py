@@ -108,8 +108,8 @@ def test_custom_derivatives_are_checked_separately_from_forward():
 
     result = compare_functions(make(2), make(3), jnp.float32(1), modes=("forward", "jvp", "vjp"))
     assert result.modes[0].status == Status.EQUIVALENT
-    assert result.modes[1].status == result.modes[2].status == Status.UNKNOWN
-    assert result.status == Status.UNKNOWN
+    assert result.modes[1].status == result.modes[2].status == Status.INEQUIVALENT
+    assert result.status == Status.INEQUIVALENT
 
 
 def test_transform_order_and_unrequested_derivatives_remain_explicit():

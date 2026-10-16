@@ -107,4 +107,4 @@ def test_changed_vjp_accumulation_order_is_not_treated_as_a_port_rename(equivale
     assert result.modes[2].comparison.status == Status.DIFFERENT
     if equivalence == "auto":
         assert result.modes[2].equivalence_kind == "algebraic"
-        assert result.modes[2].algebra.proof and result.modes[2].algebra.warnings
+        assert result.modes[2].algebra.backend_result and result.modes[2].algebra.warnings

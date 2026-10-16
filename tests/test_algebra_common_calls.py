@@ -21,7 +21,9 @@ def normalization(iterations=20, offset=0.1):
     return run
 
 
-def test_common_nonlinear_call_is_not_expanded_and_proof_is_independent(monkeypatch):
+def test_common_nonlinear_call_is_not_expanded_and_proof_is_independent(
+    monkeypatch, legacy_algebra
+):
     normalize = normalization()
 
     def left(x, a, b):

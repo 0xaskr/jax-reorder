@@ -16,7 +16,7 @@ from jax._src import core
 from jax._src.interpreters import ad
 from jax._src.layout import AutoLayout, Format
 
-from .algebra import AlgebraComparison, compare_algebraic_jaxprs
+from .algebra import AlgebraComparison, compare_algebraic_jaxprs, validate_timeout
 from .algebra_ir import Budget
 from .canonical import Comparison, Issue, Status, _difference, compare_jaxprs
 from .errors import JaxprError, UnsupportedJaxprError
@@ -346,11 +346,13 @@ def compare_function_traces(
     *,
     equivalence="auto",
     algebra_budget=10000,
+    algebra_timeout=10.0,
 ) -> ModeComparison:
     """先核对完整函数范围，再比较图；不能把不同上下文的追踪结果混为一谈。"""
     if equivalence not in ("auto", "structural"):
         raise ValueError("equivalence must be auto or structural")
     Budget(algebra_budget)
+    validate_timeout(algebra_timeout)
     # 上下文不同意味着比较前提不一致，归为 unknown；同一前提下的接口差异才报 different。
     if left.mode != right.mode or left.context != right.context:
         return ModeComparison(
@@ -379,14 +381,16 @@ def compare_function_traces(
     kind = "structural" if status == Status.EQUIVALENT else None
     failure = "unsupported" if status == Status.UNKNOWN else None
     if equivalence == "auto" and status == Status.DIFFERENT:
-        algebra = compare_algebraic_jaxprs(left.jaxpr, right.jaxpr, algebra_budget=algebra_budget)
+        algebra = compare_algebraic_jaxprs(
+            left.jaxpr, right.jaxpr, algebra_budget=algebra_budget, algebra_timeout=algebra_timeout
+        )
         status, issues = algebra.status, algebra.issues
         kind = algebra.equivalence_kind
         failure = "algebra_incomplete" if status == Status.UNKNOWN else None
         if status == Status.EQUIVALENT:
             difference = None
         elif status == Status.INEQUIVALENT:
-            difference = f"algebra.outputs[{algebra.inequivalence_proof.output}]"
+            difference = f"algebra.outputs[{algebra.output}]"
     return ModeComparison(
         left.mode,
         status,
@@ -416,11 +420,13 @@ def compare_functions(
     check_cpu: bool = False,
     equivalence: str = "auto",
     algebra_budget: int = 10000,
+    algebra_timeout: float = 10.0,
 ) -> FunctionComparison:
     """对每个请求模式分别追踪、检查契约并比较，未请求模式显式列出。
 
     默认 auto 在结构不同时尝试理想实数代数证明；structural 保留原结构结果。
-    algebra_budget 限制每个模式的一次图对证明，浮点警告保存在 algebra 报告中。
+    algebra_budget 限制每个模式的一次数学查询；algebra_timeout 限制其符号 worker 秒数。
+    浮点警告保存在 algebra 报告中。
 
     check_cpu 额外编译两侧物化图，用于区别 CPU 编译拒绝和图不支持；
     数值采样由案例运行器另行执行，不将某个样本相等作为结构结论。
@@ -434,6 +440,7 @@ def compare_functions(
     if equivalence not in ("auto", "structural"):
         raise ValueError("equivalence must be auto or structural")
     Budget(algebra_budget)
+    validate_timeout(algebra_timeout)
     if not modes or len(set(modes)) != len(modes) or any(mode not in MODES for mode in modes):
         raise ValueError("modes must contain distinct forward/jvp/vjp entries")
     results = []
@@ -511,7 +518,10 @@ def compare_functions(
         else:
             results.append(
                 compare_function_traces(
-                    *traces, equivalence=equivalence, algebra_budget=algebra_budget
+                    *traces,
+                    equivalence=equivalence,
+                    algebra_budget=algebra_budget,
+                    algebra_timeout=algebra_timeout,
                 )
             )
     # 一个请求模式的完整反例即可否定全部请求模式等价；其余未知模式仍逐项报告。

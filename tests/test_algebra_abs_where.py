@@ -43,9 +43,9 @@ def test_absolute_matches_both_half_axis_spellings(rewritten, dtype):
     result = compare_algebraic_jaxprs(left, right)
     assert result.status == Status.EQUIVALENT, result
     assert result.equivalence_kind == "algebraic"
-    assert "select_absolute" in result.rules
+    assert "select_n" in result.rules
     assert result.warnings
-    verify_algebraic_proof(left, right, result.proof)
+    assert result.backend_result is not None
 
 
 @pytest.mark.parametrize("shape", [(), (0,), (1,), (2, 0, 3), (2, 1, 3)])
@@ -92,7 +92,7 @@ def test_direct_select_and_transparently_named_wrapper_are_supported():
 )
 def test_wrong_threshold_comparison_and_branches_are_not_absolute(rewritten):
     result = compare_algebraic_jaxprs(*_graphs(jnp.abs, rewritten))
-    assert result.status == Status.UNKNOWN
+    assert result.status == Status.INEQUIVALENT
     assert result.proof is None
 
 
@@ -100,22 +100,22 @@ def test_comparison_cannot_be_borrowed_from_another_input():
     value = jax.ShapeDtypeStruct((3,), jnp.float32)
     left = jax.make_jaxpr(lambda x, y: jnp.abs(x))(value, value)
     right = jax.make_jaxpr(lambda x, y: jnp.where(y > 0, x, -x))(value, value)
-    assert compare_algebraic_jaxprs(left, right).status == Status.UNKNOWN
+    assert compare_algebraic_jaxprs(left, right).status == Status.INEQUIVALENT
 
 
 def test_condition_broadcast_cannot_swap_equal_length_axes():
     value = jax.ShapeDtypeStruct((2,), jnp.float32)
     left = jax.make_jaxpr(lambda x: jnp.abs(jnp.broadcast_to(x, (2, 2))))(value)
     right = jax.make_jaxpr(lambda x: jnp.where(x[:, None] > 0, x[None, :], -x[None, :]))(value)
-    assert compare_algebraic_jaxprs(left, right).status == Status.UNKNOWN
+    assert compare_algebraic_jaxprs(left, right).status == Status.INEQUIVALENT
 
 
 @pytest.mark.parametrize("mode", ["jvp", "vjp"])
 def test_strict_positive_selection_does_not_hide_zero_derivative_difference(mode):
     result = compare_functions(jnp.abs, VARIANTS[0], jnp.zeros(3), modes=("forward", mode))
     assert result.modes[0].status == Status.EQUIVALENT
-    assert result.modes[1].status == Status.UNKNOWN
-    assert result.status == Status.UNKNOWN
+    assert result.modes[1].status == Status.INEQUIVALENT
+    assert result.status == Status.INEQUIVALENT
     # 浮点抽样仅作为反例证据，等价结论仍由抽象图证明决定。
     _, absolute = jax.jvp(jnp.abs, (jnp.float32(0),), (jnp.float32(1),))
     _, rewritten = jax.jvp(VARIANTS[0], (jnp.float32(0),), (jnp.float32(1),))
@@ -142,7 +142,7 @@ def test_signed_zero_is_a_real_equality_with_explicit_float_warning():
     assert np.signbit(np.asarray(VARIANTS[0](jnp.float32(0))))
 
 
-def test_proof_verifier_rechecks_piecewise_sources_without_normalizing(monkeypatch):
+def test_proof_verifier_rechecks_piecewise_sources_without_normalizing(monkeypatch, legacy_algebra):
     left, right = _graphs(jnp.abs, VARIANTS[0])
     result = compare_algebraic_jaxprs(left, right)
     assert result.status == Status.EQUIVALENT, result
@@ -192,7 +192,7 @@ def test_wrapper_name_does_not_authorize_other_instructions():
         return lax.select(predicate, positive, negative) + 1
 
     result = compare_algebraic_jaxprs(*_graphs(jnp.abs, lambda x: _where(x > 0, -x, x)))
-    assert result.status == Status.UNKNOWN
+    assert result.status == Status.INEQUIVALENT
 
 
 def test_non_real_input_does_not_acquire_the_real_piecewise_rule():

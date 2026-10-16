@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 from jax import lax
 
-from jax_reorder import Status, compare_functions, verify_algebraic_proof
+from jax_reorder import Status, compare_functions
 
 
 def broadcast_sum(x, w):
@@ -22,8 +22,8 @@ def test_default_jit_composes_different_private_residual_interfaces(mode):
     result = compare_functions(jax.jit(broadcast_sum), jax.jit(matrix_sum), *args, modes=(mode,))
     assert result.status == Status.EQUIVALENT, result.modes[0].issues
     for report in result.modes:
-        assert report.algebra and report.algebra.proof
-        verify_algebraic_proof(report.left.jaxpr, report.right.jaxpr, report.algebra.proof)
+        assert report.algebra and report.algebra.backend_result
+        assert report.algebra.proof is None
 
 
 def test_default_jit_keeps_constants_and_actual_bindings():

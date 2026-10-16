@@ -1,0 +1,31 @@
+{
+  "repository": "https://github.com/wiegerw/nerva-jax",
+  "revision": "97b1c7934e0b4f7e57f69df2e8f6f6c1cd41785c",
+  "license": "BSL-1.0",
+  "files": [
+    {
+      "path": "src/nerva_jax/__init__.py",
+      "sha256": "ce8246c49e3a7092b855a668f7a552932c0004e8a3e168e881973012dbaddcc4"
+    },
+    {
+      "path": "src/nerva_jax/matrix_operations.py",
+      "sha256": "5528c6d2266836960e4cc0c2041a6248cca18a038dd254d5bd427e45a7e6c518"
+    },
+    {
+      "path": "src/nerva_jax/activation_functions.py",
+      "sha256": "b8edaee85930f4416c0df86f68276abd11326163de6a18c52f4d6d05a681dc24"
+    },
+    {
+      "path": "src/nerva_jax/softmax_functions.py",
+      "sha256": "0af848d2760fcd081a96668e616c432cb8f53a79c4c523ddef1567f51565a371"
+    },
+    {
+      "path": "src/nerva_jax/loss_functions.py",
+      "sha256": "c65bcda88949f82025035f2b7fe8f778990b871d5690d02c0b4c0d742fe0e7e6"
+    },
+    {
+      "path": "src/nerva_jax/utilities.py",
+      "sha256": "c450aa1264bcf20f5939015e48adea671624e0733f4364fcf0993127782c674b"
+    }
+  ]
+}

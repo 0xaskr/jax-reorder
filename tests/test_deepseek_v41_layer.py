@@ -63,7 +63,7 @@ def test_original_layer_and_algebraic_candidates(profile, dtype, name):
         assert mode.equivalence_kind == "algebraic"
         assert mode.comparison.status == Status.DIFFERENT
         assert mode.algebra.warnings
-        verify_algebraic_proof(mode.left.jaxpr, mode.right.jaxpr, mode.algebra.proof)
+        assert mode.algebra.backend_result.backend == "sympy"
     for seed in (17, 53):
         args = inputs(profile, dtype, seed)
         check_numerics(original().hc_post, args, seed)
@@ -102,7 +102,7 @@ def test_real_dimensions_in_full_original_context():
         check_close(a, b)
 
 
-def test_layer_proof_tampering_and_budget_rejection():
+def test_layer_proof_tampering_and_budget_rejection(legacy_algebra):
     args = signatures((1, 1, 4, 8), jnp.float32)
     report = compare_functions(original().hc_post, candidates.post_matmul, *args)
     mode = report.modes[0]

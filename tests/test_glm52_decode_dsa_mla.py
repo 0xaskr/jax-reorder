@@ -146,9 +146,11 @@ def test_core_rewrites_prove_finite_changes_and_report_remaining_gaps(comparison
     assert record["status"] == "unknown", record
     assert record["outcome"] == "coverage_gap"
     assert record["failure_kind"] == "algebra_incomplete"
+    assert record["backend"] == "sympy"
+    assert record["backend_failure_kind"] == "condition_undecided"
     # 这是明确的能力基线；其他 unknown 原因会失败，不能掩盖新退化。
     assert record["issues"] == [
-        {"path": "algebra.outputs", "reason": "normal forms differ; no algebraic proof found"}
+        {"path": "algebra.outputs", "reason": "original conditions are not established"}
     ]
     assert record["kind"] is None
     assert record["warnings"]

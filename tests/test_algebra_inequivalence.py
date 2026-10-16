@@ -6,12 +6,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from legacy_algebra import compare_algebraic_jaxprs
 
 from jax_reorder import (
     CorrespondenceError,
     Status,
     UnsupportedJaxprError,
-    compare_algebraic_jaxprs,
     verify_inequivalence_proof,
 )
 from jax_reorder.algebra import _prepare

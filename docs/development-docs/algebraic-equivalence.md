@@ -1,5 +1,110 @@
 # 索引乘加与有限求和的代数比较
 
+## 2026-10-16 可信 SymPy 默认数学后端
+
+用户已明确选择完全信任 SymPy；随后暂停生产迁移，要求先按“可以本地修改开源库”的前提
+更新[迁移计划](../exec-plans/completed/trusted-sympy-backend.md)，评估转换器和公式资产。
+新的默认数学路径已将完整索引表达式及定义条件交给 SymPy；它的数学判断直接成为结果，
+不再要求自写独立证明器批准。旧 AlgebraProof 及其 verifier 保留兼容职责。
+转换仍保留输入、输出、轴、常量、条件和区域绑定，无法表达的语义明确报告。
+用户已要求恢复实施。下文“仅候选、独立复核”的内容保留为旧后端的设计记录；
+架构评估与本地 fork 探针见[复用报告](equivalence-backends/architecture-reuse.md)，迁移进展在计划中记录。
+
+新转换路径以仓库内 jax2sympy fork 的 SSA 遍历/分派为入口。构造器返回 SymPy 的 Indexed/Sum
+元素公式及原始定义条件，shape 和输出坐标独立保存；不先生成旧 PolynomialNormalizer 的项表。
+逐点算子复用上游映射，轴布局和区域绑定逐项适配。转换缺失明确 unknown，不删除不透明依赖。
+
+查询在可终止的独立进程中运行，覆盖符号构造和化简的墙钟预算；传入的是已经结构校验的图数据，
+不执行 JAX 数组。所有输出及条件通过才判等，完整最终输出的不恒等才作负结论。
+符号坐标/抽象变量上的 False 不能直接推断源函数不恒等；负结论须落实到合法输出坐标的完整符号公式。
+原始条件在约分前保存；无法确认的条件、CAS None、超时与转换错误分别报告。
+
+验收包含独立 Nerva 公式对照、两份手写 JAX 的公共入口比较、错误轴/系数/输出反例、
+空域/单位轴/部分函数/区域拒绝，以及阻断旧 normalizer/verifier 和 JAX 数值执行的测试。
+输入规模递增时单独记录表达式节点和转换开销，不将数值抽样当作等价依据。
+
+特殊值和不透明算子仍由转换层保留：复用现有源图有限性分析，完整记录 primitive 参数、输入 tensor 定义、
+输出端口和捕获的循环/索引变量；交给 SymPy 的不透明函数仅以标量坐标和捕获变量为参数，
+避免将 Tensor/Lambda 容器错误当成普通实数参数。只有 SymPy 规范化后的完整输入定义相同才共享身份。
+对可能非有限的值不直接建立 `y-y=0` 等实数公式。定义条件在特殊值消项、cast 和区域之间继续保留。
+有限性分析属于已有转换语义的复用，不是对 SymPy 结论的第二次证明批准。
+
+### 实现与结果接口
+
+| 模块 | 当前职责 |
+| --- | --- |
+| [algebra.py](../../src/jax_reorder/algebra.py) | 结构快路径、函数契约、共享调用的端口对应和新结果汇总 |
+| [_vendor/jax2sympy](../../src/jax_reorder/_vendor/jax2sympy/translate.py) | 固定 MIT 上游的 SSA 遍历/primitive 分派，新增 builder 接口；原逐元素接口用于小图对照 |
+| [algebra_transport.py](../../src/jax_reorder/algebra_transport.py) | 校验后的图、常量、参数与区域接口冻结为独立进程输入 |
+| [algebra_symbolic.py](../../src/jax_reorder/algebra_symbolic.py) | Indexed/Sum、坐标布局、Piecewise、原始条件、不透明定义与词法作用域 |
+| [algebra_symbolic_regions.py](../../src/jax_reorder/algebra_symbolic_regions.py) | cond、独立 scan 累加、受限符号展开和 while 绑定 |
+| [algebra_trusted.py](../../src/jax_reorder/algebra_trusted.py) | SymPy ArrayExpr/逻辑/恒等查询、完整输出汇总与可终止 worker |
+
+`compare_functions`、`compare_function_traces` 和 `compare_algebraic_jaxprs` 接受
+`algebra_timeout`（默认 10 秒，正有限数），原 `algebra_budget` 默认仍为 10,000。
+时间限制覆盖 worker 内的转换与查询，不包括 JAX tracing、父进程结构规范化与端口检查。
+超时会 kill 并回收 worker，后续请求可继续；预算在大多项式展开前预检。
+这是时间/表达式工作量边界，没有新增进程 RSS 硬上限。
+
+新数学结果的 `proof` 和 `inequivalence_proof` 为 `None`；`backend_result` 保存 backend/version、
+实际查询方法链、True/False/None、输出位置、条件、完整不透明定义、工作量、时间和失败分类。
+记录用于审计，不是另一套独立证书。结构快路径仍可带原结构证据。
+旧 `verify_algebraic_proof` / `verify_inequivalence_proof` 继续验证旧格式；旧比较与证据生成的编排入口已移到
+[测试 helper](../../tests/legacy_algebra.py)。兼容辅助模块仍随包保留，默认生产路径没有旧 normalizer/verifier 兜底。
+
+后端 `failure_kind` 区分 `unsupported_conversion`、`condition_undecided`、`cas_undecided`、
+`budget_exhausted`、`timeout`、`internal_error`；外层既有 `algebra_incomplete` 保持兼容。
+例如 `x/x` 与 `1` 保留除零条件，返回条件未判定；`sqrt(x*x)` 与 `x` 可由 SymPy 判为不恒等。
+不恒等是“并非同一函数”，不是“所有输入的值都不同”。
+
+### 表示边界与绑定验证
+
+主表示是逐输出元素的惰性 Indexed/Sum；适合的收缩问题再转换为 SymPy 原生 ArrayExpr 查询。
+没有另造张量代数证明器，也没有在生产依赖中新增 tensorgrad、AutoHOOT 或 sympy2jax。
+归约最大值/最小值、布尔归约及小范围条件可能显式展开并扣预算；大 shape 的任意组合并不保证可判定。
+一般 scan 最多符号展开 64 步，独立加法累加可保持 Sum；while 只接受可确定的受限终止。
+数据依赖的未知终止、effects、复杂 dtype、非默认精度/分片等保留拒绝路径。
+
+绑定转换不能直接使用 SymPy 1.14 的嵌套 `Sum.as_dummy()`：其重名会把外层读取捕获到内层。
+本地按词法深度规范命名，嵌入/读取时生成新 Dummy；独立双重求和参考验证矩阵结合两种转换，
+防止只比较两份同样错误的表达式而漏检。
+
+浮点 narrowing cast 用逐元素不透明函数及其原始定义条件表示，不应用 cast 线性规则。
+`SymbolicTensor.finite` 表示在保留的定义条件下可作有限实数解释；源图 `Source.finite` 表示
+无需附加条件的有限性事实，后者用于 guarded-softmax，不能把两者混用。
+固定宽度整数算术保留不透明语义；未编码 dtype 值域的无限整数查询不能提供源程序的负结论。
+不透明函数残差同样只能提供同余正结论，不能把泛化问题的 False 当作完整程序反例。
+
+### 离线复现与规模记录
+
+Nerva 两套固定源码及许可证仅位于测试 fixture；hash 检查后从临时目录导入，不引入训练栈。
+12 组源程序→独立公式检查、12 组公共入口正反比较，以及 5 组独立手写公式改写分别测试。
+覆盖 softmax/log-softmax、激活、Hadamard/矩阵乘法、平方损失及梯度；比较期间阻断 JAX 后端执行。
+输入为有限实数解释的 float32 `(2,3)` 抽象矩阵；softmax 按行归一化，矩阵乘法右输入为 `(3,2)`。
+平方损失输出标量，梯度输出 `(2,3)`；其余输出契约由两端公式逐坐标核对，没有添加正值输入假设。
+[上游转换基线](../../tests/test_jax2sympy_vendor.py)保留 23 项探针，
+[新后端测试](../../tests/test_trusted_sympy.py)覆盖实际查询、资源恢复、域和绑定边界。
+
+运行 [规模脚本](../../tools/experiments/equivalence_backends/trusted_sympy_scaling.py)：
+`uv run python tools/experiments/equivalence_backends/trusted_sympy_scaling.py`。
+Python 3.12、JAX 0.11.2、SymPy 1.14.0 下，对 `sum(x*x)` 的一次实测如下：
+
+| 输入长度 | 逐元素/惰性唯一节点 | 逐元素/惰性构造毫秒 | 逐元素/惰性 Python 峰值字节 |
+| --- | --- | --- | --- |
+| 8 | 18 / 12 | 74.716 / 12.842 | 1,786,235 / 266,150 |
+| 32 | 66 / 12 | 18.321 / 4.710 | 49,898 / 38,825 |
+| 128 | 258 / 12 | 211.659 / 4.592 | 248,904 / 34,051 |
+| 512 | 1,026 / 12 | 1,664.135 / 3.696 | 1,723,645 / 32,811 |
+
+逐元素输入符号数随长度增长；惰性表示只有一个 Indexed 读取、12 个唯一节点。
+时间包含首次初始化/缓存影响，峰值来自 tracemalloc，不是进程 RSS；只测表达式构造，没有执行 JAX，
+也不意味着任意大图的最终 SymPy 查询具有常数成本。
+
+本轮验收为 **2166 passed，1 个已有上游弃用警告，1403.69 秒**；Ruff、格式、tracing/数学示例、
+离线 wheel 构建和独立导入均通过。新结果和旧证据兼容测试分别保留，完整命令见已归档的迁移计划。
+
+## 历史实现记录（以下为迁移前的后端）
+
 状态：首期实现与全量 1600 项测试已通过，[执行计划](../exec-plans/completed/algebraic-equivalence.md)已归档。用户要求不修改受保护文档，这些入口的同步记录为 [DOC-002](../exec-plans/tech-debt-tracker.md)；后续核心重构见[标量索引 IR](algebraic-reduction-gaps.md)，本文的原始验收数字保留为基线。
 
 ## 比较与数值契约

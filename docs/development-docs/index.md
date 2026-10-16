@@ -5,8 +5,9 @@
 | 主题 | 文档 |
 | --- | --- |
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
-| 索引代数、SymPy 改写、数学不等价证据与独立复核 | [algebraic-equivalence.md](algebraic-equivalence.md) |
+| 可信 SymPy 默认数学判等、定义条件与旧证据兼容 | [algebraic-equivalence.md](algebraic-equivalence.md) |
 | 开源数学等价后端的并行评估与符号探针 | [open-source-equivalence-backends.md](open-source-equivalence-backends.md) |
+| 可修改的 JAX 转换器、符号张量与 Nerva 成套公式资产 | [architecture-reuse.md](equivalence-backends/architecture-reuse.md) |
 | 标量索引 IR、求和域双射、有限递推与条件 | [algebraic-reduction-gaps.md](algebraic-reduction-gaps.md) |
 | DeepSeek-V4.1-Flash 原始 mHC 层的代数改写与验证 | [deepseek-v41-layer.md](deepseek-v41-layer.md) |
 | GLM-5.2 纯 JAX decode DSA/MLA 核心的 jaxpr 对比与能力缺口 | [glm52-decode-dsa-mla.md](glm52-decode-dsa-mla.md) |

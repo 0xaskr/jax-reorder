@@ -1,16 +1,18 @@
 """理想实数解释下的索引代数比较；不改变原有结构比较入口。"""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 from .algebra_calls import CommonCalls
-from .algebra_inequivalence import PolynomialInequivalenceProof, try_prove_inequivalent
+from .algebra_inequivalence import PolynomialInequivalenceProof
 from .algebra_ir import Budget
-from .algebra_lower import Lowerer
-from .algebra_normalize import PolynomialNormalizer
-from .algebra_proof import AlgebraProof, AlgebraSource, verify_algebraic_proof
+from .algebra_proof import AlgebraProof
 from .canonical import Issue, Status, canonicalize, compare_jaxprs
 from .correspondence import build_correspondence
 from .errors import JaxprError, UnsupportedJaxprError
+
+if TYPE_CHECKING:
+    from .algebra_trusted import SympyResult
 
 ASSUMPTIONS = (
     "finite floating-point subexpressions are interpreted as ideal real numbers",
@@ -28,7 +30,7 @@ FLOAT_WARNING = (
 
 @dataclass(frozen=True)
 class AlgebraComparison:
-    """带独立正/负证据的数学比较；证明失败保留为 unknown。"""
+    """可信数学结果；旧证据字段只用于兼容已有证书。"""
 
     status: Status
     issues: tuple[Issue, ...] = ()
@@ -38,13 +40,24 @@ class AlgebraComparison:
     proof: AlgebraProof | None = field(default=None, repr=False)
     work: int = 0
     inequivalence_proof: PolynomialInequivalenceProof | None = field(default=None, repr=False)
+    backend_result: "SympyResult | None" = field(default=None, repr=False)
 
     @property
     def equivalence_kind(self):
-        """报告通过复核的等价结论所依赖的结构或代数证据。"""
+        """区分结构证据与可信 SymPy 数学结论。"""
         if self.status != Status.EQUIVALENT:
             return None
-        return "structural" if self.proof.structural is not None else "algebraic"
+        return (
+            "structural"
+            if self.proof is not None and self.proof.structural is not None
+            else "algebraic"
+        )
+
+    @property
+    def output(self):
+        if self.backend_result is not None:
+            return self.backend_result.output
+        return None if self.inequivalence_proof is None else self.inequivalence_proof.output
 
 
 def _prepare(graph):
@@ -61,92 +74,80 @@ def _prepare(graph):
     return normalized.jaxpr, correspondence
 
 
-def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000):
-    """比较给定图的有序输出，生成并复核索引代数证明。
+def validate_timeout(value):
+    if type(value) not in (int, float) or not 0 < value < float("inf"):
+        raise ValueError("algebra_timeout must be a positive finite number")
 
-    按前向语义解释已物化图；JVP/VJP 须由函数入口分别追踪后调用。
-    不能自行恢复函数 pytree 或追踪环境，不执行数值抽样或优化原始程序。
-    """
-    budget = Budget(algebra_budget)
-    rules = set()
-    try:
-        structural = compare_jaxprs(left, right, derivative_scope="primal")
-        if structural.status == Status.EQUIVALENT:
-            # 结构证据已经更强，不要求这类图还能被有限的代数规则重新展开。
-            proof = AlgebraProof(
+
+def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeout=10.0):
+    """Compare complete mathematical outputs with trusted SymPy, after structural validation."""
+    from .algebra_transport import freeze
+    from .algebra_trusted import SympyResult, isolated_compare
+
+    Budget(algebra_budget)
+    validate_timeout(algebra_timeout)
+    structural = compare_jaxprs(left, right, derivative_scope="primal")
+    if structural.status == Status.EQUIVALENT:
+        return AlgebraComparison(
+            Status.EQUIVALENT,
+            rules=("structural",),
+            assumptions=("structural equivalence of the supplied forward jaxprs",),
+            warnings=(),
+            proof=AlgebraProof(
                 None, None, (), algebra_budget, structural=structural.correspondence
+            ),
+        )
+    if structural.status == Status.UNKNOWN:
+        return AlgebraComparison(Status.UNKNOWN, structural.issues)
+    try:
+        # Reuse existing graph adaptation and original binding checks, not its algebra engine.
+        prepared = tuple(_prepare(graph) for graph in (left, right))
+        a, b = (entry[0] for entry in prepared)
+        from .algebra_lower import encode
+
+        if tuple(encode(v.aval) for v in a.invars + a.outvars) != tuple(
+            encode(v.aval) for v in b.invars + b.outvars
+        ) or len(a.invars) != len(b.invars):
+            raise UnsupportedJaxprError(
+                "algebra.contract", "input or output abstract contract differs"
             )
-            verify_algebraic_proof(left, right, proof)
-            return AlgebraComparison(
-                Status.EQUIVALENT,
-                rules=("structural",),
-                assumptions=("structural equivalence of the supplied forward jaxprs",),
-                warnings=(),
-                proof=proof,
-            )
-        if structural.status == Status.UNKNOWN:
-            return AlgebraComparison(Status.UNKNOWN, structural.issues)
-        normalizer = PolynomialNormalizer(budget)
-        sources, signatures, lowered_graphs = [], [], []
-        prepared = tuple(_prepare(original) for original in (left, right))
-        common_calls = CommonCalls(
+        calls = CommonCalls(
             tuple(
                 (original, *adapted)
                 for original, adapted in zip((left, right), prepared, strict=True)
             ),
-            budget,
+            Budget(algebra_budget),
         )
-        for graph, correspondence in prepared:
-            lowerer = Lowerer(budget, common_calls)
-            lowered = lowerer.graph(graph)
-            lowered_graphs.append(lowered)
-            rules.update(lowerer.rules)
-            roots = tuple(normalizer.normalize(expr) for expr in lowered.roots)
-            sources.append(AlgebraSource(graph, correspondence, roots))
-            signatures.append(lowered.signature)
-        if signatures[0] != signatures[1]:
-            raise UnsupportedJaxprError(
-                "algebra.contract", "input or output abstract contract differs"
-            )
-        forms = [tuple(normalizer.steps[i].result for i in source.roots) for source in sources]
-        if forms[0] != forms[1]:
-            negative = try_prove_inequivalent(
-                left, right, sources=tuple(sources), lowered=tuple(lowered_graphs), budget=budget
-            )
-            if negative is not None:
-                return AlgebraComparison(
-                    Status.INEQUIVALENT,
-                    rules=tuple(sorted(rules | {"polynomial:nonzero_output_coefficient"})),
-                    inequivalence_proof=negative,
-                    work=budget.used,
-                )
-            raise UnsupportedJaxprError(
-                "algebra.outputs", "normal forms differ; no algebraic proof found"
-            )
-        proof = AlgebraProof(*sources, tuple(normalizer.steps), algebra_budget)
-        verify_algebraic_proof(left, right, proof)
-        rules.update(step.expression.op for step in proof.steps)
-        rules.update(
-            f"scalar:{rewrite.kind}" for step in proof.steps for rewrite in step.scalar_rewrites
+        identities = {}
+        frozen = freeze(a, calls, identities), freeze(b, calls, identities)
+        calls.budget.spend(path="algebra.worker")
+        result = isolated_compare(
+            *frozen,
+            algebra_budget=algebra_budget - calls.budget.used + 1,
+            timeout=algebra_timeout,
         )
+        result = replace(result, work=result.work + calls.budget.used - 1)
+        issues = () if result.reason is None else (Issue(result.path, result.reason),)
         return AlgebraComparison(
-            Status.EQUIVALENT, rules=tuple(sorted(rules)), proof=proof, work=budget.used
+            Status(result.status), issues, result.rules, work=result.work, backend_result=result
         )
     except JaxprError as exc:
-        return AlgebraComparison(
-            Status.UNKNOWN, (Issue(exc.path, exc.reason),), tuple(sorted(rules)), work=budget.used
+        result = SympyResult(
+            "unknown",
+            reason=exc.reason,
+            path=exc.path,
+            failure_kind="budget_exhausted" if "budget" in exc.reason else "unsupported_conversion",
         )
-    except RecursionError:
         return AlgebraComparison(
-            Status.UNKNOWN,
-            (Issue("algebra.depth", "expression depth exceeds supported recursion limit"),),
-            tuple(sorted(rules)),
-            work=budget.used,
+            Status.UNKNOWN, (Issue(exc.path, exc.reason),), backend_result=result
         )
-    except (TypeError, ValueError, NotImplementedError) as exc:
+    except (ValueError, TypeError, RecursionError) as exc:
+        result = SympyResult(
+            "unknown",
+            reason=f"conversion rejected: {exc}",
+            path="algebra.convert",
+            failure_kind="unsupported_conversion",
+        )
         return AlgebraComparison(
-            Status.UNKNOWN,
-            (Issue("algebra.lower", f"conversion rejected: {exc}"),),
-            tuple(sorted(rules)),
-            work=budget.used,
+            Status.UNKNOWN, (Issue(result.path, result.reason),), backend_result=result
         )

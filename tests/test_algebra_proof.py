@@ -5,12 +5,12 @@ from dataclasses import replace
 import jax
 import jax.numpy as jnp
 import pytest
+from legacy_algebra import compare_algebraic_jaxprs
 
 from jax_reorder import (
     CorrespondenceError,
     Status,
     canonicalize,
-    compare_algebraic_jaxprs,
     verify_algebraic_proof,
 )
 from jax_reorder.algebra_ir import Budget, Expr, Factor, Index, Term

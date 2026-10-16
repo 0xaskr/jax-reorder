@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/johnviljoen/jax2sympy",
+  "revision": "2cb6a6568716b26af0abd542a941f87ae0580e25",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "jax2sympy/translate.py",
+      "upstream_sha256": "8576012dfac88f6abcca983bba27c5f6f475bc3011c5bf60d1078d2c36adb395"
+    },
+    {
+      "path": "jax2sympy/primitive_mapping.py",
+      "upstream_sha256": "79a1e6ead50584c469c547fd58e1251111f82f012cae8a52c146eaa411672840"
+    }
+  ],
+  "modifications": [
+    "Architecture probe patch; package-relative imports; remove executable demo",
+    "Production builder extension and semantic guards tracked in this repository"
+  ]
+}

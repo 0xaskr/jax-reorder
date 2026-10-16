@@ -3,7 +3,7 @@
 import jax
 import jax.numpy as jnp
 
-from jax_reorder import Status, compare_functions, verify_algebraic_proof
+from jax_reorder import Status, compare_functions
 
 
 def factored(a, b, c):
@@ -55,8 +55,13 @@ def main():
                 mode.equivalence_kind,
             )
             if mode.algebra is not None:
-                verify_algebraic_proof(mode.left.jaxpr, mode.right.jaxpr, mode.algebra.proof)
-                print("  工作量:", mode.algebra.work)
+                backend = mode.algebra.backend_result
+                print(
+                    "  后端:",
+                    backend.backend if backend else "structural",
+                    "工作量:",
+                    mode.algebra.work,
+                )
         print(" ", report.modes[0].algebra.warnings[0])
 
 

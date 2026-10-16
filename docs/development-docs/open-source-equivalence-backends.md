@@ -2,6 +2,10 @@
 
 日期：2026-10-15。状态：首轮并行评估、真实 jaxpr 局部转换及检查完成。
 
+2026-10-16 的后续工作已改为从整体架构评估**可本地修改的开源组件**，新增 jax2sympy、
+nerva-jax/nerva-sympy、tensorgrad 等，见[架构复用报告](equivalence-backends/architecture-reuse.md)。
+用户已选择信任 SymPy；本文的候选限制、独立证明要求及模型优先级是上一轮历史口径。
+
 本文保留评估阶段的实验结果。后续 SymPy 正式接入、独立证据复核、实数多项式负证据和
 guarded-softmax 规则见[当前开发设计](algebraic-equivalence.md#sympy-接入与数学不等价证据2026-10-15)。
 下文“未改生产代码/依赖”只描述当时的评估阶段。

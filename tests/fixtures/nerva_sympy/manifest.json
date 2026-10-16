@@ -1,0 +1,31 @@
+{
+  "repository": "https://github.com/wiegerw/nerva-sympy",
+  "revision": "981739f5d94f7d4703d75b981e76b30bcda81f22",
+  "license": "BSL-1.0",
+  "files": [
+    {
+      "path": "src/nerva_sympy/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "src/nerva_sympy/matrix_operations.py",
+      "sha256": "176cde83da253b91f4adc48f3418a35e9ff03b2ba0c5116eae06a8fa26b410f1"
+    },
+    {
+      "path": "src/nerva_sympy/activation_functions.py",
+      "sha256": "6fa32e90a216437664485d3219c401a78c93988bb041e613360a35a5b4add3d4"
+    },
+    {
+      "path": "src/nerva_sympy/softmax_functions.py",
+      "sha256": "df7385ca1039b8184c65eb5ebbb132e45014769660ff26d4c11284e2c5a35038"
+    },
+    {
+      "path": "src/nerva_sympy/loss_functions.py",
+      "sha256": "933fc1a01a8e69a02d20559b3d034c1fe2cbc7cda92cd8e28c21bf877ea3afc7"
+    },
+    {
+      "path": "src/nerva_sympy/utilities.py",
+      "sha256": "f85290182128521c641d8946d9a53f7c39b649c98a2230153f2f611c819c0b12"
+    }
+  ]
+}

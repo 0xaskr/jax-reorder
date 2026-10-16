@@ -162,7 +162,7 @@ def test_partial_dead_body_is_rejected_and_scalar_time_capture_is_supported():
     assert result.status == Status.EQUIVALENT, result
 
 
-def test_scan_sum_proof_is_independently_rechecked(monkeypatch):
+def test_scan_sum_proof_is_independently_rechecked(monkeypatch, legacy_algebra):
     from jax_reorder.algebra_normalize import PolynomialNormalizer
 
     x = jnp.ones((4, 2))

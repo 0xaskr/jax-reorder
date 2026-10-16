@@ -435,6 +435,16 @@ def compare(case, base_trace, args, profile="glm"):
         "kind": comparison.equivalence_kind,
         "outcome": classify(case.expected, comparison.status),
         "failure_kind": comparison.failure_kind,
+        "backend_failure_kind": (
+            comparison.algebra.backend_result.failure_kind
+            if comparison.algebra and comparison.algebra.backend_result
+            else None
+        ),
+        "backend": (
+            comparison.algebra.backend_result.backend
+            if comparison.algebra and comparison.algebra.backend_result
+            else None
+        ),
         "issues": [{"path": x.path, "reason": x.reason} for x in comparison.issues],
         "difference": comparison.difference,
         "warnings": comparison.algebra.warnings if comparison.algebra else (),
