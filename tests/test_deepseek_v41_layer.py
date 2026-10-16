@@ -1,7 +1,6 @@
 """固定上游 DeepSeek-V4.1-Flash mHC 层、AI 改写和完整来源证据。"""
 
 import ast
-from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -20,7 +19,7 @@ from examples.deepseek_v41.cases import (
     signatures,
 )
 from examples.deepseek_v41.upstream import MANIFEST, ROOT, original, verify_snapshot
-from jax_reorder import CorrespondenceError, Status, compare_functions, verify_algebraic_proof
+from jax_reorder import Status, compare_functions
 
 pytestmark = pytest.mark.business
 
@@ -102,15 +101,12 @@ def test_real_dimensions_in_full_original_context():
         check_close(a, b)
 
 
-def test_layer_proof_tampering_and_budget_rejection(legacy_algebra):
+def test_layer_sympy_result_and_budget_rejection():
     args = signatures((1, 1, 4, 8), jnp.float32)
     report = compare_functions(original().hc_post, candidates.post_matmul, *args)
     mode = report.modes[0]
-    proof = mode.algebra.proof
-    with pytest.raises(CorrespondenceError):
-        verify_algebraic_proof(
-            mode.left.jaxpr, mode.right.jaxpr, replace(proof, right=replace(proof.right, roots=()))
-        )
+    assert mode.status == Status.EQUIVALENT
+    assert mode.algebra.backend_result.backend == "sympy"
     limited = compare_functions(
         original().hc_post, candidates.post_matmul, *args, algebra_budget=10
     )

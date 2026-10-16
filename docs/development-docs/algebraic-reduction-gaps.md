@@ -1,5 +1,7 @@
 # 带索引的标量语义 IR 与代数规范化
 
+本页记录已删除的旧索引代数引擎，源码链接固定到清理前提交；当前实现见[可信 SymPy 数学路径](algebraic-equivalence.md)。
+
 状态：实现与最终全量 1775 项测试已通过。[执行计划](../exec-plans/completed/algebraic-reduction-gaps.md)记录验收。沿用[索引代数契约](algebraic-equivalence.md)，结构比较不变。
 
 ## 标量索引 IR 核心
@@ -32,11 +34,11 @@ sum、matmul 和 scan 累加都产生有限求和。规范化对项的求和域�
 
 | 层 | 表示与职责 | 实现 |
 | --- | --- | --- |
-| 语义 IR | `Tensor` 的有序自由坐标、`Expr` 标量 DAG、`Recurrence` 的状态/初值/更新/序列输出 | [IR](../../src/jax_reorder/algebra_ir.py)、[转换器](../../src/jax_reorder/algebra_lower.py) |
+| 语义 IR | `Tensor` 的有序自由坐标、`Expr` 标量 DAG、`Recurrence` 的状态/初值/更新/序列输出 | [IR](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_ir.py)、[转换器](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_lower.py) |
 | 整数索引 | 常量、轴、加法、整数倍、正整数整除和取余；标量调用参数内的绑定有明确作用域深度 | [索引运算](../../src/jax_reorder/algebra_indices.py) |
-| 求和域 | 零基矩形和 `FiniteRange(start, stop)`；混合进制合并/拆分、区间平移、带符号前缀 | [域检查内核](../../src/jax_reorder/algebra_domains.py) |
-| 原语接入 | 已审核的逐点函数/转换、零比较/选择、有限递推与独立累加求解 | [标量函数](../../src/jax_reorder/algebra_scalar.py)、[条件](../../src/jax_reorder/algebra_piecewise.py)、[递推](../../src/jax_reorder/algebra_scan.py) |
-| 证明 | 多项式展开、域见证规划、绑定编号搜索；原图重建后独立复核每个见证与最终项表 | [规范化](../../src/jax_reorder/algebra_normalize.py)、[复核](../../src/jax_reorder/algebra_proof.py) |
+| 求和域 | 零基矩形和 `FiniteRange(start, stop)`；混合进制合并/拆分、区间平移、带符号前缀 | [域检查内核](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_domains.py) |
+| 原语接入 | 已审核的逐点函数/转换、零比较/选择、有限递推与独立累加求解 | [标量函数](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_scalar.py)、[条件](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_piecewise.py)、[递推](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_scan.py) |
+| 证明 | 多项式展开、域见证规划、绑定编号搜索；原图重建后独立复核每个见证与最终项表 | [规范化](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_normalize.py)、[复核](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_proof.py) |
 
 例如 `x.shape == (3, 4)` 时，`reshape(-1)` 的第 `t` 个元素为 `x[t // 4, t % 4]`。完整归约的 `0 <= t < 12` 可由见证拆为 `t = 4*i+j, 0 <= i < 3, 0 <= j < 4`。这条规则同样适用于被 `sin` 或条件函数包住的读取。
 

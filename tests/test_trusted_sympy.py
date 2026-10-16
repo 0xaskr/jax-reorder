@@ -1,4 +1,4 @@
-"""The public mathematical path trusts SymPy and never calls the legacy prover."""
+"""The public mathematical path trusts SymPy without executing JAX."""
 
 from unittest.mock import patch
 
@@ -9,7 +9,7 @@ import sympy as sp
 from jax._src import compiler, dispatch
 
 from jax_reorder import Status, compare_functions
-from jax_reorder.algebra_ir import Budget
+from jax_reorder.algebra_budget import Budget
 from jax_reorder.algebra_symbolic import SymbolicBuilder
 from jax_reorder.algebra_transport import freeze
 from jax_reorder.algebra_trusted import _finite_expansion, compare_symbolic, equal
@@ -20,7 +20,7 @@ def signature(shape=()):
 
 
 def forbidden(*args, **kwargs):
-    raise AssertionError("the trusted path must not execute JAX or call the legacy prover")
+    raise AssertionError("the trusted path must not execute JAX")
 
 
 def compare(left, right, *args, **kwargs):
@@ -28,9 +28,6 @@ def compare(left, right, *args, **kwargs):
     with (
         patch.object(compiler, "backend_compile_and_load", forbidden),
         patch.object(dispatch, "apply_primitive", forbidden),
-        patch("jax_reorder.algebra_normalize.PolynomialNormalizer.normalize", forbidden),
-        patch("jax_reorder.algebra_proof.verify_algebraic_proof", forbidden),
-        patch("jax_reorder.algebra_inequivalence.try_prove_inequivalent", forbidden),
     ):
         return compare_functions(left, right, *(args or (signature(),)), **kwargs).modes[0]
 
@@ -49,7 +46,7 @@ def compare(left, right, *args, **kwargs):
 def test_complete_scalar_queries(left, right):
     result = compare(left, right, signature((3,)))
     assert result.status == Status.EQUIVALENT, result.issues
-    assert result.algebra.proof is None
+    assert result.algebra.correspondence is None
     assert result.algebra.backend_result.backend == "sympy"
     assert result.algebra.backend_result.queries
     assert result.equivalence_kind == "algebraic"
@@ -68,7 +65,7 @@ def test_complete_scalar_queries(left, right):
 def test_negative_is_a_complete_final_output(left, right):
     result = compare(left, right, signature((3,)))
     assert result.status == Status.INEQUIVALENT, result.issues
-    assert result.algebra.proof is result.algebra.inequivalence_proof is None
+    assert result.algebra.correspondence is None
     assert result.difference == f"algebra.outputs[{result.algebra.output}]"
     assert any(
         q.answer is False and q.scope.startswith("output_coordinate")
@@ -204,14 +201,12 @@ def test_nested_sum_expansion_accounts_for_multiplicative_work():
     assert not _finite_expansion(expression, Budget(10000))
 
 
-def test_worker_engine_itself_never_executes_jax_or_the_legacy_prover():
+def test_worker_engine_itself_never_executes_jax():
     a = freeze(jax.make_jaxpr(lambda x: jnp.sin(x) ** 2 + jnp.cos(x) ** 2)(signature((3,))))
     b = freeze(jax.make_jaxpr(jnp.ones_like)(signature((3,))))
     with (
         patch.object(compiler, "backend_compile_and_load", forbidden),
         patch.object(dispatch, "apply_primitive", forbidden),
-        patch("jax_reorder.algebra_normalize.PolynomialNormalizer.normalize", forbidden),
-        patch("jax_reorder.algebra_proof.verify_algebraic_proof", forbidden),
     ):
         assert compare_symbolic(a, b).status == "equivalent"
 

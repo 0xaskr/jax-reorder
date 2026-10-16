@@ -6,10 +6,8 @@ import pytest
 from jax import lax
 from jax._src import core
 
-from jax_reorder import Status, compare_functions
-from jax_reorder.algebra_ir import Budget
-from jax_reorder.algebra_lower import Lowerer
-from jax_reorder.algebra_scalar import lower_scalar
+from jax_reorder import Status, UnsupportedJaxprError, compare_functions
+from jax_reorder.algebra_transport import freeze
 
 
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
@@ -37,7 +35,10 @@ def test_cast_only_normalizes_the_complete_default_sharding(memory_kind):
     default = core.ShapedArray((4, 3), jnp.float32).sharding
     sharding = default if memory_kind is None else default.with_memory_kind(memory_kind)
     params = {**eq.params, "sharding": sharding}
-    lowerer = Lowerer(Budget(10000))
-    value = lowerer._input(eq.invars[0].aval, ("argument", 0))
-    converted = lower_scalar(lowerer, eq, (value,), params)
-    assert (converted is not None) == (memory_kind is None)
+    changed = graph.jaxpr.replace(eqns=[eq.replace(params=params)])
+    if memory_kind is None:
+        frozen = freeze(changed)
+        assert frozen.eqns[0].params["sharding"] is None
+    else:
+        with pytest.raises(UnsupportedJaxprError, match="non-default cast sharding"):
+            freeze(changed)

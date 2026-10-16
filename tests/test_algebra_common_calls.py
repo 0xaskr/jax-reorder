@@ -1,12 +1,10 @@
-"""共同纯函数的完整语义键、原始端口映射及证明复核。"""
-
-from dataclasses import replace
+"""共同纯函数的完整语义键、原始端口映射及符号定义。"""
 
 import jax
 import jax.numpy as jnp
 import pytest
 
-from jax_reorder import CorrespondenceError, Status, compare_functions, verify_algebraic_proof
+from jax_reorder import Status, compare_functions
 
 
 def normalization(iterations=20, offset=0.1):
@@ -21,9 +19,7 @@ def normalization(iterations=20, offset=0.1):
     return run
 
 
-def test_common_nonlinear_call_is_not_expanded_and_proof_is_independent(
-    monkeypatch, legacy_algebra
-):
+def test_common_nonlinear_call_preserves_definition_and_limits_work():
     normalize = normalization()
 
     def left(x, a, b):
@@ -39,18 +35,7 @@ def test_common_nonlinear_call_is_not_expanded_and_proof_is_independent(
     mode = result.modes[0]
     assert "common_jit" in mode.algebra.rules
     assert mode.algebra.work < 2000
-    from jax_reorder.algebra_normalize import PolynomialNormalizer
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("proof must not call the normalizer")
-
-    monkeypatch.setattr(PolynomialNormalizer, "normalize", forbidden)
-    verify_algebraic_proof(mode.left.jaxpr, mode.right.jaxpr, mode.algebra.proof)
-    proof = mode.algebra.proof
-    with pytest.raises(CorrespondenceError):
-        verify_algebraic_proof(
-            mode.left.jaxpr, mode.right.jaxpr, replace(proof, left=replace(proof.left, roots=()))
-        )
+    assert mode.algebra.backend_result.definitions
 
 
 @pytest.mark.parametrize("mode", ["forward", "jvp", "vjp"])

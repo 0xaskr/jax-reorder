@@ -2,7 +2,7 @@
 
 特别验证 where(mask, softmax(where(mask, finite, -inf)), 0) 的最终值。
 保留 softmax 内部的未定义全遮蔽路径；这里只证明最后选择的值有限，
-不把该事实提升为可以删除部分求值的 Expr.total。
+原始定义条件继续由 SymPy 构造器保存。
 """
 
 from dataclasses import dataclass
@@ -179,32 +179,15 @@ def _guarded_softmax(source):
 
 
 class Finiteness:
-    """每个分析实例给源输入独立身份，共同子表达式按精确参数共享。"""
+    """根据有序源输入与参数判定有限性，记录所用规则。"""
 
-    def __init__(self, lowerer):
-        self.lowerer = lowerer
-        self.interned = {}
-        self.calls = {}
+    def __init__(self):
+        self.rules = set()
 
-    def _constant(self, value, aval):
-        from .algebra_lower import encode
-
-        array = np.asarray(value, dtype=aval.dtype)
-        key = "constant", encode(aval), encode(array)
-        if key not in self.interned:
-            self.interned[key] = Source(
-                "constant",
-                tuple(aval.shape),
-                aval.dtype,
-                finite=bool(np.all(np.isfinite(array))),
-                constant=array.item() if array.shape == () else None,
-            )
-        return self.interned[key]
-
-    def _finite(self, source):
+    def is_finite(self, source):
         op, args, params = source.primitive, source.inputs, source.params
         if _guarded_softmax(source):
-            self.lowerer.rules.add("guarded_softmax_finite")
+            self.rules.add("guarded_softmax_finite")
             return True
         if op is lax.select_n_p:
             return all(a.finite for a in args[1:])
@@ -218,11 +201,7 @@ class Finiteness:
                 and params.get("fill_value") is None
                 and jax.dtypes.issubdtype(source.dtype, np.inexact)
             )
-            return (
-                args[0].finite
-                and not default_nan
-                and not self.lowerer._nonfinite_parameters(params)
-            )
+            return args[0].finite and not default_nan and not nonfinite_parameters(params)
         if op in {lax.dynamic_slice_p, lax.dynamic_update_slice_p}:
             return all(a.finite for a in args[: 2 if op is lax.dynamic_update_slice_p else 1])
         if op is lax.convert_element_type_p:
@@ -261,62 +240,49 @@ class Finiteness:
         }
         return op in safe and all(a.finite for a in args)
 
-    def graph(self, graph, bindings):
-        from .algebra_jit import default_jit
-        from .algebra_lower import encode
-        from .algebra_piecewise import _plain
 
-        environment = dict(zip(graph.invars, bindings, strict=True))
-        environment.update(
-            (var, self._constant(value, var.aval))
-            for var, value in zip(graph.constvars, graph.consts, strict=True)
+def nonfinite_parameters(value):
+    """gather fill_value 等参数也能产生非有限值，不能只检查 SSA 常量。"""
+    if isinstance(value, (float, complex, np.number, np.ndarray)):
+        array = np.asarray(value)
+        return jax.dtypes.issubdtype(array.dtype, np.inexact) and not np.all(np.isfinite(array))
+    if isinstance(value, dict):
+        return any(nonfinite_parameters(v) for v in value.values())
+    if isinstance(value, (tuple, list)):
+        return any(nonfinite_parameters(v) for v in value)
+    return False
+
+
+def nonfinite_graph(graph, budget, cache=None):
+    """检查共同调用中的非有限常量与复数极点；循环反馈采用保守上界。"""
+    if cache is None:
+        cache = {}
+    if graph in cache:
+        return cache[graph]
+    from .correspondence import _parameter_view
+
+    def nonfinite(value, aval):
+        return jax.dtypes.issubdtype(aval.dtype, np.inexact) and not np.all(
+            np.isfinite(np.asarray(value, dtype=aval.dtype))
         )
 
-        def read(var):
-            return (
-                self._constant(var.val, var.aval)
-                if isinstance(var, core.Literal)
-                else environment[var]
-            )
-
-        for eq in graph.eqns:
-            self.lowerer.budget.spend(path="algebra.finiteness")
-            for var in eq.outvars:
-                self.lowerer._axes(var.aval)
-            args = tuple(read(var) for var in eq.invars)
-            if default_jit(eq, eq.params):
-                child = eq.params["jaxpr"]
-                key = child, args
-                if key not in self.calls:
-                    _, self.calls[key] = self.graph(child, args)
-                outputs = self.calls[key]
-            elif (
-                _plain(eq)
-                and len(eq.outvars) == 1
-                and not any(
-                    isinstance(value, (core.Jaxpr, core.ClosedJaxpr))
-                    for value in eq.params.values()
-                )
-            ):
-                aval = eq.outvars[0].aval
-                try:
-                    key = eq.primitive, encode(eq.params), encode(aval), args
-                except (TypeError, ValueError):
-                    key = object()
-                if key not in self.interned:
-                    node = Source(eq.primitive, tuple(aval.shape), aval.dtype, args, eq.params)
-                    node.finite = self._finite(node)
-                    self.interned[key] = node
-                outputs = (self.interned[key],)
-            else:
-                outputs = tuple(Source(None, tuple(v.aval.shape), v.aval.dtype) for v in eq.outvars)
-            environment.update(zip(eq.outvars, outputs, strict=True))
-        return environment, tuple(read(var) for var in graph.outvars)
-
-
-def analyze(lowerer, graph, bindings):
-    inputs = tuple(
-        Source(None, value.shape, value.dtype, finite=lowerer.finite_values.get(value, False))
-        for value in bindings
+    found = any(
+        nonfinite(value, var.aval) for var, value in zip(graph.constvars, graph.consts, strict=True)
     )
-    return Finiteness(lowerer).graph(graph, inputs)[0]
+    for eq in graph.eqns:
+        budget.spend(path="algebra.nonfinite_graph")
+        found |= eq.primitive is lax.tanh_p and any(
+            jax.dtypes.issubdtype(var.aval.dtype, np.complexfloating) for var in eq.invars
+        )
+        found |= nonfinite_parameters(eq.params)
+        found |= any(
+            nonfinite(var.val, var.aval) for var in eq.invars if isinstance(var, core.Literal)
+        )
+        _, children = _parameter_view(eq, lambda _: None, derivative_scope="primal", parent=graph)
+        for child in children.values():
+            found |= nonfinite_graph(child, budget, cache)
+    found |= any(
+        nonfinite(var.val, var.aval) for var in graph.outvars if isinstance(var, core.Literal)
+    )
+    cache[graph] = bool(found)
+    return bool(found)

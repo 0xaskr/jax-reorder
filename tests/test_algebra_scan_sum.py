@@ -9,7 +9,6 @@ from jax_reorder import (
     Status,
     compare_algebraic_jaxprs,
     compare_functions,
-    verify_algebraic_proof,
 )
 
 
@@ -162,23 +161,17 @@ def test_partial_dead_body_is_rejected_and_scalar_time_capture_is_supported():
     assert result.status == Status.EQUIVALENT, result
 
 
-def test_scan_sum_proof_is_independently_rechecked(monkeypatch, legacy_algebra):
-    from jax_reorder.algebra_normalize import PolynomialNormalizer
-
-    x = jnp.ones((4, 2))
+def test_scan_sum_uses_symbolic_queries():
+    x = jax.ShapeDtypeStruct((4, 2), jnp.float32)
     left = jax.make_jaxpr(lambda x: _scan(jnp.zeros(2), x))(x)
     right = jax.make_jaxpr(lambda x: jnp.sum(x, axis=0))(x)
     result = compare_algebraic_jaxprs(left, right)
     assert result.status == Status.EQUIVALENT, result
-
-    def fail(*args, **kwargs):
-        pytest.fail("proof verification must not search for a normal form")
-
-    monkeypatch.setattr(PolynomialNormalizer, "normalize", fail)
-    verify_algebraic_proof(left, right, result.proof)
+    assert result.backend_result.backend == "sympy"
+    assert "scan:independent_accumulation" in result.rules
 
 
-def test_scan_length_is_symbolic_and_budget_applies_before_proof():
+def test_scan_length_is_symbolic_and_query_work_is_budgeted():
     results = []
     for length in (5, 1000000):
         x = jax.ShapeDtypeStruct((length, 2), jnp.float32)

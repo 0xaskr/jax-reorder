@@ -39,7 +39,7 @@ def main():
     for query in result.queries:
         print(f"输出 {query.output} / {query.scope}: {query.left} == {query.right}: {query.answer}")
         print("  查询:", query.method)
-    print("SymPy 判定通过；新结果不需要旧独立证明器批准。")
+    print("SymPy 判定通过，查询记录保存在 backend_result。")
     print("数学等价基于理想实数解释，不代表浮点逐位一致。")
 
 

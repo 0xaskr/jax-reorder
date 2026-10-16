@@ -1,17 +1,13 @@
 """用跨算子组合、索引反例和原图证据验收标量语义 IR，禁止逐元素展开。"""
 
-from dataclasses import replace
-
 import jax
 import jax.numpy as jnp
 import pytest
 
 from jax_reorder import (
-    CorrespondenceError,
     Status,
     compare_algebraic_jaxprs,
     compare_functions,
-    verify_algebraic_proof,
 )
 
 
@@ -150,48 +146,6 @@ def test_large_shapes_preserve_symbolic_work_and_obey_budget():
         assert limited.status == Status.UNKNOWN
         assert "budget" in limited.issues[0].reason
     assert reports[0].work == reports[1].work
-
-
-@pytest.mark.parametrize("tamper", ["missing", "axis", "shift", "divisor", "branch"])
-def test_domain_bijection_and_prefix_evidence_are_independently_checked(
-    tamper, monkeypatch, legacy_algebra
-):
-    from jax_reorder.algebra_normalize import PolynomialNormalizer
-
-    a, b, result = compare(
-        jnp.sum, lambda x: jnp.sum(x.reshape(-1)[:5]) + jnp.sum(x.reshape(-1)[5:]), (3, 4)
-    )
-    assert result.status == Status.EQUIVALENT, result
-    proof = result.proof
-    index = next(i for i, step in enumerate(proof.steps) if any(path for path in step.domains))
-    step = proof.steps[index]
-    paths = list(step.domains)
-    path_index = next(i for i, path in enumerate(paths) if path)
-    path = list(paths[path_index])
-    if tamper == "missing":
-        paths = []
-    elif tamper == "branch":
-        path[0] = ("prefix", 999)
-    else:
-        kind = "shift" if tamper == "shift" else "split"
-        path[0] = (
-            "rewrite",
-            0,
-            (kind, 999 if tamper == "axis" else 0, -1 if tamper == "shift" else 7),
-        )
-    if paths:
-        paths[path_index] = tuple(path)
-    steps = list(proof.steps)
-    steps[index] = replace(step, domains=tuple(paths))
-
-    def forbidden(*args):
-        pytest.fail("the verifier must not plan domain rewrites")
-
-    monkeypatch.setattr(PolynomialNormalizer, "_domains", forbidden)
-    monkeypatch.setattr(PolynomialNormalizer, "normalize", forbidden)
-    verify_algebraic_proof(a, b, proof)
-    with pytest.raises(CorrespondenceError):
-        verify_algebraic_proof(a, b, replace(proof, steps=tuple(steps)))
 
 
 def test_broadcast_predicate_keeps_singleton_source_coordinate():

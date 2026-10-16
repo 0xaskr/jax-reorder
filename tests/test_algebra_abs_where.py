@@ -1,7 +1,5 @@
 """绝对值分段恒等式、零点导数、真实绑定和证明复核。"""
 
-from dataclasses import replace
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -9,13 +7,10 @@ import pytest
 from jax import lax
 
 from jax_reorder import (
-    CorrespondenceError,
     Status,
     compare_algebraic_jaxprs,
     compare_functions,
-    verify_algebraic_proof,
 )
-from jax_reorder.algebra_normalize import PolynomialNormalizer
 
 
 def _graphs(left, right, shape=(3,), dtype=jnp.float32):
@@ -93,7 +88,7 @@ def test_direct_select_and_transparently_named_wrapper_are_supported():
 def test_wrong_threshold_comparison_and_branches_are_not_absolute(rewritten):
     result = compare_algebraic_jaxprs(*_graphs(jnp.abs, rewritten))
     assert result.status == Status.INEQUIVALENT
-    assert result.proof is None
+    assert result.correspondence is None
 
 
 def test_comparison_cannot_be_borrowed_from_another_input():
@@ -140,24 +135,6 @@ def test_signed_zero_is_a_real_equality_with_explicit_float_warning():
     assert any("signed zero" in warning for warning in result.warnings)
     assert not np.signbit(np.asarray(jnp.abs(jnp.float32(0))))
     assert np.signbit(np.asarray(VARIANTS[0](jnp.float32(0))))
-
-
-def test_proof_verifier_rechecks_piecewise_sources_without_normalizing(monkeypatch, legacy_algebra):
-    left, right = _graphs(jnp.abs, VARIANTS[0])
-    result = compare_algebraic_jaxprs(left, right)
-    assert result.status == Status.EQUIVALENT, result
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("proof verification must not normalize")
-
-    monkeypatch.setattr(PolynomialNormalizer, "normalize", forbidden)
-    verify_algebraic_proof(left, right, result.proof)
-    _, different = _graphs(jnp.abs, lambda x: jnp.where(x > 1, x, -x))
-    with pytest.raises(CorrespondenceError):
-        verify_algebraic_proof(left, different, result.proof)
-    changed = replace(result.proof, right=replace(result.proof.right, graph=different))
-    with pytest.raises(CorrespondenceError):
-        verify_algebraic_proof(left, right, changed)
 
 
 @pytest.mark.parametrize("metadata", ["donation", "inline", "compiler_options"])

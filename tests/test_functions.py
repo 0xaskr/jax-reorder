@@ -228,7 +228,7 @@ def test_mathematical_inequivalence_retains_structural_report_and_output_evidenc
     assert mode.comparison.status == Status.DIFFERENT
     assert mode.failure_kind is None
     assert mode.difference == "algebra.outputs[0]"
-    assert mode.algebra.proof is None
+    assert mode.algebra.correspondence is None
     assert mode.algebra.backend_result.output == 0
     assert any(query.answer is False for query in mode.algebra.backend_result.queries)
 

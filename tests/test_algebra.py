@@ -150,7 +150,7 @@ def test_product_of_independent_sums_retains_all_cross_terms():
 def test_wrong_index_connections_have_complete_output_negative_proofs(pair, shapes):
     result = algebra(*pair, *(signature(s) for s in shapes))
     assert result.status == Status.INEQUIVALENT, result
-    assert result.proof is None
+    assert result.correspondence is None
     assert result.backend_result.output is not None
 
 
@@ -162,7 +162,7 @@ def test_unsupported_maximum_difference_remains_unknown():
         signature((3,)),
     )
     assert result.status == Status.UNKNOWN
-    assert result.proof is None and result.inequivalence_proof is None
+    assert result.correspondence is None
 
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.complex64])

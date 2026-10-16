@@ -81,7 +81,7 @@ def freeze(graph, common_calls=None, common_ids=None):
                 common_ids[key] = len(common_ids)
             params = {"opaque_semantic": common_ids[key]}
         if eq.primitive.name == "convert_element_type" and params.get("sharding") is not None:
-            from .algebra_lower import encode
+            from .algebra_semantics import encode
 
             aval = eq.outvars[0].aval
             default = core.ShapedArray(aval.shape, aval.dtype).sharding
@@ -106,10 +106,10 @@ def freeze(graph, common_calls=None, common_ids=None):
                 raise UnsupportedJaxprError("algebra.jit", "non-default JIT execution contract")
             params = {"jaxpr": params["jaxpr"]}
             if common_calls is not None and eq in common_calls.invocations:
-                from .algebra_lower import Lowerer
+                from .algebra_finiteness import nonfinite_graph
 
                 key, input_ports, output_ports = common_calls.invocations[eq]
-                if not Lowerer(common_calls.budget)._nonfinite_graph(params["jaxpr"]):
+                if not nonfinite_graph(params["jaxpr"], common_calls.budget):
                     if key not in common_ids:
                         common_ids[key] = len(common_ids)
                     params = {**params, "common_call": (common_ids[key], input_ports, output_ports)}

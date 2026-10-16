@@ -15,17 +15,3 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.business)
         elif item.path.name in {"test_depth.py", "test_stress.py"}:
             item.add_marker(pytest.mark.stress)
-
-
-@pytest.fixture
-def legacy_algebra(monkeypatch, request):
-    """Only certificate replay/tampering tests generate the historical evidence format."""
-    from legacy_algebra import compare_algebraic_jaxprs as generate_legacy_proof
-
-    import jax_reorder.functions as functions
-
-    def compare(left, right, *, algebra_budget=10000, **options):
-        return generate_legacy_proof(left, right, algebra_budget=algebra_budget)
-
-    monkeypatch.setattr(request.module, "compare_algebraic_jaxprs", compare, raising=False)
-    monkeypatch.setattr(functions, "compare_algebraic_jaxprs", compare)

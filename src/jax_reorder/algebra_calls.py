@@ -36,7 +36,7 @@ class CommonCalls:
                     key = self.key(eq.params["jaxpr"])
                     if key in self.shared:
                         # 结构证据给出原始端口到适配端口的双射，不能用新槽位
-                        # 直接调用旧函数符号。校验器会独立核对这些映射。
+                        # 直接调用原函数符号；输入和输出映射必须成对应用。
                         self.invocations[other] = (
                             key,
                             children["params.jaxpr"].inputs,

@@ -1,5 +1,7 @@
 # 进行中的计划
 
+[删除旧代数证明器并整理 SymPy 比较路径](../completed/remove-legacy-prover.md)已完成并归档：移除旧证书接口、12 个旧模块及专用测试，解耦转换辅助代码，公式回归迁至可信 SymPy 路径。全量 1930 项中发现的两项超时已修复，受影响范围复测 **299 passed**；详见归档中的分阶段验证记录。后续用户已授权提交并推送 `origin/main`。
+
 [可信 SymPy 后端：开源组件复用与架构迁移](../completed/trusted-sympy-backend.md)已完成并归档：本地 jax2sympy fork、默认可信 SymPy 数学链路、Nerva 两层测试与可终止 worker 均已接入。全量 **2166 passed**，1 个已有上游弃用警告；按后续用户授权提交到 `origin/main`。已无进行中的迁移计划。
 
 [数学等价后端接入、完整验证与 main 发布](../completed/symbolic-math-integration.md)已完成：SymPy 候选与独立复核、完整多项式输出的不等价证据、guarded-softmax/PV 规则已接入。全量 2095 passed；GLM 三组签名均为 5 个正例已证明和 5 个负例 unknown。按用户最新授权直接推送 main。

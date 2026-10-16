@@ -1,15 +1,12 @@
 """负无穷 mask 的图级支持：有限分支可改写，非有限路径不可消项。"""
 
-from dataclasses import replace
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax import lax
 
-from jax_reorder import Status, compare_algebraic_jaxprs, verify_algebraic_proof
-from jax_reorder.errors import CorrespondenceError
+from jax_reorder import Status, compare_algebraic_jaxprs
 
 
 def signature(shape=(), dtype=jnp.float32):
@@ -246,19 +243,3 @@ def test_all_masked_softmax_nan_path_and_final_guard_are_preserved():
         signature((3,), jnp.bool_),
     )
     assert result.status == Status.UNKNOWN
-
-
-def test_nonfinite_atom_proof_cannot_be_forged_as_total(legacy_algebra):
-    result, graphs = compare(
-        lambda x, m: jnp.where(m, x + x, -jnp.inf),
-        lambda x, m: jnp.where(m, 2 * x, -jnp.inf),
-        signature((3,)),
-        signature((3,), jnp.bool_),
-    )
-    assert result.status == Status.EQUIVALENT
-    steps = list(result.proof.steps)
-    index = next(i for i, step in enumerate(steps) if not step.expression.total)
-    step = steps[index]
-    steps[index] = replace(step, expression=replace(step.expression, total=True))
-    with pytest.raises(CorrespondenceError):
-        verify_algebraic_proof(*graphs, replace(result.proof, steps=tuple(steps)))

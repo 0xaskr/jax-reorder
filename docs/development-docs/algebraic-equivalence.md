@@ -5,7 +5,7 @@
 用户已明确选择完全信任 SymPy；随后暂停生产迁移，要求先按“可以本地修改开源库”的前提
 更新[迁移计划](../exec-plans/completed/trusted-sympy-backend.md)，评估转换器和公式资产。
 新的默认数学路径已将完整索引表达式及定义条件交给 SymPy；它的数学判断直接成为结果，
-不再要求自写独立证明器批准。旧 AlgebraProof 及其 verifier 保留兼容职责。
+不再要求自写独立证明器批准。用户随后明确放弃旧证明器，旧代数证书及验证 API 已删除。
 转换仍保留输入、输出、轴、常量、条件和区域绑定，无法表达的语义明确报告。
 用户已要求恢复实施。下文“仅候选、独立复核”的内容保留为旧后端的设计记录；
 架构评估与本地 fork 探针见[复用报告](equivalence-backends/architecture-reuse.md)，迁移进展在计划中记录。
@@ -20,7 +20,7 @@
 原始条件在约分前保存；无法确认的条件、CAS None、超时与转换错误分别报告。
 
 验收包含独立 Nerva 公式对照、两份手写 JAX 的公共入口比较、错误轴/系数/输出反例、
-空域/单位轴/部分函数/区域拒绝，以及阻断旧 normalizer/verifier 和 JAX 数值执行的测试。
+空域/单位轴/部分函数/区域拒绝，以及阻断 JAX 数值执行的测试。
 输入规模递增时单独记录表达式节点和转换开销，不将数值抽样当作等价依据。
 
 特殊值和不透明算子仍由转换层保留：复用现有源图有限性分析，完整记录 primitive 参数、输入 tensor 定义、
@@ -46,11 +46,26 @@
 超时会 kill 并回收 worker，后续请求可继续；预算在大多项式展开前预检。
 这是时间/表达式工作量边界，没有新增进程 RSS 硬上限。
 
-新数学结果的 `proof` 和 `inequivalence_proof` 为 `None`；`backend_result` 保存 backend/version、
-实际查询方法链、True/False/None、输出位置、条件、完整不透明定义、工作量、时间和失败分类。
-记录用于审计，不是另一套独立证书。结构快路径仍可带原结构证据。
-旧 `verify_algebraic_proof` / `verify_inequivalence_proof` 继续验证旧格式；旧比较与证据生成的编排入口已移到
-[测试 helper](../../tests/legacy_algebra.py)。兼容辅助模块仍随包保留，默认生产路径没有旧 normalizer/verifier 兜底。
+`AlgebraComparison` 只记录当前判定路径：`correspondence` 保存结构快速路径的
+`GraphCorrespondence`，可用 `verify_correspondence(left, right, correspondence, derivative_scope="primal")`
+复核；`backend_result` 保存 SymPy 的 backend/version、实际查询方法链、True/False/None、
+输出位置、条件、完整不透明定义、工作量、时间和失败分类。查询记录用于审计，不是独立证书。
+数学路径的 `correspondence` 为 `None`；结构路径的 `backend_result` 为 `None`。
+
+此次删除 `AlgebraProof`、`PolynomialInequivalenceProof`、`verify_algebraic_proof`、
+`verify_inequivalence_proof` 公开接口，以及结果中的 `proof` / `inequivalence_proof` 字段。
+旧多项式 IR、规范化/搜索、域见证、标量候选、证据重放与 `tests/legacy_algebra.py` 均已移除，
+不保留兼容别名或回退。调用方应读取当前结果字段；公式正反例迁移到公共 SymPy 入口，
+旧证书篡改和旧搜索器实现测试删除，结构证据测试继续保留。
+
+共享辅助代码按实际用途拆分：
+
+- [algebra_budget.py](../../src/jax_reorder/algebra_budget.py)：确定性工作量预算。
+- [algebra_semantics.py](../../src/jax_reorder/algebra_semantics.py)：完整元数据编码与默认执行属性检查。
+- [algebra_indices.py](../../src/jax_reorder/algebra_indices.py)：精确整数坐标适配，不含旧 Factor/Term 作用域与证据规则。
+- [algebra_finiteness.py](../../src/jax_reorder/algebra_finiteness.py)：源值有限性与共同调用的非有限常量检查，独立于旧 Lowerer。
+
+重构范围、测试迁移与验收记录见[清理计划](../exec-plans/completed/remove-legacy-prover.md)。
 
 后端 `failure_kind` 区分 `unsupported_conversion`、`condition_undecided`、`cas_undecided`、
 `budget_exhausted`、`timeout`、`internal_error`；外层既有 `algebra_incomplete` 保持兼容。
@@ -64,6 +79,17 @@
 归约最大值/最小值、布尔归约及小范围条件可能显式展开并扣预算；大 shape 的任意组合并不保证可判定。
 一般 scan 最多符号展开 64 步，独立加法累加可保持 Sum；while 只接受可确定的受限终止。
 数据依赖的未知终止、effects、复杂 dtype、非默认精度/分片等保留拒绝路径。
+
+ArrayExpr 只接收完整自由轴、符号轴标签、完整范围求和及纯张量收缩。SymPy 1.14 的
+`convert_indexed_to_array` 会把 `x[i+1]`、`x[2*i]` 的坐标整体当作轴标签，直接转换会丢失切片映射。
+因此偏移、步长、翻转、广播缺轴、部分求和和坐标权重保留 Indexed 表示；合法大矩阵结合仍可走 ArrayExpr。
+用法参照 [SymPy array expression 文档](https://docs.sympy.org/latest/modules/tensor/array_expressions.html)，
+本地复现与正反例见 [转换边界测试](../../tests/test_algebra_array_conversion.py)。
+
+不含 Piecewise、Max、Min、Abs 的 Sum/Product 查询先由 SymPy 分别化简两侧（`doit=False`），再比较差值，避免提前展开
+把 `exp(Sum(...))` 变成难以合并的大 Product。未解决且超过展开界限的求和不再调用会隐式
+展开的 `Expr.equals`，返回 `cas_undecided`；与求和变量无关的 Sum 按常数乘法计费。
+含分段函数及其 Max/Min/Abs 表示的求和先做差值消项或有预算的有限展开，避免两侧化简造成分支膨胀；worker 超时仍是所有查询的最终资源边界。
 
 绑定转换不能直接使用 SymPy 1.14 的嵌套 `Sum.as_dummy()`：其重名会把外层读取捕获到内层。
 本地按词法深度规范命名，嵌入/读取时生成新 Dummy；独立双重求和参考验证矩阵结合两种转换，
@@ -100,8 +126,11 @@ Python 3.12、JAX 0.11.2、SymPy 1.14.0 下，对 `sum(x*x)` 的一次实测如�
 时间包含首次初始化/缓存影响，峰值来自 tracemalloc，不是进程 RSS；只测表达式构造，没有执行 JAX，
 也不意味着任意大图的最终 SymPy 查询具有常数成本。
 
-本轮验收为 **2166 passed，1 个已有上游弃用警告，1403.69 秒**；Ruff、格式、tracing/数学示例、
-离线 wheel 构建和独立导入均通过。新结果和旧证据兼容测试分别保留，完整命令见已归档的迁移计划。
+可信后端首次迁移验收为 **2166 passed，1 个已有上游弃用警告，1403.69 秒**；Ruff、格式、tracing/数学示例、
+离线 wheel 构建和独立导入均通过。该次验收仍包含旧证据兼容测试。
+清理后全量运行 1930 项，其中 1928 项通过、2 项稳定 softmax 查询超时；定位并修复查询顺序后，
+两项在原 15 秒限制下通过，受影响的 8 个测试文件 **299 passed**。最后调整后未再重复全量；
+最终 Ruff、格式、示例、文档检查、离线打包与独立导入通过，详细阶段记录见清理计划。
 
 ## 历史实现记录（以下为迁移前的后端）
 
@@ -144,10 +173,10 @@ Python 3.12、JAX 0.11.2、SymPy 1.14.0 下，对 `sum(x*x)` 的一次实测如�
 | 实现 | 职责 |
 | --- | --- |
 | [algebra.py](../../src/jax_reorder/algebra.py) | 结构证据直通、代数比较和结果分类 |
-| [algebra_ir.py](../../src/jax_reorder/algebra_ir.py) | 不可变 DAG、项表、精确系数和预算 |
-| [algebra_lower.py](../../src/jax_reorder/algebra_lower.py) | 原语语义、索引映射与固定区域转换 |
-| [algebra_normalize.py](../../src/jax_reorder/algebra_normalize.py) | 展开、项收集和绑定索引规范化搜索 |
-| [algebra_proof.py](../../src/jax_reorder/algebra_proof.py) | 原图对应和局部推导的独立复核 |
+| [algebra_ir.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_ir.py) | 不可变 DAG、项表、精确系数和预算 |
+| [algebra_lower.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_lower.py) | 原语语义、索引映射与固定区域转换 |
+| [algebra_normalize.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_normalize.py) | 展开、项收集和绑定索引规范化搜索 |
+| [algebra_proof.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_proof.py) | 原图对应和局部推导的独立复核 |
 
 ## 当前边界
 
@@ -215,9 +244,9 @@ SymPy 只生成受限数学变换候选；接受结果必须附独立可重放�
 结论不提升成完整 layer 结论；若本轮不能建立源输入到最终输出的证据，保留具体 unknown。
 工作进度见[执行计划](../exec-plans/completed/symbolic-math-integration.md)。
 
-实现与验收：[CAS 候选](../../src/jax_reorder/algebra_sympy.py)、
-[标量证据复核](../../src/jax_reorder/algebra_scalar_proof.py)、
-[数学不等价证据](../../src/jax_reorder/algebra_inequivalence.py)、
+实现与验收：[CAS 候选](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_sympy.py)、
+[标量证据复核](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_scalar_proof.py)、
+[数学不等价证据](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_inequivalence.py)、
 [有限性规则](../../src/jax_reorder/algebra_finiteness.py)。
 对应回归为 [CAS](../../tests/test_algebra_sympy.py)、
 [负证据](../../tests/test_algebra_inequivalence.py) 与

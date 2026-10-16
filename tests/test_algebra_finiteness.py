@@ -1,18 +1,16 @@
 """遮蔽 softmax 的有限输出事实仅由完整源图建立；全部检查只 tracing。"""
 
-from dataclasses import replace
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import sympy as sp
 from jax import lax
 from jax._src import compiler, dispatch
 
-from jax_reorder import Status, compare_algebraic_jaxprs, verify_algebraic_proof
-from jax_reorder.algebra_ir import Budget
-from jax_reorder.algebra_lower import Lowerer
-from jax_reorder.errors import CorrespondenceError
+from jax_reorder import Status, compare_algebraic_jaxprs
+from jax_reorder.algebra_symbolic import SymbolicBuilder
+from jax_reorder.algebra_transport import freeze
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +49,7 @@ def compare_pv(probabilities, shape=(2, 3), dtype=jnp.float32):
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
 @pytest.mark.parametrize("nested", [False, True])
-def test_guarded_softmax_proves_pv_with_source_replay(dtype, nested):
+def test_guarded_softmax_proves_pv_with_source_conditions(dtype, nested):
     operation = jax.jit(jax.jit(guarded)) if nested else guarded
     result, graphs = compare_pv(lambda x, m: operation(x.astype(jnp.float32), m), dtype=dtype)
     assert result.status == Status.EQUIVALENT, result
@@ -61,11 +59,11 @@ def test_guarded_softmax_proves_pv_with_source_replay(dtype, nested):
 
 def test_guarded_output_is_finite_but_retains_partial_internal_path():
     graph = jax.make_jaxpr(guarded)(signature((2, 3)), signature((2, 3), jnp.bool_))
-    lowerer = Lowerer(Budget(100_000))
-    output = lowerer.graph(graph).outputs[0]
-    assert lowerer.finite_values[output]
-    assert not output.nonfinite
-    assert not output.body.total
+    builder = SymbolicBuilder(100_000)
+    output = builder.graph(freeze(graph))[0]
+    assert output.source.finite
+    assert output.finite
+    assert output.defined != sp.true
 
 
 def test_all_masked_rows_still_prove_guarded_pv():
@@ -177,11 +175,10 @@ def test_padding_conversion_through_dtype_without_infinity_is_not_preserved(dtyp
         eq.primitive is lax.convert_element_type_p and eq.params["new_dtype"] == dtype
         for eq in graph.jaxpr.eqns
     )
-    lowerer = Lowerer(Budget(100_000))
-    output = lowerer.graph(graph).outputs[0]
-    assert not lowerer.finite_values[output]
-    assert output.nonfinite
-    assert "guarded_softmax_finite" not in lowerer.rules
+    builder = SymbolicBuilder(100_000)
+    output = builder.graph(freeze(graph))[0]
+    assert not output.source.finite
+    assert "guarded_softmax_finite" not in builder.rules
     result, _ = compare_pv(probabilities)
     assert result.status == Status.UNKNOWN, result
     assert "guarded_softmax_finite" not in result.rules
@@ -214,11 +211,10 @@ def test_dynamic_gather_nonfinite_fill_cannot_be_cleared(fill):
     graph = jax.make_jaxpr(probabilities)(
         signature((2, 5)), signature((3,), jnp.int32), signature((2, 3), jnp.bool_)
     )
-    lowerer = Lowerer(Budget(100_000))
-    output = lowerer.graph(graph).outputs[0]
-    assert not lowerer.finite_values[output]
-    assert output.nonfinite
-    assert "guarded_softmax_finite" not in lowerer.rules
+    builder = SymbolicBuilder(100_000)
+    output = builder.graph(freeze(graph))[0]
+    assert not output.source.finite
+    assert "guarded_softmax_finite" not in builder.rules
 
 
 def test_scan_constants_and_slices_keep_finiteness_but_carry_does_not():
@@ -253,9 +249,9 @@ def test_large_axis_does_not_increase_finiteness_work():
     work = []
     for size in (3, 1_000_000):
         graph = jax.make_jaxpr(guarded)(signature((2, size)), signature((2, size), jnp.bool_))
-        lowerer = Lowerer(Budget(100_000))
-        assert not lowerer.graph(graph).outputs[0].nonfinite
-        work.append(lowerer.budget.used)
+        builder = SymbolicBuilder(100_000)
+        assert builder.graph(freeze(graph))[0].source.finite
+        work.append(builder.budget.used)
     assert work[0] == work[1]
 
 
@@ -268,13 +264,3 @@ def test_internal_token_is_rejected_without_attribute_error():
     result = compare_algebraic_jaxprs(*graphs)
     assert result.status == Status.UNKNOWN
     assert result.issues[0].path == "algebra.shape"
-
-
-def test_finite_output_proof_does_not_authorize_totality_tampering(legacy_algebra):
-    result, graphs = compare_pv(guarded)
-    assert result.status == Status.EQUIVALENT
-    steps = list(result.proof.steps)
-    i = next(i for i, step in enumerate(steps) if not step.expression.total)
-    steps[i] = replace(steps[i], expression=replace(steps[i].expression, total=True))
-    with pytest.raises(CorrespondenceError):
-        verify_algebraic_proof(*graphs, replace(result.proof, steps=tuple(steps)))

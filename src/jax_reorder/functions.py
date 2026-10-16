@@ -17,7 +17,7 @@ from jax._src.interpreters import ad
 from jax._src.layout import AutoLayout, Format
 
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs, validate_timeout
-from .algebra_ir import Budget
+from .algebra_budget import Budget
 from .canonical import Comparison, Issue, Status, _difference, compare_jaxprs
 from .errors import JaxprError, UnsupportedJaxprError
 from .semantics import Encoder, Frozen, encoded_equal

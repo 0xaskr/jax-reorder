@@ -23,7 +23,7 @@ def test_default_jit_composes_different_private_residual_interfaces(mode):
     assert result.status == Status.EQUIVALENT, result.modes[0].issues
     for report in result.modes:
         assert report.algebra and report.algebra.backend_result
-        assert report.algebra.proof is None
+        assert report.algebra.correspondence is None
 
 
 def test_default_jit_keeps_constants_and_actual_bindings():

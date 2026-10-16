@@ -10,8 +10,8 @@ from jax import dtypes, lax
 
 from ._vendor.jax2sympy.primitive_mapping import primitive_to_sympy_op
 from ._vendor.jax2sympy.translate import exact_array, jaxpr_to_sympy_expressions
+from .algebra_budget import Budget
 from .algebra_finiteness import Finiteness, Source
-from .algebra_ir import Budget
 from .errors import UnsupportedJaxprError
 
 
@@ -65,9 +65,8 @@ def rename_bounds(expression, *, fresh=False):
 
 
 def normalize_coordinates(expression, shape):
-    """Reuse exact coordinate adaptation without invoking the legacy value normalizer."""
-    from .algebra_indices import add, divide, integer, scale
-    from .algebra_ir import Index
+    """Adapt exact integer coordinates using their known shape and summation bounds."""
+    from .algebra_indices import Index, add, divide, integer, scale
 
     symbols = {
         symbol: Index("free", axis) for axis, symbol in enumerate(coordinates(shape)) if symbol != 0
@@ -157,9 +156,7 @@ class SymbolicBuilder:
         self.rules = set()
         self.constants = []
         self.next_bound = 0
-        from .algebra_lower import Lowerer
-
-        self.finiteness = Finiteness(Lowerer(self.budget))
+        self.finiteness = Finiteness()
         self.definitions = {}
         self.canonical_values = {}
 
@@ -415,12 +412,12 @@ class SymbolicBuilder:
                 eq.params,
             )
             source.finite = (
-                self.finiteness._finite(source) if not region and len(eq.outvars) == 1 else False
+                self.finiteness.is_finite(source) if not region and len(eq.outvars) == 1 else False
             )
             if dtype_kind(var.aval.dtype) in "biu":
                 source.finite = True
             sources.append(source)
-        self.rules.update(self.finiteness.lowerer.rules)
+        self.rules.update(self.finiteness.rules)
         layouts = {
             "broadcast_in_dim",
             "reshape",
@@ -527,7 +524,7 @@ class SymbolicBuilder:
 
     def opaque(self, eq, values, sources):
         """Congruence of a complete operation, without applying real algebra to nonfinite values."""
-        from .algebra_lower import encode
+        from .algebra_semantics import encode
 
         name = eq.primitive.name
         self.rules.add(name)

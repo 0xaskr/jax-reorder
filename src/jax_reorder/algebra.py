@@ -3,12 +3,10 @@
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
+from .algebra_budget import Budget
 from .algebra_calls import CommonCalls
-from .algebra_inequivalence import PolynomialInequivalenceProof
-from .algebra_ir import Budget
-from .algebra_proof import AlgebraProof
 from .canonical import Issue, Status, canonicalize, compare_jaxprs
-from .correspondence import build_correspondence
+from .correspondence import GraphCorrespondence, build_correspondence
 from .errors import JaxprError, UnsupportedJaxprError
 
 if TYPE_CHECKING:
@@ -30,16 +28,15 @@ FLOAT_WARNING = (
 
 @dataclass(frozen=True)
 class AlgebraComparison:
-    """可信数学结果；旧证据字段只用于兼容已有证书。"""
+    """结构对应或可信 SymPy 数学结果，按实际判定路径记录依据。"""
 
     status: Status
     issues: tuple[Issue, ...] = ()
     rules: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ASSUMPTIONS
     warnings: tuple[str, ...] = (FLOAT_WARNING,)
-    proof: AlgebraProof | None = field(default=None, repr=False)
+    correspondence: GraphCorrespondence | None = field(default=None, repr=False)
     work: int = 0
-    inequivalence_proof: PolynomialInequivalenceProof | None = field(default=None, repr=False)
     backend_result: "SympyResult | None" = field(default=None, repr=False)
 
     @property
@@ -47,17 +44,13 @@ class AlgebraComparison:
         """区分结构证据与可信 SymPy 数学结论。"""
         if self.status != Status.EQUIVALENT:
             return None
-        return (
-            "structural"
-            if self.proof is not None and self.proof.structural is not None
-            else "algebraic"
-        )
+        return "structural" if self.correspondence is not None else "algebraic"
 
     @property
     def output(self):
         if self.backend_result is not None:
             return self.backend_result.output
-        return None if self.inequivalence_proof is None else self.inequivalence_proof.output
+        return None
 
 
 def _prepare(graph):
@@ -93,17 +86,15 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeo
             rules=("structural",),
             assumptions=("structural equivalence of the supplied forward jaxprs",),
             warnings=(),
-            proof=AlgebraProof(
-                None, None, (), algebra_budget, structural=structural.correspondence
-            ),
+            correspondence=structural.correspondence,
         )
     if structural.status == Status.UNKNOWN:
         return AlgebraComparison(Status.UNKNOWN, structural.issues)
     try:
-        # Reuse existing graph adaptation and original binding checks, not its algebra engine.
+        # Adapt graph bindings before constructing the corresponding symbolic inputs.
         prepared = tuple(_prepare(graph) for graph in (left, right))
         a, b = (entry[0] for entry in prepared)
-        from .algebra_lower import encode
+        from .algebra_semantics import encode
 
         if tuple(encode(v.aval) for v in a.invars + a.outvars) != tuple(
             encode(v.aval) for v in b.invars + b.outvars

@@ -1,13 +1,17 @@
-"""符号整数坐标及作用域操作；这里的规则只涉及精确整数，不读取数组。
+"""Exact integer coordinate adaptation for symbolic tensor layouts."""
 
-free 是输出坐标，sum 是转换阶段的绑定身份，bound 是规范项内的局部轴。
-标量函数参数共享外部坐标，但其中每个多项式的求和轴有自己的作用域。
-"""
+from dataclasses import dataclass
 
-from dataclasses import replace
-
-from .algebra_ir import Index
 from .unrooted import order_key
+
+
+@dataclass(frozen=True)
+class Index:
+    """符号整数坐标；算术节点不枚举元素。"""
+
+    kind: str
+    number: int = 0
+    args: tuple["Index", ...] = ()
 
 
 def integer(value):
@@ -118,104 +122,3 @@ def divide(index, divisor, domains=None, *, modulo=False):
     if modulo and any(i.kind != "zero" for i in divisible):
         return divide(remainder, divisor, domains, modulo=True)
     return Index("mod" if modulo else "div", divisor, (index,))
-
-
-def map_index(index, change, domains=None):
-    """递归替换坐标叶子后，再以已知范围化简整数表达式。"""
-    if not index.args:
-        return change(index)
-    args = tuple(map_index(child, change, domains) for child in index.args)
-    if index.kind == "add":
-        return add(*args)
-    if index.kind == "scale":
-        return scale(args[0], index.number)
-    if index.kind in ("div", "mod"):
-        return divide(args[0], index.number, domains, modulo=index.kind == "mod")
-    raise ValueError(f"unknown index operation {index.kind}")
-
-
-def leaves(index):
-    """遍历一个坐标中的变量和常量。"""
-    if not index.args:
-        yield index
-    for child in index.args:
-        yield from leaves(child)
-
-
-def map_factors(factors, change, domains=None, depth=0, *, key=order_key):
-    """改写当前项可见的坐标；标量参数递归进入，张量边界参数保持独立。"""
-    domains = {} if domains is None else domains
-    scoped_domains = {
-        replace(index, scope=index.scope + depth) if index.kind == "bound" else index: value
-        for index, value in domains.items()
-    }
-
-    def local(index):
-        if index.kind == "bound" and index.scope < depth:
-            return index
-        exposed = replace(index, scope=index.scope - depth) if index.kind == "bound" else index
-        result = change(exposed)
-        return map_index(
-            result, lambda i: replace(i, scope=i.scope + depth) if i.kind == "bound" else i
-        )
-
-    output = []
-    for factor in factors:
-        indices = tuple(map_index(i, local, scoped_domains) for i in factor.indices)
-        arguments = factor.arguments
-        if factor.scalar:
-            arguments = tuple(
-                tuple(
-                    sorted(
-                        (
-                            replace(
-                                term,
-                                factors=tuple(
-                                    sorted(
-                                        map_factors(
-                                            term.factors, change, domains, depth + 1, key=key
-                                        ),
-                                        key=key,
-                                    )
-                                ),
-                            )
-                            for term in polynomial
-                        ),
-                        key=key,
-                    )
-                )
-                for polynomial in arguments
-            )
-        output.append(replace(factor, indices=indices, arguments=arguments))
-    return tuple(output)
-
-
-def coordinates(factors, depth=0):
-    """列出当前项作用域中的读取坐标；返回值屏蔽参数内部的局部绑定。"""
-    for factor in factors:
-        for index in factor.indices:
-            yield map_index(
-                index, lambda i: replace(i, scope=i.scope - depth) if i.kind == "bound" else i
-            )
-        if factor.scalar:
-            for polynomial in factor.arguments:
-                for term in polynomial:
-                    yield from coordinates(term.factors, depth + 1)
-
-
-def used_axes(factors):
-    """包括标量函数内部引用的外部求和轴。"""
-    return {
-        i.number
-        for coordinate in coordinates(factors)
-        for i in leaves(coordinate)
-        if i.kind == "bound" and i.scope == 0
-    }
-
-
-def scalar_factor(semantic, children, total):
-    """嵌入参数多项式时，已有外部绑定上移一级，局部绑定仍在原作用域。"""
-    from .algebra_ir import Factor
-
-    # children 的 bound 均由各自 Term 绑定，外部 sum 尚未转为 bound。
-    return Factor(semantic, (), children, total, True)

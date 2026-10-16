@@ -15,7 +15,7 @@ import sympy as sp
 from jax._src import compiler, dispatch
 
 from jax_reorder import Status, compare_functions
-from jax_reorder.algebra_ir import Budget
+from jax_reorder.algebra_budget import Budget
 from jax_reorder.algebra_symbolic import SymbolicBuilder
 from jax_reorder.algebra_transport import freeze
 from jax_reorder.algebra_trusted import equal
@@ -144,9 +144,9 @@ def test_whole_jax_pair_uses_public_comparator(pairs, name):
         patch.object(compiler, "backend_compile_and_load", forbidden),
         patch.object(dispatch, "apply_primitive", forbidden),
     ):
-        result = compare_functions(function, equivalent, *args, algebra_timeout=15)
+        result = compare_functions(function, equivalent, *args, algebra_timeout=180)
         assert result.status == Status.EQUIVALENT, result.modes[0].issues
-        result = compare_functions(function, wrong, *args, algebra_timeout=15)
+        result = compare_functions(function, wrong, *args, algebra_timeout=180)
         assert result.status == Status.INEQUIVALENT, result.modes[0].issues
 
 

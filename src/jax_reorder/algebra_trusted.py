@@ -50,10 +50,14 @@ def _finite_expansion(expression, budget):
             return costs[node]
         if isinstance(node, (sp.Sum, sp.Product)):
             size = 1
-            for _, start, stop in node.limits:
+            for variable, start, stop in node.limits:
                 extent = stop - start + 1
                 if not extent.is_Integer or extent < 0:
                     return 257
+                if isinstance(node, sp.Sum) and variable not in node.function.free_symbols:
+                    # Sum of an index-independent value is one scalar multiply,
+                    # even when the declared axis is large.
+                    continue
                 size *= int(extent)
                 if size > 256:
                     return 257
@@ -74,7 +78,7 @@ def _finite_expansion(expression, budget):
     return True
 
 
-def simplify(expression, budget, *, assumptions=sp.true):
+def simplify(expression, budget, *, assumptions=sp.true, expand=True):
     from sympy.core.function import AppliedUndef
 
     budget.spend(path="algebra.sympy.simplify")
@@ -97,12 +101,12 @@ def simplify(expression, budget, *, assumptions=sp.true):
             budget.spend(count, path="algebra.sympy.expand")
         terms[node] = count
     expression = rename_bounds(
-        expression.expand() if isinstance(expression, sp.Expr) else expression
+        expression.expand() if expand and isinstance(expression, sp.Expr) else expression
     )
     if expression.has(AppliedUndef) and expression.has(sp.Max, sp.Min):
         # Keep discrete index conditions; no real inequality model is available.
         return expression
-    if expression.has(sp.Sum, sp.Product) and _finite_expansion(expression, budget):
+    if expand and expression.has(sp.Sum, sp.Product) and _finite_expansion(expression, budget):
         expression = expression.doit()
     if expression.has(sp.Piecewise, sp.Max, sp.Min, sp.Abs):
         expression = sp.piecewise_exclusive(
@@ -115,6 +119,44 @@ def simplify(expression, budget, *, assumptions=sp.true):
     return sp.simplify(expression, doit=False)
 
 
+def _array_compatible(expression, indices):
+    """ArrayExpr conversion requires index labels, not arbitrary coordinate expressions.
+
+    convert_indexed_to_array treats x[i+1] and x[i] as the same array with
+    different axis labels. Only pure tensor contractions over full axes can
+    use that representation; slices and coordinate arithmetic stay indexed.
+    """
+    bound = {}
+    for summation in expression.atoms(sp.Sum):
+        for variable, start, stop in summation.limits:
+            if not isinstance(variable, sp.Symbol) or start != 0 or not stop.is_Integer:
+                return False
+            if variable in bound and bound[variable] != stop + 1:
+                return False
+            bound[variable] = stop + 1
+    labels = set(indices) | bound.keys()
+    reads = expression.atoms(sp.Indexed)
+    # Dropping an absent free axis would also conflate row and column broadcasts.
+    if {index for read in reads for index in read.indices} != labels:
+        return False
+
+    def supported(node):
+        if isinstance(node, sp.Indexed):
+            return all(
+                isinstance(index, sp.Symbol)
+                and index in labels
+                and (index not in bound or bound[index] == extent)
+                for index, extent in zip(node.indices, node.base.shape, strict=True)
+            )
+        if isinstance(node, sp.Sum):
+            return supported(node.function)
+        if node.is_Add or node.is_Mul:
+            return all(supported(arg) for arg in node.args)
+        return node.is_Number or isinstance(node, sp.Symbol) and node not in labels
+
+    return supported(expression)
+
+
 def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=None):
     from sympy.core.function import AppliedUndef
 
@@ -125,7 +167,12 @@ def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=Non
     if left == right:
         steps.append("identity")
         return True
-    if indices is not None and (left.has(sp.Sum, sp.Indexed) or right.has(sp.Sum, sp.Indexed)):
+    if (
+        indices is not None
+        and (left.has(sp.Sum, sp.Indexed) or right.has(sp.Sum, sp.Indexed))
+        and _array_compatible(left, indices)
+        and _array_compatible(right, indices)
+    ):
         from sympy.tensor.array.expressions import convert_indexed_to_array
 
         budget.spend(path="algebra.sympy.array")
@@ -149,12 +196,30 @@ def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=Non
             else simplify(sp.Equivalent(left, right), budget)
         )
         return True if residual == sp.true else False if residual == sp.false else None
+    if (left.has(sp.Sum, sp.Product) or right.has(sp.Sum, sp.Product)) and not (
+        left.has(sp.Piecewise, sp.Max, sp.Min, sp.Abs)
+        or right.has(sp.Piecewise, sp.Max, sp.Min, sp.Abs)
+    ):
+        # Simplifying each side first preserves symbolic sum identities that
+        # expansion of exp(Sum(...)) would turn into large unevaluated Products.
+        # Piecewise and functions rewritten into it need cancellation or bounded
+        # expansion first to avoid branch explosion.
+        steps.append("simplify(each side, doit=False)")
+        left = simplify(left, budget, assumptions=assumptions, expand=False)
+        right = simplify(right, budget, assumptions=assumptions, expand=False)
+        if left == right:
+            return True
     steps.append("simplify(left-right)")
     residual = simplify(left - right, budget, assumptions=assumptions)
     if residual.has(sp.nan, sp.zoo):
         return None
     if residual.has(AppliedUndef):
         steps.append("opaque_residual")
+        return None
+    if residual.has(sp.Sum, sp.Product) and not _finite_expansion(residual, budget):
+        # Expr.equals can call doit internally, outside the explicit expansion
+        # budget. Keep an unresolved large sum as unknown instead.
+        steps.append("unevaluated_sum")
         return None
     steps.append("Expr.equals(0)")
     return residual.equals(0)
