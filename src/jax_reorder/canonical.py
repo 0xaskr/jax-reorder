@@ -24,7 +24,13 @@ from jax._src.lax.lax import NoDCEEffect
 
 from .correspondence import GraphCorrespondence, build_correspondence, verify_correspondence
 from .derivatives import semantic_parameters
-from .errors import InvalidJaxprError, JaxprError, UnsupportedJaxprError
+from .errors import (
+    ComparisonBudgetError,
+    ComparisonError,
+    ComparisonInternalError,
+    InvalidJaxprError,
+    UnsupportedJaxprError,
+)
 from .semantics import Encoder, Frozen, replace_nested
 from .support import supported_primitive_identities
 from .unrooted import DEFAULT_SEARCH_BUDGET, canonical_order, order_key, reorder_form
@@ -93,13 +99,12 @@ def _ordered_equation(equation):
 
 
 class Status(StrEnum):
-    """本轮图比较结果；DIFFERENT 不表示数学公式已经被证明不等价。"""
+    """比较结论和结构阶段诊断；DIFFERENT 不表示数学不等价，不包含失败状态。"""
 
     # 使用字符串枚举，调用方可以直接以 .value 写入结构化报告。
     EQUIVALENT = "equivalent"
     INEQUIVALENT = "inequivalent"
     DIFFERENT = "different"
-    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -191,8 +196,8 @@ class Canonicalized:
 class Comparison:
     """图比较报告，包含状态、差异路径和两侧已完成的规范化结果。
 
-    unknown 时查看 issues；different 时查看 difference。
-    若一侧直接规范化失败，该侧结果为 None；部分完成时仍保留结果供诊断。
+    different 时查看 difference；失败通过异常传递。
+    正常返回时两侧规范化与必要的对应校验均已完成。
     """
 
     status: Status
@@ -972,7 +977,7 @@ def canonicalize(
 
     derivative_scope="all" 物化已适配的注册一阶规则；"primal" 仅比较前向。
     search_budget 分别用于内部槽位候选搜索和每次无根图搜索；超限抛出
-    UnsupportedJaxprError，不返回尚未证明为规范形式的局部最优结果。
+    ComparisonBudgetError，不返回尚未证明为规范形式的局部最优结果。
     """
     try:
         if (jax.__version__, jaxlib.__version__) != ("0.11.2", "0.11.2"):
@@ -992,10 +997,13 @@ def canonicalize(
             decisions = pending.pop()
             attempts += 1
             if attempts > search_budget:
-                raise UnsupportedJaxprError(
+                raise ComparisonBudgetError(
                     "jaxpr.search",
                     f"internal interface search budget exceeded: {attempts} states, "
                     f"limit {search_budget}",
+                    stage="structural",
+                    used=attempts,
+                    limit=search_budget,
                 )
             normalizer = _Normalizer(derivative_scope, search_budget, decisions)
             try:
@@ -1009,10 +1017,14 @@ def canonicalize(
                     if options > search_budget:
                         break
                 if options + len(pending) + attempts > search_budget:
-                    raise UnsupportedJaxprError(
+                    raise ComparisonBudgetError(
                         choice.path,
                         f"internal interface search budget exceeded: {len(choice.ports)} "
                         f"ambiguous slots, at least {options} alternatives, limit {search_budget}",
+                        stage="structural",
+                        used=attempts,
+                        limit=search_budget,
+                        alternatives=options,
                     ) from None
                 pending.extend((*decisions, option) for option in permutations(choice.ports))
                 continue
@@ -1034,8 +1046,11 @@ def canonicalize(
                     best, best_key = candidate, key
         return best
     except RecursionError as exc:
-        raise UnsupportedJaxprError(
-            "jaxpr", "nested graphs or parameters exceed the Python recursion limit"
+        raise ComparisonBudgetError(
+            "jaxpr",
+            "nested graphs or parameters exceed the Python recursion limit",
+            stage="structural",
+            failure_kind="recursion_limit",
         ) from exc
 
 
@@ -1080,39 +1095,44 @@ def compare_jaxprs(
     derivative_scope="all",
     search_budget=DEFAULT_SEARCH_BUDGET,
 ) -> Comparison:
-    """比较两个完整计算图，返回 equivalent、different 或 unknown。
+    """结构阶段诊断：返回 equivalent/different；未完成检查直接抛出异常。
 
-    两侧分别规范化，不使用对方的信息决定编号。只有两侧都完成处理后才比较
-    完整规范结构；非法图、不支持语义或搜索预算不足归为带原因的 unknown。
-    different 只说明图中存在差异，不推出公式或一般 Python 函数不等价。
+    different 仅表示完整图结构不同，不提供数学不等价结论。
+    完整数学比较请使用 compare_algebraic_jaxprs 或默认 compare_functions。
     """
+    if derivative_scope not in ("all", "primal"):
+        raise ValueError("derivative_scope must be all or primal")
+    if type(search_budget) is not int or search_budget < 1:
+        raise ValueError("search_budget must be a positive integer")
     normalized = []
-    issues = []
-    # 即使一侧失败仍处理另一侧，使 unknown 报告保留两边各自可用的诊断信息。
     for side, graph in (("left", left), ("right", right)):
         try:
             result = canonicalize(
                 graph, derivative_scope=derivative_scope, search_budget=search_budget
             )
+            if not result.complete:
+                issue = result.issues[0]
+                raise UnsupportedJaxprError(issue.path, issue.reason)
             normalized.append(result)
-            issues.extend(Issue(f"{side}.{i.path}", i.reason) for i in result.issues)
-        except JaxprError as exc:
-            normalized.append(None)
-            issues.append(Issue(f"{side}.{exc.path}", exc.reason))
+        except ComparisonError as exc:
+            raise exc.at(side) from exc
+        except Exception as exc:
+            raise ComparisonInternalError(
+                f"{side}.jaxpr", f"{type(exc).__name__}: {exc}", stage="structural"
+            ) from exc
     a, b = normalized
-    # 一旦有未完成部分，就不能仅根据可达子图相同而返回 equivalent。
-    if issues:
-        return Comparison(Status.UNKNOWN, tuple(issues), left=a, right=b)
-    difference = _difference(a.graph, b.graph)
-    correspondence = None
-    if difference is None:
-        # 规范表示相同只是第一道检查；还需回到两份原图验证逐节点双射和绑定。
-        # 证据构造或复核失败说明无法确认等价，不能把它改报为程序不等价。
-        try:
+    try:
+        difference = _difference(a.graph, b.graph)
+        correspondence = None
+        if difference is None:
             correspondence = build_correspondence(left, right, a, b)
             verify_correspondence(left, right, correspondence, derivative_scope=derivative_scope)
-        except JaxprError as exc:
-            return Comparison(Status.UNKNOWN, (Issue(exc.path, exc.reason),), left=a, right=b)
+    except ComparisonError:
+        raise
+    except Exception as exc:
+        raise ComparisonInternalError(
+            "jaxpr.compare", f"{type(exc).__name__}: {exc}", stage="structural"
+        ) from exc
     return Comparison(
         Status.DIFFERENT if difference else Status.EQUIVALENT,
         difference=difference,

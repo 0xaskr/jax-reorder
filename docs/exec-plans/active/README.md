@@ -1,5 +1,7 @@
 # 进行中的计划
 
+[三种比较结论与分类异常迁移](../completed/comparison-exceptions.md)已完成并归档：删除 UNKNOWN，统一结构、SymPy worker、函数模式和批处理的异常通道；首轮全量发现的 34 项迁移失败均已修复，最终 110 项复测通过。后续用户已授权提交并推送 `origin/main`。
+
 [将 jax2sympy 转换代码并入项目](../completed/inline-symbolic-converter.md)已完成并归档：生产逻辑直接并入构造器，完整 60 个 primitive 映射与逐元素转换入口迁入普通模块，删除 vendor 包，许可证保留在文件头。相关回归 **741 passed**，另有 46 项转换/后端检查通过；尚未提交或推送。
 
 [删除旧代数证明器并整理 SymPy 比较路径](../completed/remove-legacy-prover.md)已完成并归档：移除旧证书接口、12 个旧模块及专用测试，解耦转换辅助代码，公式回归迁至可信 SymPy 路径。全量 1930 项中发现的两项超时已修复，受影响范围复测 **299 passed**；详见归档中的分阶段验证记录。后续用户已授权提交并推送 `origin/main`。

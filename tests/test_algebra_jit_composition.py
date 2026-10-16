@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import pytest
 from jax import lax
 
-from jax_reorder import Status, compare_functions
+from jax_reorder import MathematicalUndecidedError, Status, UnsupportedJaxprError, compare_functions
 
 
 def broadcast_sum(x, w):
@@ -54,7 +54,8 @@ def test_jit_composition_keeps_non_default_execution_metadata(metadata):
     def right(x):
         return 2 * x
 
-    assert compare_functions(left, right, jnp.ones(3)).status != Status.EQUIVALENT
+    with pytest.raises(UnsupportedJaxprError, match="non-default JIT"):
+        compare_functions(left, right, jnp.ones(3))
 
 
 def test_unused_partial_call_argument_cannot_disappear():
@@ -66,7 +67,8 @@ def test_unused_partial_call_argument_cannot_disappear():
     def right(x):
         return 2 * x
 
-    assert compare_functions(left, right, jnp.ones(3)).status != Status.EQUIVALENT
+    with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+        compare_functions(left, right, jnp.ones(3))
 
 
 def test_unused_partial_call_output_cannot_disappear():
@@ -76,7 +78,8 @@ def test_unused_partial_call_output_cannot_disappear():
         wrapped(x)
         return x + x
 
-    assert compare_functions(left, lambda x: 2 * x, jnp.ones(3)).status != Status.EQUIVALENT
+    with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+        compare_functions(left, lambda x: 2 * x, jnp.ones(3))
 
 
 def test_jit_composition_retains_nested_loop_barriers():

@@ -2,7 +2,7 @@
 
 | 主题 | 入口 |
 | --- | --- |
-| jaxpr 两轮规范化、四类比较结果与判定边界 | [equivalence-results.md](equivalence-results.md) |
+| jaxpr 两阶段比较、三种结论与异常契约 | [equivalence-results.md](equivalence-results.md) |
 | Oryx / MLIR / StableHLO 参考路线 | [ir-comparison.md](ir-comparison.md) |
 | SGLang-JAX 注册模型、所选层与实际调用链 | [sglang-model-coverage.md](sglang-model-coverage.md) |
 | SGLang-JAX 层测试的完整源码快照 | [快照说明](../../tests/fixtures/sglang_jax/README.md) |

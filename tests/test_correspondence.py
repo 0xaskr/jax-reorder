@@ -9,7 +9,12 @@ import pytest
 from jax import lax
 
 from examples import region_bindings
-from jax_reorder import CorrespondenceError, Status, compare_jaxprs, verify_correspondence
+from jax_reorder import (
+    CorrespondenceError,
+    Status,
+    compare_jaxprs,
+    verify_correspondence,
+)
 from jax_reorder import canonical as implementation
 
 
@@ -92,10 +97,11 @@ def test_equivalent_claim_is_blocked_when_normalized_parameter_difference_is_los
     b = jax.make_jaxpr(lambda x: lax.integer_pow(x, 3))(jnp.float32(2))
     # 模拟规范图比较漏掉参数差异，独立原图校验必须阻止假阳性。
     monkeypatch.setattr(implementation, "_difference", lambda *args: None)
-    result = compare_jaxprs(a, b)
-    assert result.status == Status.UNKNOWN
-    assert "primitive parameters differ" in result.issues[0].reason
-    assert result.correspondence is None
+    with pytest.raises(CorrespondenceError) as error:
+        compare_jaxprs(a, b)
+    result = error.value
+    assert "primitive parameters differ" in result.reason
+    assert result.failure_kind == "internal_error"
 
 
 @pytest.mark.parametrize(

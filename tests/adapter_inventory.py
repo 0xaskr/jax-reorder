@@ -14,7 +14,7 @@ from jax._src import core
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
-from jax_reorder import Status, compare_jaxprs
+from jax_reorder import Status, UnsupportedJaxprError, compare_jaxprs
 from jax_reorder.support import public_primitives
 
 SNAPSHOT = Path(__file__).with_name("fixtures") / "jax-adapter-0.11.2.json"
@@ -85,19 +85,24 @@ def main():
     actual = inventory()
     expected = json.loads(SNAPSHOT.read_text())
     graph = jax.make_jaxpr(lax.neg)(jnp.float32(1))
-    comparison = compare_jaxprs(graph, graph)
+    try:
+        comparison = compare_jaxprs(graph, graph)
+    except UnsupportedJaxprError as error:
+        if not args.candidate:
+            raise
+        comparison = None
+        failure = {"type": type(error).__name__, "path": error.path, "reason": error.reason}
     changed = [name for name in expected if actual.get(name) != expected[name]]
     report = {
         "inventory": actual,
         "changed_sections": changed,
-        "comparison": comparison.status.value,
-        "reasons": [issue.reason for issue in comparison.issues],
+        **({"comparison": comparison.status.value} if comparison else {"error": failure}),
     }
     if args.report:
         args.report.write_text(json.dumps(report, indent=2) + "\n")
     if args.candidate:
         if (jax.__version__, jaxlib.__version__) != ("0.11.2", "0.11.2"):
-            assert comparison.status == Status.UNKNOWN, "unaudited upgrade was silently accepted"
+            assert comparison is None, "unaudited upgrade was silently accepted"
         print(json.dumps({"upgrade_requires_review": bool(changed), **report}, indent=2))
     else:
         assert not changed, (

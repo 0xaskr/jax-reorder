@@ -1,5 +1,22 @@
 # 索引乘加与有限求和的代数比较
 
+## 2026-10-16 三种结论与异常通道
+
+[结果契约](../references/equivalence-results.md)已落实：完整数学比较正常返回结构等价、数学等价、数学不等价；删除 `Status.UNKNOWN`。
+结构入口仍提供匹配/不匹配阶段诊断；未完成、契约冲突和运行故障都抛出分类异常。
+`ComparisonError` 是统一基类，保存阶段、路径、失败分类和原始原因；查询/资源诊断放在 `diagnostics`。
+`SympyResult` 和正常函数模式报告删除 `failure_kind`，该字段改由异常提供。
+worker 用独立失败消息传输异常分类、诊断与远端 traceback；超时仍终止并回收进程。
+多模式比较遇到失败立即抛错，批处理捕获后写单独错误记录；不以其他模式的负结论掩盖失败。
+原来返回 unknown 的测试改为异常断言；增加 None 查询、worker 故障、异常链及后续请求恢复验证。
+迁移时定位到一个被旧 unknown 掩盖的错误：`max(x, 0) / max(x, 0)` 的定义条件可被 SymPy
+化成布尔分支的 `Piecewise`，该对象继承 `Expr`，旧查询误将其与 `True` 相减。现在仅对全部
+分支均为逻辑值的 Piecewise 使用 SymPy 的 `rewrite(ITE)`，再走逻辑比较，并计入转换预算。
+数值型 Piecewise 继续走算术查询；正反操作数、逻辑等价和数值分支分别回归。
+详细取舍、迁移范围与验证记录见[执行计划](../exec-plans/completed/comparison-exceptions.md)。
+
+下文的历史状态描述按其实现时期保留；当前结果接口以本节和结果契约为准。
+
 ## 2026-10-16 可信 SymPy 默认数学后端
 
 用户已明确选择完全信任 SymPy；随后暂停生产迁移，要求先按“可以本地修改开源库”的前提
@@ -12,7 +29,7 @@
 
 新转换路径已将 jax2sympy 的 SSA 遍历和 36 个逐点映射直接并入 SymbolicBuilder，精确常量转换一并保留。
 构造器返回 SymPy 的 Indexed/Sum 元素公式及原始定义条件，shape 和输出坐标独立保存；
-轴布局和区域绑定逐项适配。转换缺失明确 unknown，不删除不透明依赖。
+轴布局和区域绑定逐项适配。转换缺失抛出 UnsupportedJaxprError，不删除不透明依赖。
 原有完整数组映射及逐元素转换入口迁至 algebra_explicit.py，供公式基准与后续扩展使用；
 它不跟踪定义条件，不参与生产数学判等。两个承载文件的开头保留来源、固定 revision 和完整 MIT 声明，
 不再保留 vendor 包或 manifest。重构记录见[迁移计划](../exec-plans/completed/inline-symbolic-converter.md)。
@@ -52,7 +69,7 @@
 `AlgebraComparison` 只记录当前判定路径：`correspondence` 保存结构快速路径的
 `GraphCorrespondence`，可用 `verify_correspondence(left, right, correspondence, derivative_scope="primal")`
 复核；`backend_result` 保存 SymPy 的 backend/version、实际查询方法链、True/False/None、
-输出位置、条件、完整不透明定义、工作量、时间和失败分类。查询记录用于审计，不是独立证书。
+输出位置、条件、完整不透明定义、工作量和时间。查询记录用于审计，不是独立证书。
 数学路径的 `correspondence` 为 `None`；结构路径的 `backend_result` 为 `None`。
 
 此次删除 `AlgebraProof`、`PolynomialInequivalenceProof`、`verify_algebraic_proof`、
@@ -70,9 +87,9 @@
 
 重构范围、测试迁移与验收记录见[清理计划](../exec-plans/completed/remove-legacy-prover.md)。
 
-后端 `failure_kind` 区分 `unsupported_conversion`、`condition_undecided`、`cas_undecided`、
-`budget_exhausted`、`timeout`、`internal_error`；外层既有 `algebra_incomplete` 保持兼容。
-例如 `x/x` 与 `1` 保留除零条件，返回条件未判定；`sqrt(x*x)` 与 `x` 可由 SymPy 判为不恒等。
+异常 `failure_kind` 区分 `unsupported_conversion`、`condition_undecided`、`cas_undecided`、
+`budget_exhausted`、`timeout`、`internal_error`；不再返回 `algebra_incomplete` 结果。
+例如 `x/x` 与 `1` 保留除零条件，抛出条件未判定异常；`sqrt(x*x)` 与 `x` 可由 SymPy 判为不恒等。
 不恒等是“并非同一函数”，不是“所有输入的值都不同”。
 
 ### 表示边界与绑定验证

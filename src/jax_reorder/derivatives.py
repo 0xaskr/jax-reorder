@@ -14,7 +14,7 @@ from jax._src import ad_util, core
 from jax._src import custom_derivatives as cd
 from jax._src.interpreters import partial_eval as pe
 
-from .errors import InvalidJaxprError, UnsupportedJaxprError
+from .errors import ComparisonBudgetError, ComparisonError, InvalidJaxprError, UnsupportedJaxprError
 
 # 只接纳锁定版本中的这两个原语身份，同名用户原语不会进入规则适配。
 CUSTOM_PRIMITIVES = frozenset((cd.custom_jvp_call_p, cd.custom_vjp_call_p))
@@ -49,9 +49,12 @@ def _activations(avals, symbolic, *, include_float0=False):
     # k 个可显式传入的叶子最多形成 2**k - 1 个非空组合；先检查数量，再展开枚举。
     count = 2 ** len(indices) - 1 if symbolic else 1
     if count > MAX_RULE_CASES:
-        raise UnsupportedJaxprError(
+        raise ComparisonBudgetError(
             "derivative",
             f"symbolic-zero rule budget exceeded: {count} cases, limit {MAX_RULE_CASES}",
+            stage="structural",
+            requested=count,
+            limit=MAX_RULE_CASES,
         )
     result = []
     patterns = product((False, True), repeat=len(indices)) if symbolic else [(True,) * len(indices)]
@@ -183,8 +186,12 @@ def _vjp_rules(params, equation, parent):
     ) or ((False,) * len(primal.out_avals),)
     # VJP 规则同时受输入激活模式和输出余切模式影响，需要验证两者的组合。
     if len(activations) * len(cotangents) > MAX_RULE_CASES:
-        raise UnsupportedJaxprError(
-            "derivative", "combined input/cotangent symbolic-zero rule budget exceeded"
+        raise ComparisonBudgetError(
+            "derivative",
+            "combined input/cotangent symbolic-zero rule budget exceeded",
+            stage="structural",
+            requested=len(activations) * len(cotangents),
+            limit=MAX_RULE_CASES,
         )
     result = []
     for active in activations:
@@ -362,7 +369,7 @@ def semantic_parameters(equation, *, scope="all", parent=None):
             )
             _check_rule_order(result["rules"])
         # 已分类的错误保留原路径；JAX 或用户规则的其他失败统一包装成不支持。
-        except (InvalidJaxprError, UnsupportedJaxprError):
+        except ComparisonError:
             raise
         except Exception as exc:
             raise UnsupportedJaxprError(

@@ -5,7 +5,15 @@ import jax.numpy as jnp
 import pytest
 from jax import lax
 
-from jax_reorder import Status, canonicalize, compare_functions, compare_jaxprs, trace_function
+from jax_reorder import (
+    ComparisonContractError,
+    Status,
+    TraceError,
+    canonicalize,
+    compare_functions,
+    compare_jaxprs,
+    trace_function,
+)
 
 
 def pair(kind, length=3):
@@ -47,11 +55,11 @@ def pair(kind, length=3):
 @pytest.mark.parametrize("mode", ["forward", "jvp", "vjp"])
 def test_algebra_inside_fixed_regions(kind, length, mode):
     a, b = jnp.array([0.5, 0.8]), jnp.array([0.2, -0.3])
-    result = compare_functions(*pair(kind, length), a, b, modes=(mode,), check_cpu=True)
     if kind == "while" and mode == "vjp":
-        assert result.status == Status.UNKNOWN
-        assert result.modes[0].failure_kind == "trace_rejected"
+        with pytest.raises(TraceError):
+            compare_functions(*pair(kind, length), a, b, modes=(mode,), check_cpu=True)
     else:
+        result = compare_functions(*pair(kind, length), a, b, modes=(mode,), check_cpu=True)
         assert result.status == Status.EQUIVALENT, result
         assert result.cpu_compiled
 
@@ -89,8 +97,12 @@ def test_region_wrong_binding_and_control_parameters_never_match(kind):
     assert result.status != Status.EQUIVALENT, result
     if kind in ("scan", "while"):
         wrong, _ = pair(kind, length=4)
-        result = compare_functions(left, wrong, jnp.ones(2), jnp.ones(2))
-        assert result.status != Status.EQUIVALENT, result
+        if kind == "scan":
+            with pytest.raises(ComparisonContractError, match="output_avals"):
+                compare_functions(left, wrong, jnp.ones(2), jnp.ones(2))
+        else:
+            result = compare_functions(left, wrong, jnp.ones(2), jnp.ones(2))
+            assert result.status == Status.INEQUIVALENT
 
 
 def test_custom_derivatives_are_checked_separately_from_forward():

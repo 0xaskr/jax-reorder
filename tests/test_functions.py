@@ -7,7 +7,7 @@ import pytest
 from jax import lax
 from jax._src import core
 
-from jax_reorder import Status
+from jax_reorder import ComparisonContractError, CompilationError, Status, TraceError
 from jax_reorder.functions import compare_function_traces, compare_functions, trace_function
 
 
@@ -46,11 +46,13 @@ def test_tuple_list_and_dictionary_key_contracts():
     def list_fn(x):
         return [x, x + 1]
 
-    result = compare_functions(tuple_fn, list_fn, x)
-    assert result.status == Status.DIFFERENT
-    assert "output_tree" in result.modes[0].difference
-    result = compare_functions(lambda x: {"a": x}, lambda x: {"b": x}, x)
-    assert result.status == Status.DIFFERENT
+    with pytest.raises(ComparisonContractError) as error:
+        compare_functions(tuple_fn, list_fn, x)
+    result = error.value
+    assert "output_tree" in result.path
+    with pytest.raises(ComparisonContractError) as error:
+        compare_functions(lambda x: {"a": x}, lambda x: {"b": x}, x)
+    result = error.value
 
 
 def test_input_pytrees_are_compared_before_flattening():
@@ -58,9 +60,10 @@ def test_input_pytrees_are_compared_before_flattening():
         return pair[0] - pair[1]
 
     values = (jnp.float32(1), jnp.float32(2))
-    result = compare_functions(first, first, values, right_args=(list(values),))
-    assert result.status == Status.DIFFERENT
-    assert "input_tree" in result.modes[0].difference
+    with pytest.raises(ComparisonContractError) as error:
+        compare_functions(first, first, values, right_args=(list(values),))
+    result = error.value
+    assert "input_tree" in result.path
 
 
 @pytest.mark.parametrize("by_name", [False, True])
@@ -74,11 +77,12 @@ def test_static_arguments_and_non_differentiable_flags(by_name):
     )
     assert result.status == Status.EQUIVALENT, result
     assert result.modes[1].left.signature.differentiated_leaves == (0,)
-    result = compare_functions(
-        first, first, jnp.float32(1), True, right_args=(jnp.float32(1), False), **options
-    )
-    assert result.status == Status.DIFFERENT
-    assert "static_arguments" in result.modes[0].difference
+    with pytest.raises(ComparisonContractError) as error:
+        compare_functions(
+            first, first, jnp.float32(1), True, right_args=(jnp.float32(1), False), **options
+        )
+    result = error.value
+    assert "static_arguments" in result.path
 
 
 def test_keywords_static_defaults_and_differentiated_argument_subset():
@@ -100,16 +104,16 @@ def test_keywords_static_defaults_and_differentiated_argument_subset():
     graph = result.modes[2].left.jaxpr
     actual = core.eval_jaxpr(graph, graph.consts, jnp.float32(2), jnp.float32(3), jnp.float32(7))
     np.testing.assert_array_equal(actual, [6, 21])
-    changed = compare_functions(
-        first,
-        first,
-        jnp.float32(2),
-        jnp.float32(3),
-        kwargs={"sign": True},
-        right_kwargs={"sign": False},
-        static_argnames=("sign",),
-    )
-    assert changed.status == Status.DIFFERENT
+    with pytest.raises(ComparisonContractError):
+        compare_functions(
+            first,
+            first,
+            jnp.float32(2),
+            jnp.float32(3),
+            kwargs={"sign": True},
+            right_kwargs={"sign": False},
+            static_argnames=("sign",),
+        )
 
 
 def test_integer_leaves_remain_inputs_but_are_not_differentiated():
@@ -151,8 +155,9 @@ def test_environment_is_captured_and_does_not_share_stale_results():
         first = trace_function(lax.sin, jnp.float32(1))
     with jax.default_matmul_precision("highest"):
         second = trace_function(lax.sin, jnp.float32(1))
-    result = compare_function_traces(first, second)
-    assert result.status == Status.UNKNOWN
+    with pytest.raises(ComparisonContractError) as error:
+        compare_function_traces(first, second)
+    result = error.value
     assert result.failure_kind == "context_mismatch"
 
 
@@ -163,23 +168,22 @@ def test_abstract_inputs_shape_dtype_and_weak_type():
         jax.ShapeDtypeStruct((3, 2), jnp.float32),
         jax.ShapeDtypeStruct((2, 3), jnp.bfloat16),
     ):
-        assert (
-            compare_functions(lax.neg, lax.neg, x, right_args=(changed,)).status == Status.DIFFERENT
-        )
-    assert (
-        compare_functions(lax.neg, lax.neg, 1.0, right_args=(jnp.float32(1),)).status
-        == Status.DIFFERENT
-    )
+        with pytest.raises(ComparisonContractError):
+            compare_functions(lax.neg, lax.neg, x, right_args=(changed,))
+    with pytest.raises(ComparisonContractError):
+        compare_functions(lax.neg, lax.neg, 1.0, right_args=(jnp.float32(1),))
 
 
 def test_trace_errors_are_not_graph_differences():
     def invalid(x):
         return x if x > 0 else -x
 
-    result = compare_functions(invalid, invalid, jnp.float32(1))
-    assert result.status == Status.UNKNOWN
-    assert result.modes[0].failure_kind == "trace_rejected"
-    assert len(result.modes[0].issues) == 2
+    with pytest.raises(TraceError) as error:
+        compare_functions(invalid, invalid, jnp.float32(1))
+    result = error.value
+    assert result.failure_kind == "trace_rejected"
+    assert result.path == "left.forward.trace"
+    assert result.__cause__ is not None
 
 
 def test_cpu_compilation_errors_have_their_own_category(monkeypatch):
@@ -187,13 +191,14 @@ def test_cpu_compilation_errors_have_their_own_category(monkeypatch):
         raise RuntimeError("example CPU lowering rejection")
 
     monkeypatch.setattr(jax, "jit", reject)
-    result = compare_functions(lax.neg, lax.neg, jnp.float32(1), check_cpu=True)
-    assert result.status == Status.UNKNOWN
-    assert result.modes[0].failure_kind == "cpu_compile_rejected"
-    assert not result.cpu_compiled
+    with pytest.raises(CompilationError) as error:
+        compare_functions(lax.neg, lax.neg, jnp.float32(1), check_cpu=True)
+    result = error.value
+    assert result.failure_kind == "cpu_compile_rejected"
+    assert result.path == "left.forward.compile"
 
 
-def test_custom_vjp_forward_and_inapplicable_jvp_are_reported_separately():
+def test_inapplicable_jvp_raises_after_successful_forward():
     @jax.custom_vjp
     def first(x):
         return x * x
@@ -205,12 +210,11 @@ def test_custom_vjp_forward_and_inapplicable_jvp_are_reported_separately():
         return (2 * x * c,)
 
     first.defvjp(fwd, bwd)
-    result = compare_functions(first, first, jnp.float32(1), modes=("forward", "jvp"))
-    assert result.status == Status.UNKNOWN
-    assert result.modes[0].status == Status.EQUIVALENT
-    assert result.modes[0].failure_kind is None
-    # custom_vjp 本身没有 JVP 规则，此项是 JAX 变换拒绝。
-    assert result.modes[1].failure_kind == "trace_rejected"
+    with pytest.raises(TraceError) as error:
+        compare_functions(first, first, jnp.float32(1), modes=("forward", "jvp"))
+    result = error.value
+    assert result.path == "left.jvp.trace"
+    assert result.failure_kind == "trace_rejected"
 
 
 @pytest.mark.parametrize("modes", [(), ("forward", "forward"), ("grad",)])
@@ -226,14 +230,13 @@ def test_mathematical_inequivalence_retains_structural_report_and_output_evidenc
     assert result.equivalence_kind is None
     mode = result.modes[0]
     assert mode.comparison.status == Status.DIFFERENT
-    assert mode.failure_kind is None
     assert mode.difference == "algebra.outputs[0]"
     assert mode.algebra.correspondence is None
     assert mode.algebra.backend_result.output == 0
     assert any(query.answer is False for query in mode.algebra.backend_result.queries)
 
 
-def test_proven_inequivalence_is_preserved_when_another_requested_mode_is_unknown(monkeypatch):
+def test_inequivalence_cannot_hide_another_requested_mode_failure(monkeypatch):
     import jax_reorder.functions as functions
 
     original_trace = functions.trace_function
@@ -244,16 +247,14 @@ def test_proven_inequivalence_is_preserved_when_another_requested_mode_is_unknow
         return original_trace(*args, **kwargs)
 
     monkeypatch.setattr(functions, "trace_function", reject_jvp)
-    result = functions.compare_functions(
-        lambda x: x,
-        lambda x: 2 * x,
-        jax.ShapeDtypeStruct((), jnp.float32),
-        modes=("forward", "jvp"),
-    )
-    assert result.status == Status.INEQUIVALENT
-    assert [m.status for m in result.modes] == [Status.INEQUIVALENT, Status.UNKNOWN]
-    assert result.modes[1].failure_kind == "trace_rejected"
-    assert result.unverified_modes == ("vjp",)
+    with pytest.raises(TraceError, match="left.jvp.trace") as error:
+        functions.compare_functions(
+            lambda x: x,
+            lambda x: 2 * x,
+            jax.ShapeDtypeStruct((), jnp.float32),
+            modes=("forward", "jvp"),
+        )
+    assert isinstance(error.value.__cause__, NotImplementedError)
 
 
 def test_derivative_inequivalence_does_not_change_the_forward_verdict():

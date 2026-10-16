@@ -7,7 +7,13 @@ import pytest
 from jax import lax
 from jax._src import core
 
-from jax_reorder import InvalidJaxprError, Status, canonicalize, compare_jaxprs
+from jax_reorder import (
+    InvalidJaxprError,
+    Status,
+    UnsupportedJaxprError,
+    canonicalize,
+    compare_jaxprs,
+)
 
 
 def producers_candidate(flag, x, y):
@@ -281,12 +287,15 @@ def test_malformed_or_unsupported_cond_is_explicit(corruption):
         )
         params["branches"] = (cyclic, params["branches"][1])
     graph.eqns[index] = eq.replace(params=params)
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
+    with pytest.raises(
+        UnsupportedJaxprError if corruption == "parameter" else InvalidJaxprError
+    ) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
     if corruption == "parameter":
-        assert "unsupported cond parameters" in result.issues[0].reason
+        assert "unsupported cond parameters" in result.reason
     elif corruption == "cycle":
-        assert "cyclic nested jaxpr" in result.issues[0].reason
+        assert "cyclic nested jaxpr" in result.reason
     assert str(original) == snapshot
 
 

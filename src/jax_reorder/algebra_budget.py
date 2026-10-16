@@ -1,6 +1,6 @@
 """Deterministic work budget shared by graph conversion and symbolic queries."""
 
-from .errors import UnsupportedJaxprError
+from .errors import ComparisonBudgetError
 
 
 class Budget:
@@ -16,8 +16,12 @@ class Budget:
     def spend(self, amount=1, path="algebra"):
         """超限立即中止，不把未完成的转换或查询当作结论。"""
         if amount < 0 or amount > self.limit - self.used:
-            raise UnsupportedJaxprError(
+            raise ComparisonBudgetError(
                 path,
                 f"algebra budget exceeded: used {self.used}, need {amount}, limit {self.limit}",
+                stage="algebra",
+                used=self.used,
+                requested=amount,
+                limit=self.limit,
             )
         self.used += amount

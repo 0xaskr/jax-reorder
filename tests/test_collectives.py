@@ -21,7 +21,7 @@ from examples.collective_jaxpr import (
     reordered,
     run_case,
 )
-from jax_reorder import Status, canonicalize, compare_jaxprs
+from jax_reorder import Status, UnsupportedJaxprError, canonicalize, compare_jaxprs
 
 
 def cpu_mesh():
@@ -142,6 +142,7 @@ def test_pvary_axis_parameter_and_abstract_type_are_preserved():
     outer = graph.replace(
         eqns=[graph.eqns[0].replace(params={**graph.eqns[0].params, "jaxpr": forged})]
     )
-    result = compare_jaxprs(graph, outer)
-    assert result.status == Status.UNKNOWN
-    assert any("unsupported primitive pvary" in issue.reason for issue in result.issues)
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, outer)
+    result = error.value
+    assert "unsupported primitive pvary" in result.reason

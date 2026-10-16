@@ -9,7 +9,13 @@ import pytest
 from jax import lax
 from jax._src import core
 
-from jax_reorder import InvalidJaxprError, Status, canonicalize, compare_jaxprs
+from jax_reorder import (
+    InvalidJaxprError,
+    Status,
+    UnsupportedJaxprError,
+    canonicalize,
+    compare_jaxprs,
+)
 
 
 def trace(fn, *args):
@@ -221,7 +227,8 @@ def test_invalid_graphs_fail(kind):
         graph = graph.replace(eqns=list(reversed(graph.eqns)))
     with pytest.raises(InvalidJaxprError):
         canonicalize(graph)
-    assert compare_jaxprs(graph, graph).status == Status.UNKNOWN
+    with pytest.raises(InvalidJaxprError):
+        compare_jaxprs(graph, graph)
 
 
 def test_unsupported_effect_even_in_unused_branch():
@@ -230,9 +237,10 @@ def test_unsupported_effect_even_in_unused_branch():
         return lax.sin(x)
 
     graph = trace(fn, 1.0)
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "effect" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "effect" in result.reason
 
 
 def test_long_chain_does_not_recurse_on_dependencies():

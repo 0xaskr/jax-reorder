@@ -133,8 +133,8 @@ def test_schedule_changes_are_inside_the_core_loop_and_structurally_equal(compar
 def test_core_rewrites_prove_finite_changes_and_report_remaining_gaps(comparisons, case_index):
     _, _, _, _, records = comparisons
     record, _ = records[case_index]
-    assert record["structural"] == "different", record
     if case_index in (2, 3, 4):
+        assert record["structural"] == "different", record
         assert record["status"] == "equivalent", record
         assert record["outcome"] == "proven_equivalent"
         assert record["kind"] == "algebraic"
@@ -143,40 +143,33 @@ def test_core_rewrites_prove_finite_changes_and_report_remaining_gaps(comparison
         if case_index == 3:
             assert "guarded_softmax_finite" in record["rules"]
         return
-    assert record["status"] == "unknown", record
-    assert record["outcome"] == "coverage_gap"
-    assert record["failure_kind"] == "algebra_incomplete"
-    assert record["backend"] == "sympy"
-    assert record["backend_failure_kind"] == "condition_undecided"
-    # 这是明确的能力基线；其他 unknown 原因会失败，不能掩盖新退化。
-    assert record["issues"] == [
-        {"path": "algebra.outputs", "reason": "original conditions are not established"}
-    ]
-    assert record["kind"] is None
-    assert record["warnings"]
+    assert "status" not in record
+    assert record["outcome"] == "comparison_error"
+    assert record["error"]["type"] == "MathematicalUndecidedError"
+    assert record["error"]["failure_kind"] == "condition_undecided"
+    assert record["error"]["path"].startswith("forward.algebra.outputs")
+    assert record["error"]["reason"] == "original conditions are not established"
 
 
-@pytest.mark.parametrize("expected", ["equivalent", "inequivalent"])
-def test_unknown_is_a_reported_gap_and_nonzero_exit(expected):
-    outcome = layer.classify(expected, Status.UNKNOWN)
-    assert outcome == "coverage_gap"
-    assert layer.exit_code({"comparisons": [{"outcome": outcome}]}) == 2
+def test_comparison_error_has_nonzero_exit():
+    assert layer.exit_code({"comparisons": [{"outcome": "comparison_error"}]}) == 2
 
 
-def test_false_acceptance_takes_priority_over_unknown():
+def test_false_acceptance_takes_priority_over_comparison_error():
     outcome = layer.classify("inequivalent", Status.EQUIVALENT)
     assert outcome == "false_acceptance"
     assert (
-        layer.exit_code({"comparisons": [{"outcome": "coverage_gap"}, {"outcome": outcome}]}) == 1
+        layer.exit_code({"comparisons": [{"outcome": "comparison_error"}, {"outcome": outcome}]})
+        == 1
     )
-    assert layer.classify("inequivalent", Status.DIFFERENT) == "structural_mismatch_only"
+    with pytest.raises(ValueError, match="completed mathematical comparison"):
+        layer.classify("inequivalent", Status.DIFFERENT)
 
 
 def test_negative_case_requires_a_mathematical_inequivalence_result():
     outcome = layer.classify("inequivalent", Status.INEQUIVALENT)
     assert outcome == "proven_inequivalent"
     assert layer.exit_code({"comparisons": [{"outcome": outcome}]}) == 0
-    assert layer.exit_code({"comparisons": [{"outcome": "structural_mismatch_only"}]}) == 2
     assert layer.classify("equivalent", Status.INEQUIVALENT) == "unexpected_mismatch"
 
 
@@ -199,8 +192,7 @@ def test_cli_writes_jaxprs_and_reports_gaps_without_compiling(tmp_path, monkeypa
     assert result["summary"] == {
         "proven_equivalent": 5,
         "proven_inequivalent": 0,
-        "structural_mismatch_only": 0,
-        "coverage_gap": 5,
+        "comparison_error": 5,
         "false_acceptance": 0,
         "unexpected_mismatch": 0,
     }

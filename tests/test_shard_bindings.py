@@ -10,7 +10,7 @@ from jax import lax
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
-from jax_reorder import Status, compare_functions, compare_jaxprs
+from jax_reorder import Status, UnsupportedJaxprError, compare_functions, compare_jaxprs
 
 
 def original(mesh):
@@ -94,6 +94,7 @@ def test_unknown_shard_map_interface_metadata_fails_explicitly(setup):
     graph = jax.make_jaxpr(original(mesh))(*args)
     eq = graph.eqns[0]
     bad = graph.replace(eqns=[eq.replace(params={**eq.params, "new_interface": True})])
-    result = compare_jaxprs(bad, bad)
-    assert result.status == Status.UNKNOWN
-    assert "schema changed" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(bad, bad)
+    result = error.value
+    assert "schema changed" in result.reason

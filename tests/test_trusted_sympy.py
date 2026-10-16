@@ -8,7 +8,15 @@ import pytest
 import sympy as sp
 from jax._src import compiler, dispatch
 
-from jax_reorder import Status, compare_functions
+from jax_reorder import (
+    ComparisonBudgetError,
+    ComparisonInternalError,
+    ComparisonTimeoutError,
+    MathematicalUndecidedError,
+    Status,
+    UnsupportedJaxprError,
+    compare_functions,
+)
 from jax_reorder.algebra_budget import Budget
 from jax_reorder.algebra_symbolic import SymbolicBuilder
 from jax_reorder.algebra_transport import freeze
@@ -75,21 +83,21 @@ def test_negative_is_a_complete_final_output(left, right):
 
 @pytest.mark.parametrize("left", [lambda x: x / x, lambda x: jnp.exp(jnp.log(x)) * 0 + 1])
 def test_original_conditions_survive_cancellation(left):
-    result = compare(left, jnp.ones_like)
-    assert result.status == Status.UNKNOWN
-    assert result.algebra.backend_result.failure_kind == "condition_undecided"
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(left, jnp.ones_like)
+    result = error.value
+    assert result.failure_kind == "condition_undecided"
 
 
 @pytest.mark.parametrize("shape", [(), (3,)])
 def test_integer_dtype_bounds_cannot_be_forgotten_in_negative_queries(shape):
-    result = compare(
-        lambda x: jnp.where(x <= 127, jnp.float32(1), jnp.float32(2)),
-        lambda x: jnp.ones_like(x, dtype=jnp.float32),
-        jax.ShapeDtypeStruct(shape, jnp.int8),
-    )
-    assert result.status in (Status.EQUIVALENT, Status.UNKNOWN), result
-    if result.status == Status.UNKNOWN:
-        assert result.algebra.backend_result.failure_kind == "cas_undecided"
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(
+            lambda x: jnp.where(x <= 127, jnp.float32(1), jnp.float32(2)),
+            lambda x: jnp.ones_like(x, dtype=jnp.float32),
+            jax.ShapeDtypeStruct(shape, jnp.int8),
+        )
+    assert error.value.failure_kind == "cas_undecided"
 
 
 def test_intermediate_difference_can_be_eliminated():
@@ -154,34 +162,54 @@ def test_conditions_and_jit_bindings():
 
 
 def test_unsupported_loop_is_not_an_inequality():
-    result = compare(
-        lambda x: jax.lax.while_loop(lambda y: y < 10, lambda y: y + 1, x), lambda x: x + 1
-    )
-    assert result.status == Status.UNKNOWN
-    assert result.algebra.backend_result.failure_kind == "unsupported_conversion"
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare(lambda x: jax.lax.while_loop(lambda y: y < 10, lambda y: y + 1, x), lambda x: x + 1)
+    result = error.value
+    assert result.failure_kind == "unsupported_conversion"
 
 
 def test_false_loop_predicate_keeps_its_original_conditions():
-    result = compare(
-        lambda x: jax.lax.while_loop(lambda y: jnp.log(y) * 0 > 0, lambda y: y + 1, x),
-        lambda x: x,
-    )
-    assert result.status == Status.UNKNOWN
-    assert result.algebra.backend_result.failure_kind == "unsupported_conversion"
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare(
+            lambda x: jax.lax.while_loop(lambda y: jnp.log(y) * 0 > 0, lambda y: y + 1, x),
+            lambda x: x,
+        )
+    result = error.value
+    assert result.failure_kind == "unsupported_conversion"
 
 
 def test_timeout_budget_and_next_query_recovery():
-    result = compare(lambda x: x + x, lambda x: 2 * x, algebra_timeout=0.001)
-    assert result.status == Status.UNKNOWN
-    assert result.algebra.backend_result.failure_kind == "timeout"
-    result = compare(lambda x: jnp.sin(x) ** 2 + jnp.cos(x) ** 2, jnp.ones_like, algebra_budget=1)
-    assert result.algebra.backend_result.failure_kind == "budget_exhausted"
+    with pytest.raises(ComparisonTimeoutError) as error:
+        compare(lambda x: x + x, lambda x: 2 * x, algebra_timeout=0.001)
+    result = error.value
+    assert result.failure_kind == "timeout"
+    with pytest.raises(ComparisonBudgetError):
+        compare(lambda x: jnp.sin(x) ** 2 + jnp.cos(x) ** 2, jnp.ones_like, algebra_budget=1)
     assert compare(lambda x: x + x, lambda x: 2 * x).status == Status.EQUIVALENT
 
 
 def test_none_is_not_inequality(monkeypatch):
     monkeypatch.setattr(sp.Expr, "equals", lambda *a, **k: None)
     assert equal(sp.Symbol("x"), sp.S.Zero, Budget(100)) is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_boolean_piecewise_uses_logic_in_both_operand_orders(reverse):
+    x = sp.Symbol("x", real=True)
+    condition = sp.Piecewise((sp.false, x <= 0), (sp.Ne(x, 0), True))
+    left, right = (sp.true, condition) if reverse else (condition, sp.true)
+    methods = []
+    assert equal(left, right, Budget(1000), methods=methods) is None
+    assert "Piecewise.rewrite(ITE)" in methods
+    assert "simplify(left-right)" not in methods
+    simple_condition = sp.Piecewise((sp.true, x > 0), (sp.false, True))
+    assert equal(simple_condition, x > 0, Budget(1000)) is True
+
+
+def test_numeric_piecewise_keeps_arithmetic_comparison():
+    x = sp.Symbol("x", real=True)
+    expression = sp.Piecewise((-x, x < 0), (x, True))
+    assert equal(expression, sp.Abs(x), Budget(1000)) is True
 
 
 def test_tensor_construction_size_does_not_enumerate_input_elements():
@@ -217,14 +245,15 @@ def test_shared_call_keeps_captured_scan_time_and_sum_bounds():
     def scan(x):
         return jax.lax.scan(lambda carry, row: (carry + transform(row), None), 0.0, x)[0]
 
-    result = compare(lambda x: 2 * scan(x[:2]), scan, signature((4,)))
-    assert result.status != Status.EQUIVALENT
+    with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+        compare(lambda x: 2 * scan(x[:2]), scan, signature((4,)))
 
 
 def test_expansion_is_budgeted_before_large_polynomial_construction():
-    result = compare(lambda x: (x + 1) ** 100000, lambda x: x, algebra_budget=100)
-    assert result.status == Status.UNKNOWN
-    assert result.algebra.backend_result.failure_kind == "budget_exhausted"
+    with pytest.raises(ComparisonBudgetError) as error:
+        compare(lambda x: (x + 1) ** 100000, lambda x: x, algebra_budget=100)
+    result = error.value
+    assert result.failure_kind == "budget_exhausted"
 
 
 @pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf"), None])
@@ -242,7 +271,8 @@ def test_unexpected_conversion_exception_is_reported_and_next_call_recovers(monk
 
     with monkeypatch.context() as context:
         context.setattr(SymbolicBuilder, "graph", fail)
-        result = compare_symbolic(a, b)
-        assert result.status == "unknown"
+        with pytest.raises(ComparisonInternalError) as error:
+            compare_symbolic(a, b)
+        result = error.value
         assert result.failure_kind == "internal_error"
     assert compare_symbolic(a, b).status == "equivalent"

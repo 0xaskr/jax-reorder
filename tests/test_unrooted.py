@@ -9,7 +9,7 @@ import pytest
 from jax import lax
 from jax._src import core
 
-from jax_reorder import Status, canonicalize, compare_jaxprs
+from jax_reorder import ComparisonBudgetError, Status, canonicalize, compare_jaxprs
 from jax_reorder.correspondence import verify_correspondence
 
 
@@ -109,12 +109,13 @@ def test_equal_values_or_equal_refined_colors_do_not_prove_graph_equality():
     assert compare_jaxprs(a, b).status == Status.DIFFERENT
 
 
-def test_search_budget_reports_unknown_with_graph_size():
+def test_search_budget_raises_with_graph_size():
     a, b = (jax.make_jaxpr(fn)(jnp.float32(0.7)) for fn in (ring, ring_reordered))
-    result = compare_jaxprs(a, b, search_budget=1)
-    assert result.status == Status.UNKNOWN
-    assert "8 nodes" in result.issues[0].reason
-    assert "budget exceeded" in result.issues[0].reason
+    with pytest.raises(ComparisonBudgetError) as error:
+        compare_jaxprs(a, b, search_budget=1)
+    result = error.value
+    assert "8 nodes" in result.reason
+    assert "budget exceeded" in result.reason
     assert compare_jaxprs(a, b, search_budget=100).status == Status.EQUIVALENT
 
 
@@ -204,9 +205,10 @@ def test_private_inputs_used_only_by_unrooted_nodes_are_jointly_canonicalized(re
     wrong = jax.make_jaxpr(lambda x, y, z: left(x, x, z))(*args)
     # 外部输出相同也不能合并两条独立输入与共享同一输入的完整图。
     assert compare_jaxprs(a, wrong).status == Status.DIFFERENT
-    limited = compare_jaxprs(a, b, search_budget=1)
-    assert limited.status == Status.UNKNOWN
-    assert "interface search budget exceeded" in limited.issues[0].reason
+    with pytest.raises(ComparisonBudgetError) as error:
+        compare_jaxprs(a, b, search_budget=1)
+    limited = error.value
+    assert "interface search budget exceeded" in limited.reason
 
 
 def test_unrooted_private_input_search_keeps_donation_attached_to_actual_value():

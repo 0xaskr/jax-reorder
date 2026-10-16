@@ -7,7 +7,13 @@ import pytest
 from jax import lax
 from jax._src import core, pjit
 
-from jax_reorder import InvalidJaxprError, Status, canonicalize, compare_jaxprs
+from jax_reorder import (
+    InvalidJaxprError,
+    Status,
+    UnsupportedJaxprError,
+    canonicalize,
+    compare_jaxprs,
+)
 
 DTYPES = [
     jnp.bool_,
@@ -93,18 +99,20 @@ def test_jit_diagnostic_names_do_not_hide_other_parameters():
     assert compare_jaxprs(a, b).status == Status.DIFFERENT
     params = dict(a.eqns[0].params, compiler_options_kvs=(("opaque", object()),))
     bad = a.replace(eqns=[a.eqns[0].replace(params=params)])
-    result = compare_jaxprs(bad, bad)
-    assert result.status == Status.UNKNOWN
-    assert "opaque parameter" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(bad, bad)
+    result = error.value
+    assert "opaque parameter" in result.reason
 
 
 def test_unknown_primitive_cannot_impersonate_lax_by_name():
     graph = jax.make_jaxpr(lax.sin)(np.float32(1))
     impostor = core.Primitive("sin")
     graph = graph.replace(eqns=[graph.eqns[0].replace(primitive=impostor)])
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "unsupported primitive" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "unsupported primitive" in result.reason
 
 
 def test_implicit_rng_order_crosses_nested_call_boundaries():
@@ -128,7 +136,8 @@ def test_implicit_rng_order_crosses_nested_call_boundaries():
 def test_unrelated_program_order_api_is_explicitly_unsupported():
     fn = pjit.program_order(lax.sin, enforce=False)
     graph = jax.make_jaxpr(fn)(np.float32(1))
-    assert compare_jaxprs(graph, graph).status == Status.UNKNOWN
+    with pytest.raises(UnsupportedJaxprError):
+        compare_jaxprs(graph, graph)
 
 
 def test_cyclic_nested_graph_fails_before_jax_recurses():
@@ -145,9 +154,10 @@ def test_cyclic_parameter_container_reports_unknown():
     container.append(container)
     eq = graph.eqns[0]
     graph = graph.replace(eqns=[eq.replace(params=dict(eq.params, compiler_options_kvs=container))])
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "cyclic parameter" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "cyclic parameter" in result.reason
 
 
 def test_reducer_callable_is_represented_by_its_traced_body():

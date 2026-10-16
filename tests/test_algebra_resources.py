@@ -2,8 +2,10 @@
 
 import jax
 import jax.numpy as jnp
+import pytest
 
 from jax_reorder import (
+    ComparisonBudgetError,
     Status,
     canonicalize,
     compare_algebraic_jaxprs,
@@ -57,7 +59,8 @@ def test_deep_chain_ends_with_a_located_budget_failure():
     x = jax.ShapeDtypeStruct((), jnp.float32)
     graph = jax.make_jaxpr(chain)(x)
     other = jax.make_jaxpr(lambda x: chain(x) + 0)(x)
-    result = compare_algebraic_jaxprs(graph, other, algebra_budget=100)
-    assert result.status == Status.UNKNOWN
-    assert result.issues[0].path.startswith("algebra")
-    assert "budget" in result.issues[0].reason
+    with pytest.raises(ComparisonBudgetError) as error:
+        compare_algebraic_jaxprs(graph, other, algebra_budget=100)
+    result = error.value
+    assert result.path.startswith("algebra")
+    assert "budget" in result.reason

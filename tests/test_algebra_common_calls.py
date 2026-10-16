@@ -4,7 +4,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from jax_reorder import Status, compare_functions
+from jax_reorder import (
+    ComparisonTimeoutError,
+    MathematicalUndecidedError,
+    Status,
+    compare_functions,
+)
 
 
 def normalization(iterations=20, offset=0.1):
@@ -58,7 +63,8 @@ def test_common_call_original_ports_are_restored_after_region_reordering(mode):
 
     args = (jnp.arange(3, dtype=jnp.float32), jnp.ones(3), jnp.float32(2))
     assert compare_functions(left, right, *args, modes=(mode,)).status == Status.EQUIVALENT
-    assert compare_functions(left, wrong, *args, modes=(mode,)).status != Status.EQUIVALENT
+    with pytest.raises(MathematicalUndecidedError):
+        compare_functions(left, wrong, *args, modes=(mode,))
 
 
 def test_common_call_cannot_hide_changed_constant_or_missing_partial_evaluation():
@@ -70,10 +76,12 @@ def test_common_call_cannot_hide_changed_constant_or_missing_partial_evaluation(
     def wrong(x):
         return 2 * changed(x)
 
-    assert compare_functions(left, wrong, jnp.ones((2, 3))).status != Status.EQUIVALENT
+    with pytest.raises((MathematicalUndecidedError, ComparisonTimeoutError)):
+        compare_functions(left, wrong, jnp.ones((2, 3)))
     log = jax.jit(jnp.log)
 
     def partial(x):
         return 0 * log(x)
 
-    assert compare_functions(partial, jnp.zeros_like, jnp.ones(3)).status != Status.EQUIVALENT
+    with pytest.raises(MathematicalUndecidedError):
+        compare_functions(partial, jnp.zeros_like, jnp.ones(3))

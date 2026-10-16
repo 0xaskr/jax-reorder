@@ -6,6 +6,9 @@ import pytest
 from jax import lax
 
 from jax_reorder import (
+    ComparisonBudgetError,
+    ComparisonContractError,
+    MathematicalUndecidedError,
     Status,
     compare_algebraic_jaxprs,
     compare_functions,
@@ -125,8 +128,8 @@ def test_cross_carry_dependency_is_not_independent_reduction():
 
         return lax.scan(body, (0.0, 0.0), x)[0][1]
 
-    result = compare_functions(left, lambda x: jnp.sum(x), jnp.ones(4))
-    assert result.status != Status.EQUIVALENT, result
+    with pytest.raises(ComparisonContractError, match="output_avals"):
+        compare_functions(left, lambda x: jnp.sum(x), jnp.ones(4))
 
 
 @pytest.mark.parametrize("wrong", ["history", "output", "order"])
@@ -139,8 +142,12 @@ def test_sequence_values_and_output_order_are_not_erased(wrong):
             return x, jnp.sum(x)
         return jnp.sum(x), 2 * x if wrong == "output" else x
 
-    result = compare_functions(left, right, jnp.ones(4))
-    assert result.status != Status.EQUIVALENT, result
+    if wrong in ("history", "order"):
+        with pytest.raises(ComparisonContractError, match="output_avals"):
+            compare_functions(left, right, jnp.ones(4))
+    else:
+        result = compare_functions(left, right, jnp.ones(4))
+        assert result.status == Status.INEQUIVALENT
 
 
 def test_partial_dead_body_is_rejected_and_scalar_time_capture_is_supported():
@@ -155,8 +162,8 @@ def test_partial_dead_body_is_rejected_and_scalar_time_capture_is_supported():
         return lax.scan(lambda c, a: (c + jnp.sin(a), None), 0.0, x)[0]
 
     x = jnp.ones(4)
-    result = compare_functions(partial, lambda x: jnp.sum(x), x)
-    assert result.status != Status.EQUIVALENT, result
+    with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+        compare_functions(partial, lambda x: jnp.sum(x), x)
     result = compare_functions(opaque, lambda x: jnp.sum(jnp.sin(x)), x)
     assert result.status == Status.EQUIVALENT, result
 
@@ -180,9 +187,10 @@ def test_scan_length_is_symbolic_and_query_work_is_budgeted():
         result = compare_algebraic_jaxprs(left, right)
         assert result.status == Status.EQUIVALENT, result
         results.append(result)
-        denied = compare_algebraic_jaxprs(left, right, algebra_budget=1)
-        assert denied.status == Status.UNKNOWN, denied
-        assert any("budget exceeded" in issue.reason for issue in denied.issues)
+        with pytest.raises(ComparisonBudgetError) as error:
+            compare_algebraic_jaxprs(left, right, algebra_budget=1)
+        denied = error.value
+        assert "budget exceeded" in denied.reason
     assert results[0].work == results[1].work
 
 

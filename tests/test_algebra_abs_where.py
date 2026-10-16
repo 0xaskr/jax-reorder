@@ -7,7 +7,9 @@ import pytest
 from jax import lax
 
 from jax_reorder import (
+    MathematicalUndecidedError,
     Status,
+    UnsupportedJaxprError,
     compare_algebraic_jaxprs,
     compare_functions,
 )
@@ -159,8 +161,8 @@ def test_select_wrapper_keeps_non_default_call_metadata(metadata):
             params={**node.params, "compiler_options_kvs": (("xla_cpu_enable_fast_math", False),)}
         )
         right = graph.replace(eqns=equations)
-    result = compare_algebraic_jaxprs(left, right)
-    assert result.status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare_algebraic_jaxprs(left, right)
 
 
 def test_wrapper_name_does_not_authorize_other_instructions():
@@ -174,6 +176,7 @@ def test_wrapper_name_does_not_authorize_other_instructions():
 
 def test_non_real_input_does_not_acquire_the_real_piecewise_rule():
     left, right = _graphs(jnp.abs, VARIANTS[0], dtype=jnp.int32)
-    result = compare_algebraic_jaxprs(left, right)
-    assert result.status == Status.UNKNOWN
-    assert "select_absolute" not in result.rules
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_algebraic_jaxprs(left, right)
+    result = error.value
+    assert "select_absolute" not in result.diagnostics["rules"]

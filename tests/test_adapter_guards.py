@@ -8,7 +8,7 @@ from jax import lax
 from jax._src import core
 from jax._src.lax.lax import NoDCEEffect
 
-from jax_reorder import Status, UnsupportedJaxprError, compare_jaxprs
+from jax_reorder import UnsupportedJaxprError, compare_jaxprs
 from jax_reorder.semantics import Encoder, encoded_equal
 
 
@@ -16,9 +16,10 @@ from jax_reorder.semantics import Encoder, encoded_equal
 def test_unreviewed_version_requires_explicit_adapter_upgrade(module, monkeypatch):
     graph = jax.make_jaxpr(lax.sin)(jnp.float32(1))
     monkeypatch.setattr(module, "__version__", "0.11.3")
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "version upgrade validation" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "version upgrade validation" in result.reason
 
 
 def test_unknown_abstract_value_subclass_cannot_hide_new_fields():
@@ -41,9 +42,10 @@ def test_unknown_effect_subclass_is_not_accepted_as_plain_no_dce():
 
     graph = jax.make_jaxpr(lambda x: x)(jnp.float32(1))
     graph = graph.replace(effects=frozenset((ExtraEffect(),)))
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "unsupported effect" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "unsupported effect" in result.reason
 
 
 def test_context_subclass_cannot_hide_inherited_compute_fields():
@@ -58,9 +60,10 @@ def test_context_subclass_cannot_hide_inherited_compute_fields():
             object.__setattr__(context, name, getattr(original, name))
     object.__setattr__(context, "annotation", 1)
     altered = graph.replace(eqns=[graph.eqns[0].replace(ctx=context)])
-    result = compare_jaxprs(altered, altered)
-    assert result.status == Status.UNKNOWN
-    assert "descriptor subclass" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(altered, altered)
+    result = error.value
+    assert "descriptor subclass" in result.reason
 
 
 def test_deep_encoded_values_are_compared_without_recursion_failure():

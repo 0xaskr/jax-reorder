@@ -8,7 +8,9 @@ import pytest
 from jax._src import compiler, dispatch
 
 from jax_reorder import (
+    MathematicalUndecidedError,
     Status,
+    UnsupportedJaxprError,
     compare_algebraic_jaxprs,
 )
 
@@ -88,8 +90,8 @@ def test_scalar_identities_use_trusted_sympy_from_actual_jaxprs(left, right):
     ],
 )
 def test_partial_nonfinite_and_missing_nonzero_facts_are_not_erased(left, right, shape):
-    _, _, result = compare(left, right, shape)
-    assert result.status == Status.UNKNOWN, result
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(left, right, shape)
 
 
 def test_inner_and_outer_summation_scopes_are_preserved():

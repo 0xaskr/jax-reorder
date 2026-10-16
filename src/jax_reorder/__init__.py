@@ -2,7 +2,8 @@
 
 常用入口按已有输入选择：
 - 手中是 Python 函数：compare_functions，返回 FunctionComparison。
-- 手中是带常量绑定的 jaxpr：compare_jaxprs，返回 Comparison。
+- 手中是带常量绑定的 jaxpr：compare_algebraic_jaxprs，返回 AlgebraComparison。
+- 仅检查计算图结构：compare_jaxprs，返回 Comparison 阶段诊断。
 - 只需规范化一张图：canonicalize，返回 Canonicalized。
 - 需要分开追踪和比较：先 trace_function，再 compare_function_traces。
 
@@ -17,14 +18,27 @@ verify_correspondence 可独立复核这份证据，不重新执行规范化。
 
 函数入口默认在结构不同时交给可信 SymPy 数学后端；equivalence="structural" 保留结构语义。
 代数结论使用带明确浮点警告的理想实数解释，不代表一般 Python 或逐位浮点等价。
-inequivalent 表示有完整输出的数学不等价证据；different 仅表示图或函数契约有差异；
-unknown 表示检查未完成。
+inequivalent 表示有完整输出的数学不等价证据；different 仅是显式结构模式的图差异诊断；
+检查未完成、契约不兼容或运行失败均抛出分类异常。
 """
 
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs
 from .canonical import Canonicalized, Comparison, Status, canonicalize, compare_jaxprs
 from .correspondence import EquationCorrespondence, GraphCorrespondence, verify_correspondence
-from .errors import CorrespondenceError, InvalidJaxprError, JaxprError, UnsupportedJaxprError
+from .errors import (
+    ComparisonBudgetError,
+    ComparisonContractError,
+    ComparisonError,
+    ComparisonInternalError,
+    ComparisonTimeoutError,
+    CompilationError,
+    CorrespondenceError,
+    InvalidJaxprError,
+    JaxprError,
+    MathematicalUndecidedError,
+    TraceError,
+    UnsupportedJaxprError,
+)
 from .functions import (
     FunctionComparison,
     FunctionSignature,
@@ -45,15 +59,23 @@ __all__ = [
     "FunctionSignature",  # 函数契约：输入输出 pytree、静态参数、可微叶子及变换顺序。
     "FunctionTrace",  # 单模式追踪产物：函数契约、环境、物化 jaxpr 和动态输入抽象签名。
     "GraphCorrespondence",  # 整张原图的对应证据：输入、常量、方程及输出的左到右双射。
-    "ModeComparison",  # 单个 forward/JVP/VJP 模式的报告，保留图比较、失败类别和追踪结果。
-    "Status",  # equivalent、inequivalent、different（结构/契约）与 unknown。
+    "ModeComparison",  # 单个 forward/JVP/VJP 模式的报告，保留图比较与追踪结果。
+    "Status",  # equivalent、inequivalent；different 只用于显式结构诊断。
+    "ComparisonError",
+    "ComparisonContractError",
+    "ComparisonBudgetError",
+    "ComparisonTimeoutError",
+    "ComparisonInternalError",
+    "MathematicalUndecidedError",
+    "TraceError",
+    "CompilationError",
     "InvalidJaxprError",  # 图不合法：重复定义、悬空引用、依赖环或 JAX 类型检查失败。
     "JaxprError",  # 图处理异常基类，携带 path 和 reason，便于统一捕获和定位问题。
     "CorrespondenceError",  # 对应证据缺失、映射不完整或绑定不保持语义时的错误。
-    "UnsupportedJaxprError",  # 当前无法解释的语义、未审查版本或搜索预算不足等导致的错误。
+    "UnsupportedJaxprError",  # 当前无法解释的语义、未审查版本等导致的错误。
     "canonicalize",  # 规范化一个 jaxpr，返回 Canonicalized；不支持或非法输入会抛出异常。
     "compare_algebraic_jaxprs",  # 结构检查后，用 SymPy 比较完整输出及定义条件。
-    "compare_jaxprs",  # 规范化并比较两张图，再复核等价证据；图处理失败记录为 unknown。
+    "compare_jaxprs",  # 规范化并比较两张图，再复核等价证据；图处理失败直接抛出异常。
     "compare_function_traces",  # 核对两份追踪的模式、环境、契约及图，返回 ModeComparison。
     "compare_functions",  # 按给定签名逐模式追踪并比较两个函数，返回 FunctionComparison。
     "trace_function",  # 按输入签名及指定 forward/JVP/VJP 模式追踪一个函数，返回 FunctionTrace。

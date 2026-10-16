@@ -9,7 +9,13 @@ import pytest
 from jax._src import core, pjit
 
 from examples import call_bindings
-from jax_reorder import CorrespondenceError, Status, canonicalize, compare_jaxprs
+from jax_reorder import (
+    CorrespondenceError,
+    Status,
+    UnsupportedJaxprError,
+    canonicalize,
+    compare_jaxprs,
+)
 from jax_reorder.correspondence import verify_correspondence
 from jax_reorder.functions import compare_functions
 
@@ -89,6 +95,7 @@ def test_call_unknown_metadata_fails_explicitly():
     bad = graph.replace(
         eqns=[eq.replace(params={**eq.params, "new_semantic_flag": True}), *graph.eqns[1:]]
     )
-    result = compare_jaxprs(bad, bad)
-    assert result.status == Status.UNKNOWN
-    assert "unsupported jit parameters" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(bad, bad)
+    result = error.value
+    assert "unsupported jit parameters" in result.reason

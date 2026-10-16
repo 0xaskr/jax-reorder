@@ -2,7 +2,7 @@
 
 uv run python -m examples.glm52_decode_dsa_mla --json /tmp/glm52-jaxpr.json
 只构造 ShapeDtypeStruct、追踪和比较；不编译、不执行 layer、不采样数值。
-退出码：0=比较完成且无缺口，1=预期关系冲突，2=有 unknown 能力缺口。
+退出码：0=比较完成且无缺口，1=预期关系冲突，2=有比较错误。
 来源及 Apache-2.0 许可证见 tests/fixtures/sglang_jax/。
 """
 
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 
-from jax_reorder import Status, compare_function_traces, trace_function
+from jax_reorder import ComparisonError, Status, compare_function_traces, trace_function
 
 ROOT = Path(__file__).resolve().parents[1] / "tests/fixtures/sglang_jax"
 SOURCE = "python/sgl_jax/srt/kernels/dsa/ref.py"
@@ -413,18 +413,34 @@ def function(profile="glm", case=None):
 
 
 def classify(expected, status):
-    if status == Status.UNKNOWN:
-        return "coverage_gap"
+    if status not in (Status.EQUIVALENT, Status.INEQUIVALENT):
+        raise ValueError("classify requires a completed mathematical comparison")
     if expected == "equivalent":
         return "proven_equivalent" if status == Status.EQUIVALENT else "unexpected_mismatch"
     if status == Status.INEQUIVALENT:
         return "proven_inequivalent"
-    return "false_acceptance" if status == Status.EQUIVALENT else "structural_mismatch_only"
+    return "false_acceptance"
 
 
 def compare(case, base_trace, args, profile="glm"):
     candidate = trace_function(function(profile, case), *args)
-    comparison = compare_function_traces(base_trace, candidate)
+    try:
+        comparison = compare_function_traces(base_trace, candidate)
+    except ComparisonError as error:
+        return {
+            "name": case.name,
+            "target": case.target,
+            "expected_relation": case.expected,
+            "rationale": case.rationale,
+            "outcome": "comparison_error",
+            "error": {
+                "type": type(error).__name__,
+                "stage": error.stage,
+                "path": error.path,
+                "failure_kind": error.failure_kind,
+                "reason": error.reason,
+            },
+        }, candidate
     record = {
         "name": case.name,
         "target": case.target,
@@ -434,12 +450,6 @@ def compare(case, base_trace, args, profile="glm"):
         "structural": comparison.comparison.status.value if comparison.comparison else None,
         "kind": comparison.equivalence_kind,
         "outcome": classify(case.expected, comparison.status),
-        "failure_kind": comparison.failure_kind,
-        "backend_failure_kind": (
-            comparison.algebra.backend_result.failure_kind
-            if comparison.algebra and comparison.algebra.backend_result
-            else None
-        ),
         "backend": (
             comparison.algebra.backend_result.backend
             if comparison.algebra and comparison.algebra.backend_result
@@ -457,7 +467,7 @@ def exit_code(report):
     outcomes = {row["outcome"] for row in report["comparisons"]}
     if outcomes & {"false_acceptance", "unexpected_mismatch"}:
         return 1
-    return 2 if outcomes & {"coverage_gap", "structural_mismatch_only"} else 0
+    return 2 if "comparison_error" in outcomes else 0
 
 
 def run(profile="glm", dtype=jnp.float32, jaxpr_dir=None):
@@ -489,19 +499,18 @@ def run(profile="glm", dtype=jnp.float32, jaxpr_dir=None):
         if jaxpr_dir is not None:
             (jaxpr_dir / f"{case.name}.jaxpr").write_text(str(candidate.jaxpr) + "\n")
         print(
-            f"{case.name}: expected={case.expected} structural={record['structural']} "
-            f"result={record['status']} [{record['outcome']}]",
+            f"{case.name}: expected={case.expected} structural={record.get('structural')} "
+            f"result={record.get('status', 'error')} [{record['outcome']}]",
             flush=True,
         )
-        for issue in record["issues"]:
-            print(f"  {issue['path']}: {issue['reason']}", flush=True)
+        if "error" in record:
+            print(f"  {record['error']}", flush=True)
     result["summary"] = {
         name: sum(row["outcome"] == name for row in result["comparisons"])
         for name in (
             "proven_equivalent",
             "proven_inequivalent",
-            "structural_mismatch_only",
-            "coverage_gap",
+            "comparison_error",
             "false_acceptance",
             "unexpected_mismatch",
         )

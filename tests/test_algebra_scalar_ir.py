@@ -5,7 +5,10 @@ import jax.numpy as jnp
 import pytest
 
 from jax_reorder import (
+    ComparisonBudgetError,
+    MathematicalUndecidedError,
     Status,
+    UnsupportedJaxprError,
     compare_algebraic_jaxprs,
     compare_functions,
 )
@@ -106,12 +109,12 @@ def test_output_positions_and_shape_mappings_remain_observable():
 
 
 def test_partial_function_domain_cannot_be_extended_by_prefix_cancellation():
-    _, _, result = compare(
-        lambda x: jnp.sum(jnp.log(x[2:])),
-        lambda x: jnp.sum(jnp.log(x)) - jnp.sum(jnp.log(x[:2])),
-        (5,),
-    )
-    assert result.status == Status.UNKNOWN, result
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(
+            lambda x: jnp.sum(jnp.log(x[2:])),
+            lambda x: jnp.sum(jnp.log(x)) - jnp.sum(jnp.log(x[:2])),
+            (5,),
+        )
     equivalent(lambda x: jnp.sum(jnp.log(x)), lambda x: jnp.sum(jnp.log(x.reshape(-1))), (3, 4))
 
 
@@ -142,9 +145,10 @@ def test_large_shapes_preserve_symbolic_work_and_obey_budget():
         _, _, result = compare(left, right, (size, 3))
         assert result.status == Status.EQUIVALENT, result
         reports.append(result)
-        _, _, limited = compare(left, right, (size, 3), algebra_budget=1)
-        assert limited.status == Status.UNKNOWN
-        assert "budget" in limited.issues[0].reason
+        with pytest.raises(ComparisonBudgetError) as error:
+            compare(left, right, (size, 3), algebra_budget=1)
+        limited = error.value
+        assert "budget" in limited.reason
     assert reports[0].work == reports[1].work
 
 

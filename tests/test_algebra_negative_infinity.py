@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 from jax import lax
 
-from jax_reorder import Status, compare_algebraic_jaxprs
+from jax_reorder import (
+    ComparisonTimeoutError,
+    MathematicalUndecidedError,
+    Status,
+    UnsupportedJaxprError,
+    compare_algebraic_jaxprs,
+)
 
 
 def signature(shape=(), dtype=jnp.float32):
@@ -58,14 +64,15 @@ def test_matmul_scale_before_mask_and_softmax():
     ],
 )
 def test_mask_predicate_branch_and_constant_are_not_ignored(candidate):
-    result, _ = compare(
-        lambda x, m: jnp.where(m, x + x, -jnp.inf),
-        candidate,
-        signature((3,)),
-        signature((3,), jnp.bool_),
-    )
-    assert result.status == Status.UNKNOWN
-    assert result.issues[0].path == "algebra.outputs"
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare(
+            lambda x, m: jnp.where(m, x + x, -jnp.inf),
+            candidate,
+            signature((3,)),
+            signature((3,), jnp.bool_),
+        )
+    result = error.value
+    assert result.path == "algebra.outputs"
 
 
 @pytest.mark.parametrize(
@@ -87,28 +94,28 @@ def test_nonfinite_arithmetic_cannot_be_cancelled(operation):
     def right(x, m):
         return jnp.zeros_like(operation(x))
 
-    result, _ = compare(left, right, signature((3,)), signature((3,), jnp.bool_))
-    assert result.status == Status.UNKNOWN, result
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(left, right, signature((3,)), signature((3,), jnp.bool_))
 
 
 def test_nonfinite_power_is_not_erased_by_real_polynomial_rule():
-    result, _ = compare(
-        lambda x: (x - jnp.inf) ** 0,
-        lambda x: jnp.ones_like(x),
-        signature(),
-    )
-    # 正无穷输入仍拒绝展开；另一路检查负无穷经过幂运算的保守边界。
-    assert result.status == Status.UNKNOWN
-    result, _ = compare(lambda x: (x + -jnp.inf) ** 0, lambda x: jnp.ones_like(x), signature())
-    assert result.status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(
+            lambda x: (x - jnp.inf) ** 0,
+            lambda x: jnp.ones_like(x),
+            signature(),
+        )
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(lambda x: (x + -jnp.inf) ** 0, lambda x: jnp.ones_like(x), signature())
 
 
 @pytest.mark.parametrize("shape", [(), (3,), (0,)])
 @pytest.mark.parametrize("constant", [np.inf, np.nan])
 def test_positive_infinity_and_nan_literals_remain_unsupported(shape, constant):
-    result, _ = compare(lambda x: x + constant, lambda x: constant + x, signature(shape))
-    assert result.status == Status.UNKNOWN
-    assert result.issues[0].path == "algebra.constant"
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare(lambda x: x + constant, lambda x: constant + x, signature(shape))
+    result = error.value
+    assert result.path == "algebra.constant"
 
 
 def test_captured_array_keeps_finite_elements_and_negative_infinity_exact():
@@ -121,8 +128,8 @@ def test_captured_array_keeps_finite_elements_and_negative_infinity_exact():
     result, graphs = compare(left, lambda x: 2 * x + a, signature((3,)))
     assert result.status == Status.EQUIVALENT, result
     assert result.backend_result is not None
-    result, _ = compare(left, lambda x: 2 * x + b, signature((3,)))
-    assert result.status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, ComparisonTimeoutError)):
+        compare(left, lambda x: 2 * x + b, signature((3,)))
 
 
 @pytest.mark.parametrize("hidden", [True, False])
@@ -139,10 +146,11 @@ def test_common_jit_does_not_hide_nonfinite_constants_or_arguments(hidden):
         y = core(x if hidden else x + -jnp.inf)
         return jnp.zeros_like(y), y
 
-    result, _ = compare(left, right, signature())
-    assert result.status == Status.UNKNOWN
-    assert "jit" in result.rules
-    assert result.issues[0].path == "algebra.outputs"
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare(left, right, signature())
+    result = error.value
+    assert "jit" in result.diagnostics["rules"]
+    assert result.path == "algebra.outputs"
 
 
 @pytest.mark.parametrize("fill", [-np.inf, np.inf, np.nan])
@@ -155,9 +163,10 @@ def test_nonfinite_gather_parameter_cannot_hide_inside_common_jit(fill):
         y = jnp.take(x, i, mode="fill", fill_value=fill)
         return jnp.zeros_like(y), y
 
-    result, _ = compare(left, right, signature((3,)), signature((2,), jnp.int32))
-    assert result.status == Status.UNKNOWN
-    assert result.backend_result.failure_kind in (
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(left, right, signature((3,)), signature((2,), jnp.int32))
+    result = error.value
+    assert result.failure_kind in (
         "condition_undecided",
         "unsupported_conversion",
         "cas_undecided",
@@ -177,14 +186,15 @@ def test_scan_carry_tracks_nonfinite_initial_values_and_gather_fill(initial_inf)
         result, _ = lax.scan(body, (initial, jnp.zeros_like(initial)), None, length=2)
         return result[1]
 
-    result, _ = compare(
-        lambda x, i: run(x, i, False),
-        lambda x, i: run(x, i, True),
-        signature((3,)),
-        signature((2,), jnp.int32),
-    )
-    assert result.status == Status.UNKNOWN
-    assert result.backend_result.failure_kind in (
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(
+            lambda x, i: run(x, i, False),
+            lambda x, i: run(x, i, True),
+            signature((3,)),
+            signature((2,), jnp.int32),
+        )
+    result = error.value
+    assert result.failure_kind in (
         "condition_undecided",
         "unsupported_conversion",
         "cas_undecided",
@@ -206,18 +216,20 @@ def test_later_iterations_do_not_assume_finite_carry(loop):
             state = lax.while_loop(lambda state: state[0] < 2, body, initial)
         return state[2]
 
-    result, _ = compare(lambda x: run(x, False), lambda x: run(x, True), signature())
-    assert result.status == Status.UNKNOWN, result
-    assert result.issues[0].path != "algebra.constant"
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare(lambda x: run(x, False), lambda x: run(x, True), signature())
+    result = error.value
+    assert result.path != "algebra.constant"
 
 
 def test_nonfinite_scan_cannot_be_replaced_by_independent_sum():
     def left(x):
         return lax.scan(lambda c, _: (c + -jnp.inf, None), x, None, length=2)[0]
 
-    result, _ = compare(left, lambda x: x + 2 * -jnp.inf, signature())
-    assert result.status == Status.UNKNOWN
-    assert "scan:independent_accumulation" not in result.rules
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare(left, lambda x: x + 2 * -jnp.inf, signature())
+    result = error.value
+    assert "scan:independent_accumulation" not in result.diagnostics["rules"]
 
 
 def test_conditionally_returned_nonfinite_value_cannot_be_cancelled():
@@ -225,10 +237,8 @@ def test_conditionally_returned_nonfinite_value_cannot_be_cancelled():
         y = lax.cond(predicate, lambda x: x, lambda x: x + -jnp.inf, x)
         return y - y
 
-    result, _ = compare(
-        left, lambda x, predicate: jnp.zeros_like(x), signature(), signature((), jnp.bool_)
-    )
-    assert result.status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(left, lambda x, predicate: jnp.zeros_like(x), signature(), signature((), jnp.bool_))
 
 
 def test_all_masked_softmax_nan_path_and_final_guard_are_preserved():
@@ -236,10 +246,10 @@ def test_all_masked_softmax_nan_path_and_final_guard_are_preserved():
         p = jax.nn.softmax(jnp.where(m, x, -jnp.inf))
         return jnp.where(m, p, 0.0) if guarded else p
 
-    result, _ = compare(
-        lambda x, m: attention(x, m, True),
-        lambda x, m: attention(x, m, False),
-        signature((3,)),
-        signature((3,), jnp.bool_),
-    )
-    assert result.status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(
+            lambda x, m: attention(x, m, True),
+            lambda x, m: attention(x, m, False),
+            signature((3,)),
+            signature((3,), jnp.bool_),
+        )

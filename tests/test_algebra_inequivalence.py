@@ -6,7 +6,11 @@ import numpy as np
 import pytest
 
 from jax_reorder import (
+    ComparisonContractError,
+    ComparisonError,
+    MathematicalUndecidedError,
     Status,
+    UnsupportedJaxprError,
     compare_algebraic_jaxprs,
 )
 
@@ -112,17 +116,17 @@ def test_no_false_inequivalence_for_equal_outputs(left, right, shapes):
     [
         (lambda x: jnp.sin(x), lambda x: x + 1, jnp.float32, Status.INEQUIVALENT),
         (lambda x: jnp.exp(x), lambda x: x, jnp.float32, Status.INEQUIVALENT),
-        (lambda x: jnp.log(x), lambda x: x, jnp.float32, Status.UNKNOWN),
-        (lambda x: x / x, lambda x: x + 1, jnp.float32, Status.UNKNOWN),
-        (lambda x: x + (-jnp.inf), lambda x: x + 1, jnp.float32, Status.UNKNOWN),
+        (lambda x: jnp.log(x), lambda x: x, jnp.float32, MathematicalUndecidedError),
+        (lambda x: x / x, lambda x: x + 1, jnp.float32, MathematicalUndecidedError),
+        (lambda x: x + (-jnp.inf), lambda x: x + 1, jnp.float32, MathematicalUndecidedError),
         (
             lambda x: (x + 1, jnp.sin(x)),
             lambda x: (x + 2, jnp.sin(x)),
             jnp.float32,
             Status.INEQUIVALENT,
         ),
-        (lambda x: x + 1, lambda x: x + 2, jnp.int32, Status.UNKNOWN),
-        (lambda x: x + 1, lambda x: x + 2, jnp.complex64, Status.UNKNOWN),
+        (lambda x: x + 1, lambda x: x + 2, jnp.int32, MathematicalUndecidedError),
+        (lambda x: x + 1, lambda x: x + 2, jnp.complex64, UnsupportedJaxprError),
     ],
     ids=[
         "opaque",
@@ -137,6 +141,10 @@ def test_no_false_inequivalence_for_equal_outputs(left, right, shapes):
 )
 def test_total_real_functions_and_domain_boundaries(left, right, dtype, expected):
     first, second = graphs(left, right, (), dtype=dtype)
+    if isinstance(expected, type) and issubclass(expected, ComparisonError):
+        with pytest.raises(expected):
+            compare_algebraic_jaxprs(first, second)
+        return
     result = compare_algebraic_jaxprs(first, second)
     assert result.status == expected, result
     assert result.backend_result is not None
@@ -155,9 +163,10 @@ def test_dead_partial_or_nonfinite_work_does_not_make_domain_assumptions(operati
         return x + 1
 
     left, right = graphs(first, lambda x: x + 2, ())
-    result = compare_algebraic_jaxprs(left, right)
-    assert result.status == Status.UNKNOWN, result
-    assert result.backend_result.failure_kind in {"condition_undecided", "unsupported_conversion"}
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare_algebraic_jaxprs(left, right)
+    result = error.value
+    assert result.failure_kind in {"condition_undecided", "unsupported_conversion"}
 
 
 def test_dead_region_cannot_be_discarded_to_claim_inequivalence():
@@ -166,7 +175,8 @@ def test_dead_region_cannot_be_discarded_to_claim_inequivalence():
         return x + 1
 
     left, right = graphs(first, lambda x: x + 2, ())
-    assert compare_algebraic_jaxprs(left, right).status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare_algebraic_jaxprs(left, right)
 
 
 def test_huge_output_shape_does_not_allocate_coordinate_pools():
@@ -181,15 +191,17 @@ def test_huge_output_shape_does_not_allocate_coordinate_pools():
 
 def test_large_sum_does_not_trigger_unbounded_equals_expansion():
     first, second = graphs(lambda x: jnp.sum(x), lambda x: 2 * jnp.sum(x), (10**9,))
-    result = compare_algebraic_jaxprs(first, second, algebra_budget=1000)
-    assert result.status == Status.UNKNOWN
-    assert result.backend_result.failure_kind == "cas_undecided"
-    assert any("unevaluated_sum" in q.method for q in result.backend_result.queries)
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare_algebraic_jaxprs(first, second, algebra_budget=1000)
+    result = error.value
+    assert result.failure_kind == "cas_undecided"
+    assert any("unevaluated_sum" in q.method for q in result.diagnostics["queries"])
 
 
 def test_different_contract_is_not_a_polynomial_inequivalence():
     first, second = graphs(lambda x: x, lambda x: x[:1], (2,))
-    assert compare_algebraic_jaxprs(first, second).status == Status.UNKNOWN
+    with pytest.raises(ComparisonContractError):
+        compare_algebraic_jaxprs(first, second)
 
 
 def test_high_degree_coefficient_uses_correct_variable_multiplicity():

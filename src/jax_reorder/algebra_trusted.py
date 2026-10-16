@@ -5,6 +5,7 @@ import pickle
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field, replace
 from itertools import islice, product
 from math import comb, prod
@@ -12,7 +13,14 @@ from math import comb, prod
 import sympy as sp
 
 from .algebra_symbolic import SymbolicBuilder, coordinates, rename_bounds
-from .errors import JaxprError
+from .errors import (
+    ComparisonContractError,
+    ComparisonError,
+    ComparisonInternalError,
+    ComparisonTimeoutError,
+    MathematicalUndecidedError,
+    UnsupportedJaxprError,
+)
 
 
 @dataclass(frozen=True)
@@ -29,9 +37,7 @@ class SympyQuery:
 class SympyResult:
     status: str
     queries: tuple[SympyQuery, ...] = ()
-    reason: str | None = None
     path: str = "algebra.outputs"
-    failure_kind: str | None = None
     output: int | None = None
     backend: str = "sympy"
     version: str = sp.__version__
@@ -39,6 +45,27 @@ class SympyResult:
     elapsed_seconds: float = field(default=0, compare=False)
     rules: tuple[str, ...] = ()
     definitions: tuple[tuple[int, str], ...] = ()
+
+    def __post_init__(self):
+        if self.status not in ("equivalent", "inequivalent"):
+            raise ValueError(f"invalid mathematical result status: {self.status}")
+
+
+@dataclass(frozen=True)
+class WorkerFailure:
+    """失败消息与 SympyResult 分离，不携带第四类比较状态。"""
+
+    error_type: type[ComparisonError]
+    path: str
+    reason: str
+    stage: str
+    failure_kind: str
+    diagnostics: dict
+    traceback: str
+
+
+class RemoteWorkerError(RuntimeError):
+    """作为父进程异常的 cause 保存远端原始异常链。"""
 
 
 def _finite_expansion(expression, budget):
@@ -167,6 +194,20 @@ def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=Non
     if left == right:
         steps.append("identity")
         return True
+
+    def boolean_piecewise(expression):
+        # SymPy 的 simplify 可把定义条件变成 Piecewise；它继承 Expr，
+        # 但布尔分支不能相减。只把全部分支均为逻辑值的情况交给 ITE。
+        if isinstance(expression, sp.Piecewise) and all(
+            isinstance(branch, sp.logic.boolalg.Boolean) and not isinstance(branch, sp.Expr)
+            for branch, _ in expression.args
+        ):
+            budget.spend(len(expression.args), path="algebra.sympy.logic")
+            steps.append("Piecewise.rewrite(ITE)")
+            return expression.rewrite(sp.ITE)
+        return expression
+
+    left, right = boolean_piecewise(left), boolean_piecewise(right)
     if (
         indices is not None
         and (left.has(sp.Sum, sp.Indexed) or right.has(sp.Sum, sp.Indexed))
@@ -218,7 +259,7 @@ def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=Non
         return None
     if residual.has(sp.Sum, sp.Product) and not _finite_expansion(residual, budget):
         # Expr.equals can call doit internally, outside the explicit expansion
-        # budget. Keep an unresolved large sum as unknown instead.
+        # budget. Leave the query undecided; the caller raises if no other method decides it.
         steps.append("unevaluated_sum")
         return None
     steps.append("Expr.equals(0)")
@@ -290,9 +331,7 @@ def compare_symbolic(left, right, algebra_budget=10000):
         if len(a) != len(b) or any(
             x.shape != y.shape or x.dtype != y.dtype for x, y in zip(a, b, strict=True)
         ):
-            return report(
-                "unknown", reason="output abstract contracts differ", failure_kind="contract"
-            )
+            raise ComparisonContractError("algebra.outputs", "output abstract contracts differ")
         undecided, domain_unknown = False, False
         for output, (x, y) in enumerate(zip(a, b, strict=True)):
             if prod(x.shape) == 0:
@@ -388,42 +427,47 @@ def compare_symbolic(left, right, algebra_budget=10000):
         failure = (
             "condition_undecided" if domain_unknown else "cas_undecided" if undecided else None
         )
+        if failure:
+            raise MathematicalUndecidedError(
+                "algebra.outputs",
+                "original conditions are not established"
+                if domain_unknown
+                else "SymPy did not establish output identity",
+                failure_kind=failure,
+            )
         return report(
-            "unknown" if failure else "equivalent",
+            "equivalent",
             tuple(records),
-            reason="original conditions are not established"
-            if domain_unknown
-            else "SymPy did not establish output identity"
-            if undecided
-            else None,
-            failure_kind=failure,
             work=builder.budget.used,
             rules=tuple(sorted(builder.rules)),
             elapsed_seconds=time.monotonic() - started,
         )
-    except JaxprError as exc:
-        failure = "budget_exhausted" if "budget" in exc.reason else "unsupported_conversion"
-        return report(
-            "unknown",
-            tuple(records),
-            exc.reason,
-            exc.path,
-            failure,
+    except ComparisonError as exc:
+        exc.diagnostics.update(
+            queries=tuple(records),
             work=builder.budget.used,
             elapsed_seconds=time.monotonic() - started,
             rules=tuple(sorted(builder.rules)),
+            definitions=tuple((index, repr(key)) for key, index in builder.definitions.items()),
         )
+        if isinstance(exc, UnsupportedJaxprError):
+            raise UnsupportedJaxprError(
+                exc.path,
+                exc.reason,
+                stage="algebra",
+                failure_kind="unsupported_conversion",
+                **exc.diagnostics,
+            ) from exc
+        raise
     except Exception as exc:
-        return report(
-            "unknown",
-            tuple(records),
-            f"{type(exc).__name__}: {exc}",
+        raise ComparisonInternalError(
             "algebra.sympy",
-            "internal_error",
+            f"{type(exc).__name__}: {exc}",
+            stage="algebra",
+            queries=tuple(records),
             work=builder.budget.used,
             elapsed_seconds=time.monotonic() - started,
-            rules=tuple(sorted(builder.rules)),
-        )
+        ) from exc
 
 
 def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
@@ -432,15 +476,11 @@ def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
     started = time.monotonic()
     try:
         payload = pickle.dumps((left, right, algebra_budget))
-    except (TypeError, AttributeError, pickle.PickleError) as exc:
-        return SympyResult(
-            "unknown",
-            reason=f"unsupported symbolic transport: {exc}",
-            path="algebra.convert",
-            failure_kind="unsupported_conversion",
-        )
+    except Exception as exc:
+        raise ComparisonInternalError(
+            "algebra.transport", f"symbolic transport failed: {exc}", stage="algebra"
+        ) from exc
     environment = os.environ.copy()
-    # The worker performs symbolic work only; large BLAS thread pools waste its budget.
     environment.update(OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1")
     try:
         process = subprocess.Popen(
@@ -451,53 +491,90 @@ def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
             env=environment,
         )
     except OSError as exc:
-        return SympyResult(
-            "unknown",
-            reason=f"worker could not start: {exc}",
-            path="algebra.sympy.worker",
-            failure_kind="internal_error",
-        )
+        raise ComparisonInternalError(
+            "algebra.sympy.worker", f"worker could not start: {exc}", stage="algebra"
+        ) from exc
     try:
         stdout, stderr = process.communicate(payload, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         process.kill()
         process.communicate()
-        return SympyResult(
-            "unknown",
-            reason=f"symbolic worker exceeded {timeout:g}s",
-            path="algebra.sympy.timeout",
-            failure_kind="timeout",
+        raise ComparisonTimeoutError(
+            "algebra.sympy.timeout",
+            f"symbolic worker exceeded {timeout:g}s",
+            timeout=timeout,
             elapsed_seconds=time.monotonic() - started,
-        )
+        ) from exc
+    except Exception as exc:
+        raise ComparisonInternalError(
+            "algebra.sympy.worker", f"worker communication failed: {exc}", stage="algebra"
+        ) from exc
     finally:
         if process.poll() is None:
             process.kill()
             process.wait()
     if process.returncode:
-        return SympyResult(
-            "unknown",
-            reason=f"worker exited {process.returncode}: {stderr.decode(errors='replace')[-1000:]}",
-            path="algebra.sympy.worker",
-            failure_kind="internal_error",
+        raise ComparisonInternalError(
+            "algebra.sympy.worker",
+            f"worker exited {process.returncode}: {stderr.decode(errors='replace')[-1000:]}",
+            stage="algebra",
             elapsed_seconds=time.monotonic() - started,
         )
     try:
         result = pickle.loads(stdout)
-        if not isinstance(result, SympyResult):
+        if isinstance(result, WorkerFailure):
+            if not isinstance(result.error_type, type) or not issubclass(
+                result.error_type, ComparisonError
+            ):
+                raise TypeError("invalid symbolic worker exception type")
+            error = result.error_type(
+                result.path,
+                result.reason,
+                stage=result.stage,
+                failure_kind=result.failure_kind,
+                **result.diagnostics,
+            )
+            error.diagnostics["elapsed_seconds"] = time.monotonic() - started
+        elif not isinstance(result, SympyResult) or result.status not in (
+            "equivalent",
+            "inequivalent",
+        ):
             raise TypeError("invalid symbolic worker result")
-    except (pickle.PickleError, EOFError, TypeError, AttributeError) as exc:
-        return SympyResult(
-            "unknown",
-            reason=f"invalid worker response: {exc}",
-            path="algebra.sympy.worker",
-            failure_kind="internal_error",
-        )
+    except Exception as exc:
+        raise ComparisonInternalError(
+            "algebra.sympy.worker", f"invalid worker response: {exc}", stage="algebra"
+        ) from exc
+    if isinstance(result, WorkerFailure):
+        raise error from RemoteWorkerError(result.traceback)
     return replace(result, elapsed_seconds=time.monotonic() - started)
 
 
-if __name__ == "__main__":
-    # Import the canonical module name so callers can unpickle result types.
-    from jax_reorder.algebra_trusted import compare_symbolic as run
+def _worker_main():
+    # 使用规范模块名序列化类型，父进程无需导入 __main__ 中的类。
+    from jax_reorder.algebra_trusted import WorkerFailure, compare_symbolic
 
-    payload = pickle.load(sys.stdin.buffer)
-    pickle.dump(run(*payload), sys.stdout.buffer)
+    try:
+        payload = pickle.load(sys.stdin.buffer)
+        result = compare_symbolic(*payload)
+    except Exception as exc:
+        error = (
+            exc
+            if isinstance(exc, ComparisonError)
+            else ComparisonInternalError(
+                "algebra.sympy.worker", f"{type(exc).__name__}: {exc}", stage="algebra"
+            )
+        )
+        result = WorkerFailure(
+            type(error),
+            error.path,
+            error.reason,
+            error.stage,
+            error.failure_kind,
+            error.diagnostics,
+            traceback.format_exc(),
+        )
+    pickle.dump(result, sys.stdout.buffer)
+
+
+if __name__ == "__main__":
+    _worker_main()

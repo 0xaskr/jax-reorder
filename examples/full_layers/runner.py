@@ -176,7 +176,6 @@ def verify(profile, *, family="glm5", samples=3):
                     "actual": report.status.value,
                     "reason": reason,
                     "difference": report.difference,
-                    "unknown_reasons": [issue.reason for issue in report.issues],
                     "signature": signature(inputs[0]),
                     "primitives": sorted({eq.primitive.name for eq in graph.eqns}),
                     "numerical_samples": samples,
@@ -237,7 +236,6 @@ def main():
             "numerical_samples": sum(row["numerical_samples"] for row in rows),
             "equivalent": sum(row["actual"] == "equivalent" for row in rows),
             "different": sum(row["actual"] == "different" for row in rows),
-            "unknown": sum(row["actual"] == "unknown" for row in rows),
             "actually_reordered_positive_signatures": sum(
                 row["expected"] == "equivalent" and row["raw_order_changed"] for row in rows
             ),
@@ -252,9 +250,12 @@ def main():
         result["supplemental_counts"] = {
             group: {
                 "cases": len(result["supplemental"][group]),
+                "errors": sum("error" in row for row in result["supplemental"][group]),
                 "statuses": {
-                    status: sum(row["actual"] == status for row in result["supplemental"][group])
-                    for status in ("equivalent", "different", "unknown", "trace_rejected")
+                    status: sum(
+                        row.get("actual") == status for row in result["supplemental"][group]
+                    )
+                    for status in ("equivalent", "different", "trace_rejected")
                 },
             }
             for group in ("derivatives", "indexer", "boundaries")

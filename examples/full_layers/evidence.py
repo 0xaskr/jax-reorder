@@ -10,7 +10,13 @@ from jax.sharding import NamedSharding
 from examples.sglang_layers.builders import cpu_mesh
 from examples.sglang_layers.runner import close
 from examples.sglang_layers.upstream import REVISION
-from jax_reorder import Status, canonicalize, compare_functions, compare_jaxprs
+from jax_reorder import (
+    Status,
+    UnsupportedJaxprError,
+    canonicalize,
+    compare_functions,
+    compare_jaxprs,
+)
 
 from . import oracles
 from .blocked import cross_attention, glm5_absorbed, mla_original_imports, original_moe
@@ -148,9 +154,13 @@ def verify_indexer(profile):
 
 def _pallas_boundary(fn, args, *, layer, configuration, executable=False):
     graph = jax.make_jaxpr(fn)(*args)
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert any("unsupported primitive pallas_call" in issue.reason for issue in result.issues)
+    try:
+        compare_jaxprs(graph, graph)
+    except UnsupportedJaxprError as error:
+        assert "unsupported primitive pallas_call" in error.reason
+        failure = {"type": type(error).__name__, "path": error.path, "reason": error.reason}
+    else:
+        raise AssertionError("Pallas comparison boundary changed; review its semantics")
     compilation = "executed" if executable else "cpu_compile_rejected"
     rejection = None
     if executable:
@@ -166,11 +176,10 @@ def _pallas_boundary(fn, args, *, layer, configuration, executable=False):
     return {
         "layer": layer,
         "configuration": configuration,
-        "actual": result.status.value,
+        "error": failure,
         "comparison_scope": "original against itself; no candidate certified",
         "cpu": compilation,
         "compile_rejection": rejection,
-        "unknown_reasons": [issue.reason for issue in result.issues],
         "signature": signature(args),
         "numerical_samples": int(executable),
     }

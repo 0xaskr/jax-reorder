@@ -11,7 +11,14 @@ from jax._src import core
 from jax._src import custom_derivatives as cd
 
 from examples import custom_derivative_cases as cases
-from jax_reorder import Status, canonicalize, compare_jaxprs
+from jax_reorder import (
+    ComparisonBudgetError,
+    Status,
+    TraceError,
+    UnsupportedJaxprError,
+    canonicalize,
+    compare_jaxprs,
+)
 from jax_reorder.derivatives import semantic_parameters
 from jax_reorder.functions import compare_functions
 
@@ -135,9 +142,10 @@ def test_custom_schema_addition_is_not_ignored():
     eq = graph.eqns[0]
     assert eq.primitive is cd.custom_jvp_call_p
     bad = graph.replace(eqns=[eq.replace(params={**eq.params, "new_rule_flag": True})])
-    result = compare_jaxprs(bad, bad)
-    assert result.status == Status.UNKNOWN
-    assert "schema changed" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(bad, bad)
+    result = error.value
+    assert "schema changed" in result.reason
 
 
 def test_static_nondifferentiable_argument_and_rule_primal_call():
@@ -310,9 +318,10 @@ def test_no_real_output_still_checks_latent_ordered_forward_rule(symbolic, empty
 
     function.defvjp(fwd, bwd, symbolic_zeros=symbolic)
     graph = jax.make_jaxpr(function)(jnp.float32(2))
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "latent ordered" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "latent ordered" in result.reason
 
 
 @pytest.mark.parametrize("symbolic", [False, True])
@@ -357,10 +366,11 @@ def test_symbolic_float0_output_combinations_obey_rule_budget():
     seeds = (np.zeros((), dtype=jax.dtypes.float0),) * 7
     np.testing.assert_array_equal(pullback(seeds), (0,))
     graph = jax.make_jaxpr(function)(x)
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "127 cases" in result.issues[0].reason
-    assert "budget exceeded" in result.issues[0].reason
+    with pytest.raises(ComparisonBudgetError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "127 cases" in result.reason
+    assert "budget exceeded" in result.reason
 
 
 def test_discrete_output_does_not_hide_invalid_backward_interface():
@@ -376,9 +386,10 @@ def test_discrete_output_does_not_hide_invalid_backward_interface():
 
     function.defvjp(fwd, bwd)
     graph = jax.make_jaxpr(function)(jnp.float32(2))
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "rule tracing rejected" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "rule tracing rejected" in result.reason
 
 
 def test_invalid_backward_interface_is_not_accepted_as_forward_equivalence():
@@ -395,13 +406,12 @@ def test_invalid_backward_interface_is_not_accepted_as_forward_equivalence():
     invalid.defvjp(fwd, bwd)
     args = (jnp.float32(0.7), jnp.float32(-0.3))
     graph = jax.make_jaxpr(invalid)(*args)
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "rule tracing rejected" in result.issues[0].reason
-    result = compare_functions(invalid, invalid, *args, modes=("forward", "vjp"))
-    assert result.modes[0].status == Status.EQUIVALENT
-    assert result.modes[1].failure_kind == "trace_rejected"
-    assert result.status == Status.UNKNOWN
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "rule tracing rejected" in result.reason
+    with pytest.raises(TraceError, match="left.vjp.trace"):
+        compare_functions(invalid, invalid, *args, modes=("forward", "vjp"))
 
 
 def test_symbolic_zero_cotangents_are_checked_as_separate_modes():
@@ -438,9 +448,8 @@ def test_dynamic_while_reverse_mode_is_reported_as_jax_rejection():
         )
         return result
 
-    result = compare_functions(loop, loop, jnp.float32(0.7), jnp.int32(2), modes=("forward", "vjp"))
-    assert result.modes[0].status == Status.EQUIVALENT
-    assert result.modes[1].failure_kind == "trace_rejected"
+    with pytest.raises(TraceError, match="left.vjp.trace"):
+        compare_functions(loop, loop, jnp.float32(0.7), jnp.int32(2), modes=("forward", "vjp"))
 
 
 def test_symbolic_modes_with_different_residual_trees_are_repeatable():
@@ -540,9 +549,10 @@ def test_latent_ordered_rules_are_not_treated_as_pure_custom_calls():
         return x * x, (2 * x) * t
 
     graph = jax.make_jaxpr(jax.jit(f))(jnp.float32(1))
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "latent ordered" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "latent ordered" in result.reason
     result = compare_functions(f, f, jnp.float32(1), modes=("forward", "jvp"))
     assert result.status == Status.EQUIVALENT, result
 
@@ -564,8 +574,9 @@ def test_rule_only_dynamic_capture_is_reported_and_explicit_vjp_is_supported():
 
     args = jnp.float32(3), jnp.float32(2)
     graph = jax.make_jaxpr(f)(*args)
-    result = compare_jaxprs(graph, graph)
-    assert result.status == Status.UNKNOWN
-    assert "outside the custom call operands" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(graph, graph)
+    result = error.value
+    assert "outside the custom call operands" in result.reason
     result = compare_functions(f, f, *args, modes=("forward", "vjp"), argnums=(1,))
     assert result.status == Status.EQUIVALENT, result

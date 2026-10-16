@@ -10,7 +10,12 @@ from jax import lax
 from jax._src import core
 
 from jax_reorder import (
+    ComparisonBudgetError,
+    ComparisonContractError,
+    ComparisonTimeoutError,
+    MathematicalUndecidedError,
     Status,
+    UnsupportedJaxprError,
     compare_algebraic_jaxprs,
     compare_function_traces,
     compare_functions,
@@ -154,43 +159,46 @@ def test_wrong_index_connections_have_complete_output_negative_proofs(pair, shap
     assert result.backend_result.output is not None
 
 
-def test_unsupported_maximum_difference_remains_unknown():
-    result = algebra(
-        lambda a, b: jnp.max(a + b),
-        lambda a, b: jnp.max(a) + jnp.max(b),
-        signature((3,)),
-        signature((3,)),
-    )
-    assert result.status == Status.UNKNOWN
-    assert result.correspondence is None
+def test_unfinished_maximum_difference_raises_instead_of_claiming_inequality():
+    with pytest.raises((MathematicalUndecidedError, ComparisonTimeoutError)) as error:
+        algebra(
+            lambda a, b: jnp.max(a + b),
+            lambda a, b: jnp.max(a) + jnp.max(b),
+            signature((3,)),
+            signature((3,)),
+        )
+    result = error.value
+    assert result.failure_kind in ("cas_undecided", "timeout")
 
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.complex64])
 def test_non_real_domains_do_not_gain_commutativity(dtype):
-    result = algebra(
-        lambda a, b: a + b, lambda a, b: b + a, signature((3,), dtype), signature((3,), dtype)
-    )
-    assert result.status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        algebra(
+            lambda a, b: a + b, lambda a, b: b + a, signature((3,), dtype), signature((3,), dtype)
+        )
 
 
 def test_precision_cast_and_partial_function_boundaries():
     x = signature((3, 3))
-    result = algebra(
-        lambda a, b: lax.dot_general(a, b, (((1,), (0,)), ((), ())), precision=lax.Precision.HIGH),
-        lambda a, b: a @ b,
-        x,
-        x,
-    )
-    assert result.status == Status.UNKNOWN
-    result = algebra(lambda a: a.astype(jnp.bfloat16).astype(jnp.float32), lambda a: a, x)
-    assert result.status == Status.UNKNOWN
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        algebra(
+            lambda a, b: lax.dot_general(
+                a, b, (((1,), (0,)), ((), ())), precision=lax.Precision.HIGH
+            ),
+            lambda a, b: a @ b,
+            x,
+            x,
+        )
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        algebra(lambda a: a.astype(jnp.bfloat16).astype(jnp.float32), lambda a: a, x)
     for partial in (jnp.log, jnp.sqrt, lambda x: 1 / x):
         for left in (
             lambda x, partial=partial: 0 * partial(x),
             lambda x, partial=partial: partial(x) - partial(x),
         ):
-            result = algebra(left, lambda x: jnp.zeros_like(x), signature((3,)))
-            assert result.status == Status.UNKNOWN
+            with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+                algebra(left, lambda x: jnp.zeros_like(x), signature((3,)))
 
 
 def test_dead_pure_work_is_ignored_only_after_complete_semantic_check():
@@ -205,10 +213,10 @@ def test_dead_pure_work_is_ignored_only_after_complete_semantic_check():
         jax.debug.print("value {}", x)
         return x + 1
 
-    assert algebra(unsafe, lambda x: x + 1, signature()).status == Status.UNKNOWN
-    assert (
-        algebra(lambda x: x + jnp.inf, lambda x: jnp.inf + x, signature()).status == Status.UNKNOWN
-    )
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        algebra(unsafe, lambda x: x + 1, signature())
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        algebra(lambda x: x + jnp.inf, lambda x: jnp.inf + x, signature())
 
 
 def test_default_auto_retains_structural_report_and_explicit_mode():
@@ -231,14 +239,12 @@ def test_default_auto_retains_structural_report_and_explicit_mode():
 
 def test_signature_and_environment_mismatch_do_not_enter_algebra():
     x = signature((2,))
-    assert (
-        compare_functions(lambda x: x, lambda x: x, x, right_args=(signature((3,)),)).status
-        == Status.DIFFERENT
-    )
+    with pytest.raises(ComparisonContractError):
+        compare_functions(lambda x: x, lambda x: x, x, right_args=(signature((3,)),))
     left = trace_function(lambda x: x, x)
     right = replace(left, context=("changed",))
-    report = compare_function_traces(left, right)
-    assert report.status == Status.UNKNOWN and report.algebra is None
+    with pytest.raises(ComparisonContractError, match="context_mismatch"):
+        compare_function_traces(left, right)
 
 
 def test_input_abstract_memory_and_manual_axis_are_not_lost():
@@ -268,11 +274,14 @@ def test_invalid_budget_is_rejected(budget):
 def test_budget_is_deterministic_and_large_axes_are_symbolic():
     f, g = POLYNOMIALS[6]
     x = signature((4,))
-    a = algebra(f, g, x, x, x, algebra_budget=1)
-    b = algebra(g, f, x, x, x, algebra_budget=1)
-    assert a.status == b.status == Status.UNKNOWN
-    assert "budget" in a.issues[0].reason
-    assert a == algebra(f, g, x, x, x, algebra_budget=1)
+    errors = []
+    for first, second in ((f, g), (g, f), (f, g)):
+        with pytest.raises(ComparisonBudgetError) as error:
+            algebra(first, second, x, x, x, algebra_budget=1)
+        errors.append(error.value)
+    assert "budget" in errors[0].reason
+    assert errors[0].reason == errors[2].reason
+    assert errors[0].path == errors[2].path
     reports = []
     for k in (3, 4096):
         reports.append(

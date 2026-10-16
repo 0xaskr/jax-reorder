@@ -19,7 +19,13 @@ from jax._src.layout import AutoLayout, Format
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs, validate_timeout
 from .algebra_budget import Budget
 from .canonical import Comparison, Issue, Status, _difference, compare_jaxprs
-from .errors import JaxprError, UnsupportedJaxprError
+from .errors import (
+    ComparisonContractError,
+    ComparisonError,
+    CompilationError,
+    TraceError,
+    UnsupportedJaxprError,
+)
 from .semantics import Encoder, Frozen, encoded_equal
 
 # 固定模式顺序也用于报告 unverified_modes，避免遗漏项随集合遍历顺序变化。
@@ -90,17 +96,15 @@ class FunctionTrace:
 
 @dataclass(frozen=True)
 class ModeComparison:
-    """单个前向或求导模式的结论，并保留失败阶段与两侧追踪证据。"""
+    """单个前向或求导模式的已完成结论，以及两侧追踪证据。"""
 
     mode: str
     status: Status
-    # 契约或追踪阶段已经失败时，尚未进入底层图比较，此字段保持 None。
+    # 完成比较时保留结构阶段报告，便于定位数学改写的来源。
     comparison: Comparison | None = None
     issues: tuple[Issue, ...] = ()
-    # difference 定位已确认的差异；issues 解释未完成检查，二者含义不同。
+    # difference 定位已确认的结构差异或数学不等价输出。
     difference: str | None = None
-    # 区分上下文不一致、契约差异、追踪拒绝、不支持语义及 CPU 编译拒绝。
-    failure_kind: str | None = None
     left: FunctionTrace | None = field(default=None, compare=False, repr=False)
     right: FunctionTrace | None = field(default=None, compare=False, repr=False)
     algebra: AlgebraComparison | None = None
@@ -353,51 +357,46 @@ def compare_function_traces(
         raise ValueError("equivalence must be auto or structural")
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
-    # 上下文不同意味着比较前提不一致，归为 unknown；同一前提下的接口差异才报 different。
     if left.mode != right.mode or left.context != right.context:
-        return ModeComparison(
-            left.mode,
-            Status.UNKNOWN,
-            issues=(Issue("context", "trace contexts or comparison modes differ"),),
+        raise ComparisonContractError(
+            f"{left.mode}.context",
+            "trace contexts or comparison modes differ",
             failure_kind="context_mismatch",
-            left=left,
-            right=right,
         )
     difference = _difference(left.signature, right.signature)
     if difference:
-        return ModeComparison(
-            left.mode,
-            Status.DIFFERENT,
-            difference=difference.replace("graph", "signature", 1),
-            failure_kind="contract_difference",
-            left=left,
-            right=right,
+        raise ComparisonContractError(
+            f"{left.mode}.{difference.replace('graph', 'signature', 1)}",
+            "function contracts differ",
         )
     # 求导模式已经通过公开变换展开为实际一阶程序；内部普通调用只比较其
     # 前向语义，不能从一次一阶检查继续外推尚未请求的高阶规则。
-    result = compare_jaxprs(left.jaxpr, right.jaxpr, derivative_scope="primal")
-    algebra = None
-    status, issues, difference = result.status, result.issues, result.difference
-    kind = "structural" if status == Status.EQUIVALENT else None
-    failure = "unsupported" if status == Status.UNKNOWN else None
-    if equivalence == "auto" and status == Status.DIFFERENT:
-        algebra = compare_algebraic_jaxprs(
-            left.jaxpr, right.jaxpr, algebra_budget=algebra_budget, algebra_timeout=algebra_timeout
-        )
-        status, issues = algebra.status, algebra.issues
-        kind = algebra.equivalence_kind
-        failure = "algebra_incomplete" if status == Status.UNKNOWN else None
-        if status == Status.EQUIVALENT:
-            difference = None
-        elif status == Status.INEQUIVALENT:
-            difference = f"algebra.outputs[{algebra.output}]"
+    try:
+        result = compare_jaxprs(left.jaxpr, right.jaxpr, derivative_scope="primal")
+        algebra = None
+        status, issues, difference = result.status, result.issues, result.difference
+        kind = "structural" if status == Status.EQUIVALENT else None
+        if equivalence == "auto" and status == Status.DIFFERENT:
+            algebra = compare_algebraic_jaxprs(
+                left.jaxpr,
+                right.jaxpr,
+                algebra_budget=algebra_budget,
+                algebra_timeout=algebra_timeout,
+            )
+            status, issues = algebra.status, algebra.issues
+            kind = algebra.equivalence_kind
+            if status == Status.EQUIVALENT:
+                difference = None
+            elif status == Status.INEQUIVALENT:
+                difference = f"algebra.outputs[{algebra.output}]"
+    except ComparisonError as exc:
+        raise exc.at(left.mode) from exc
     return ModeComparison(
         left.mode,
         status,
         comparison=result,
         issues=issues,
         difference=difference,
-        failure_kind=failure,
         left=left,
         right=right,
         algebra=algebra,
@@ -432,9 +431,9 @@ def compare_functions(
     数值采样由案例运行器另行执行，不将某个样本相等作为结构结论。
 
     right_args / right_kwargs 为 None 时复用左侧的调用签名；显式传入空容器
-    则表示右侧确实使用空参数。各模式保留独立结论，汇总优先级为
-    inequivalent、unknown、different、equivalent。inequivalent 表示至少一个请求模式
-    有数学不等价证据，具体模式保留在 modes 中，不从求导差异外推前向结论。
+    则表示右侧确实使用空参数。任一请求模式失败立即抛出分类异常。
+    所有请求模式完成后才汇总；inequivalent 表示其中至少一个模式有数学不等价
+    依据，具体模式保留在 modes 中，不从求导差异外推前向结论。
     """
     modes = tuple(modes)
     if equivalence not in ("auto", "structural"):
@@ -447,9 +446,7 @@ def compare_functions(
     # 仅在请求检查且所有追踪、编译均成功时保留 True；图不同也可能编译成功。
     compiled = check_cpu
     for mode in modes:
-        # 各模式独立记录两侧的失败证据；某个模式失败后仍检查其余请求模式。
-        traces, issues = [], []
-        failure_kind = None
+        traces = []
         for side, function, positional, keywords in (
             ("left", left, args, kwargs),
             (
@@ -471,20 +468,10 @@ def compare_functions(
                     transforms=transforms,
                 )
                 traces.append(traced)
-            except (
-                JaxprError,
-                TypeError,
-                ValueError,
-                NotImplementedError,
-                RuntimeError,
-                AssertionError,
-            ) as exc:
-                issues.append(Issue(f"{side}.{mode}.trace", str(exc)))
-                failure_kind = "unsupported" if isinstance(exc, JaxprError) else "trace_rejected"
-                # 保持 traces 的左右位置固定，即使一侧失败，另一侧仍能单独留下证据。
-                traces.append(None)
-                compiled = False
-                continue
+            except ComparisonError as exc:
+                raise exc.at(f"{side}.{mode}") from exc
+            except Exception as exc:
+                raise TraceError(f"{side}.{mode}.trace", f"{type(exc).__name__}: {exc}") from exc
             if check_cpu:
                 try:
 
@@ -494,43 +481,22 @@ def compare_functions(
 
                     # lower/compile 检查后端能否接受物化图，不实际调用编译产物。
                     jax.jit(evaluate).lower(*traced.abstract_inputs).compile()
-                except (
-                    TypeError,
-                    ValueError,
-                    NotImplementedError,
-                    RuntimeError,
-                    AssertionError,
-                ) as exc:
-                    issues.append(Issue(f"{side}.{mode}.compile", str(exc)))
-                    failure_kind = "cpu_compile_rejected"
-                    compiled = False
-        if issues:
-            results.append(
-                ModeComparison(
-                    mode,
-                    Status.UNKNOWN,
-                    issues=tuple(issues),
-                    failure_kind=failure_kind,
-                    left=traces[0],
-                    right=traces[1],
-                )
+                except Exception as exc:
+                    raise CompilationError(
+                        f"{side}.{mode}.compile", f"{type(exc).__name__}: {exc}"
+                    ) from exc
+        results.append(
+            compare_function_traces(
+                *traces,
+                equivalence=equivalence,
+                algebra_budget=algebra_budget,
+                algebra_timeout=algebra_timeout,
             )
-        else:
-            results.append(
-                compare_function_traces(
-                    *traces,
-                    equivalence=equivalence,
-                    algebra_budget=algebra_budget,
-                    algebra_timeout=algebra_timeout,
-                )
-            )
-    # 一个请求模式的完整反例即可否定全部请求模式等价；其余未知模式仍逐项报告。
+        )
     statuses = {result.status for result in results}
     status = (
         Status.INEQUIVALENT
         if Status.INEQUIVALENT in statuses
-        else Status.UNKNOWN
-        if Status.UNKNOWN in statuses
         else Status.DIFFERENT
         if Status.DIFFERENT in statuses
         else Status.EQUIVALENT

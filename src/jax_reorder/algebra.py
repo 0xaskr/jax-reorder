@@ -7,7 +7,12 @@ from .algebra_budget import Budget
 from .algebra_calls import CommonCalls
 from .canonical import Issue, Status, canonicalize, compare_jaxprs
 from .correspondence import GraphCorrespondence, build_correspondence
-from .errors import JaxprError, UnsupportedJaxprError
+from .errors import (
+    ComparisonContractError,
+    ComparisonError,
+    ComparisonInternalError,
+    UnsupportedJaxprError,
+)
 
 if TYPE_CHECKING:
     from .algebra_trusted import SympyResult
@@ -38,6 +43,10 @@ class AlgebraComparison:
     correspondence: GraphCorrespondence | None = field(default=None, repr=False)
     work: int = 0
     backend_result: "SympyResult | None" = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.status not in (Status.EQUIVALENT, Status.INEQUIVALENT):
+            raise ValueError(f"invalid complete comparison status: {self.status}")
 
     @property
     def equivalence_kind(self):
@@ -75,7 +84,7 @@ def validate_timeout(value):
 def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeout=10.0):
     """Compare complete mathematical outputs with trusted SymPy, after structural validation."""
     from .algebra_transport import freeze
-    from .algebra_trusted import SympyResult, isolated_compare
+    from .algebra_trusted import isolated_compare
 
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
@@ -88,8 +97,6 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeo
             warnings=(),
             correspondence=structural.correspondence,
         )
-    if structural.status == Status.UNKNOWN:
-        return AlgebraComparison(Status.UNKNOWN, structural.issues)
     try:
         # Adapt graph bindings before constructing the corresponding symbolic inputs.
         prepared = tuple(_prepare(graph) for graph in (left, right))
@@ -99,7 +106,7 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeo
         if tuple(encode(v.aval) for v in a.invars + a.outvars) != tuple(
             encode(v.aval) for v in b.invars + b.outvars
         ) or len(a.invars) != len(b.invars):
-            raise UnsupportedJaxprError(
+            raise ComparisonContractError(
                 "algebra.contract", "input or output abstract contract differs"
             )
         calls = CommonCalls(
@@ -118,27 +125,20 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeo
             timeout=algebra_timeout,
         )
         result = replace(result, work=result.work + calls.budget.used - 1)
-        issues = () if result.reason is None else (Issue(result.path, result.reason),)
         return AlgebraComparison(
-            Status(result.status), issues, result.rules, work=result.work, backend_result=result
+            Status(result.status), rules=result.rules, work=result.work, backend_result=result
         )
-    except JaxprError as exc:
-        result = SympyResult(
-            "unknown",
-            reason=exc.reason,
-            path=exc.path,
-            failure_kind="budget_exhausted" if "budget" in exc.reason else "unsupported_conversion",
-        )
-        return AlgebraComparison(
-            Status.UNKNOWN, (Issue(exc.path, exc.reason),), backend_result=result
-        )
-    except (ValueError, TypeError, RecursionError) as exc:
-        result = SympyResult(
-            "unknown",
-            reason=f"conversion rejected: {exc}",
-            path="algebra.convert",
+    except UnsupportedJaxprError as exc:
+        raise UnsupportedJaxprError(
+            exc.path,
+            exc.reason,
+            stage="algebra",
             failure_kind="unsupported_conversion",
-        )
-        return AlgebraComparison(
-            Status.UNKNOWN, (Issue(result.path, result.reason),), backend_result=result
-        )
+            **exc.diagnostics,
+        ) from exc
+    except ComparisonError:
+        raise
+    except Exception as exc:
+        raise ComparisonInternalError(
+            "algebra.convert", f"{type(exc).__name__}: {exc}", stage="algebra"
+        ) from exc

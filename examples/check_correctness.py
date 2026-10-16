@@ -50,7 +50,7 @@ def swapped_operands(x, weight, bias):
 
 
 def unused_branch(x, weight, bias):
-    # 第一轮保留未使用分支并报告部分完成，应得到 unknown。
+    # 完整图保留未使用分支，增加方程会产生结构差异。
     lax.cos(x)
     return original(x, weight, bias)
 
@@ -78,7 +78,7 @@ CASES = (
     Case("独立定义换序", reordered, Status.EQUIVALENT, True),
     Case("加法改成减法", changed, Status.DIFFERENT, False),
     Case("交换加法操作数", swapped_operands, Status.DIFFERENT, True),
-    Case("添加未使用分支", unused_branch, Status.UNKNOWN, True),
+    Case("添加未使用分支", unused_branch, Status.DIFFERENT, True),
 )
 
 
@@ -136,8 +136,6 @@ def run_case(case, samples, show_jaxpr):
     print(f"PASS {case.name}: {result.status.value}；两边重排前后均通过 CPU 检查")
     if result.difference:
         print(f"  图差异位置: {result.difference}")
-    for issue in result.issues:
-        print(f"  无法判定原因: {issue.path}: {issue.reason}")
     if witness is not None:
         inputs, a, b = witness
         print(f"  数值反例输入: {[np.asarray(x).tolist() for x in inputs]}")

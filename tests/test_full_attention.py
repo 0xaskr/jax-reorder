@@ -13,7 +13,7 @@ from examples.full_layers.runner import FAMILIES, verify
 from examples.full_layers.upstream import original_imports
 from examples.sglang_layers.builders import cpu_mesh
 from examples.sglang_layers.upstream import ROOT
-from jax_reorder import Status, compare_functions, compare_jaxprs
+from jax_reorder import TraceError, UnsupportedJaxprError, compare_functions, compare_jaxprs
 
 pytestmark = pytest.mark.filterwarnings(
     r"ignore:'\.value' access is now deprecated:DeprecationWarning"
@@ -50,10 +50,11 @@ def test_original_flux_block_rejects_its_explicit_sharding_constraint():
         case = BlockCase(BLOCK_PROFILES[0], mesh, "flux")
         with pytest.raises(AssertionError, match="with_sharding_constraint.*assert"):
             jax.make_jaxpr(case.function())(*case.sample(1))
-        result = compare_functions(case.function(), case.function(), *case.sample(1))
-        assert result.status == Status.UNKNOWN
-        assert result.modes[0].failure_kind == "trace_rejected"
-        assert all("with_sharding_constraint" in issue.reason for issue in result.modes[0].issues)
+        with pytest.raises(TraceError) as error:
+            compare_functions(case.function(), case.function(), *case.sample(1))
+        result = error.value
+        assert result.failure_kind == "trace_rejected"
+        assert "with_sharding_constraint" in result.reason
 
 
 def test_original_single_head_configuration_is_upstream_trace_rejection():
@@ -85,9 +86,10 @@ def test_original_glm5_absorbed_path_rejects_cpu_lowering(decoder, mode):
     with jax.set_mesh(mesh), mla_original_imports():
         fn, args = glm5_absorbed(mesh, decoder=decoder, mode=mode)
         graph = jax.make_jaxpr(fn)(*args)
-        result = compare_jaxprs(graph, graph)
-        assert result.status == Status.UNKNOWN
-        assert "unsupported primitive pallas_call" in result.issues[0].reason
+        with pytest.raises(UnsupportedJaxprError) as error:
+            compare_jaxprs(graph, graph)
+        result = error.value
+        assert "unsupported primitive pallas_call" in result.reason
         with pytest.raises(ValueError, match="Only interpret mode is supported on CPU"):
             jax.jit(fn).lower(*args).compile()
 
@@ -97,9 +99,10 @@ def test_original_cross_attention_is_opaque_and_cpu_rejected():
 
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), cross_attention(mesh) as (fn, args):
-        result = compare_jaxprs(jax.make_jaxpr(fn)(*args), jax.make_jaxpr(fn)(*args))
-        assert result.status == Status.UNKNOWN
-        assert "unsupported primitive pallas_call" in result.issues[0].reason
+        with pytest.raises(UnsupportedJaxprError) as error:
+            compare_jaxprs(jax.make_jaxpr(fn)(*args), jax.make_jaxpr(fn)(*args))
+        result = error.value
+        assert "unsupported primitive pallas_call" in result.reason
         with pytest.raises(ValueError, match="Only interpret mode is supported on CPU"):
             jax.jit(fn).lower(*args).compile()
 
@@ -122,7 +125,7 @@ def test_complete_indexer_is_retained_even_when_outputs_do_not_use_it(profile):
     assert all(row["numerical_agreement"] for row in rows)
 
 
-def test_original_moe_executes_in_cpu_interpret_but_comparison_stays_unknown():
+def test_original_moe_executes_in_cpu_interpret_but_comparison_raises():
     from examples.full_layers.blocked import original_moe
     from examples.full_layers.oracles import moe
     from examples.sglang_layers.runner import close
@@ -130,7 +133,8 @@ def test_original_moe_executes_in_cpu_interpret_but_comparison_stays_unknown():
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), original_moe(mesh) as (fn, args):
         graph = jax.make_jaxpr(fn)(*args)
-        result = compare_jaxprs(graph, graph)
-        assert result.status == Status.UNKNOWN
-        assert "unsupported primitive pallas_call" in result.issues[0].reason
+        with pytest.raises(UnsupportedJaxprError) as error:
+            compare_jaxprs(graph, graph)
+        result = error.value
+        assert "unsupported primitive pallas_call" in result.reason
         close(jax.jit(fn)(*args), moe(args), low_precision=True, oracle=True)

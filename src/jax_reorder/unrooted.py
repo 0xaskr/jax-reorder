@@ -11,7 +11,7 @@ import numpy as np
 from jax._src import core
 from jax._src.random.prng import KeyTy
 
-from .errors import UnsupportedJaxprError
+from .errors import ComparisonBudgetError, UnsupportedJaxprError
 
 # 搜索预算按候选状态计数；达到预算也不能以当前最优候选代替完整结论。
 DEFAULT_SEARCH_BUDGET = 10_000
@@ -215,10 +215,13 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
         # 预算按探索状态计数；超限时整体失败，不返回已经找到的某个候选排列。
         visited += 1
         if visited > budget:
-            raise UnsupportedJaxprError(
+            raise ComparisonBudgetError(
                 "graph.search",
                 f"exact graph search budget exceeded: {n} nodes, {nc} constants, "
                 f"{visited} states, limit {budget}",
+                stage="structural",
+                used=visited,
+                limit=budget,
             )
         colors = refine(pending.pop())
         cells = defaultdict(list)

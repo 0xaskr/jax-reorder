@@ -9,7 +9,13 @@ import pytest
 from jax._src import core
 
 from examples import region_bindings as cases
-from jax_reorder import Status, canonicalize, compare_jaxprs
+from jax_reorder import (
+    InvalidJaxprError,
+    Status,
+    UnsupportedJaxprError,
+    canonicalize,
+    compare_jaxprs,
+)
 
 
 def inputs(dtype=jnp.float32, shape=()):
@@ -109,9 +115,10 @@ def test_unknown_loop_metadata_is_rejected(fn):
         params={**equations[index].params, "future_slots": (1, 0)}
     )
     malformed = graph.replace(eqns=equations)
-    result = compare_jaxprs(malformed, malformed)
-    assert result.status == Status.UNKNOWN
-    assert "unsupported" in result.issues[0].reason
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_jaxprs(malformed, malformed)
+    result = error.value
+    assert "unsupported" in result.reason
 
 
 @pytest.mark.parametrize("fn", [cases.scan_original, cases.while_original])
@@ -121,4 +128,5 @@ def test_missing_loop_operand_is_rejected(fn):
     index = next(i for i, eq in enumerate(equations) if eq.primitive.name in {"scan", "while"})
     equations[index] = equations[index].replace(invars=equations[index].invars[:-1])
     malformed = graph.replace(eqns=equations)
-    assert compare_jaxprs(malformed, malformed).status == Status.UNKNOWN
+    with pytest.raises(InvalidJaxprError):
+        compare_jaxprs(malformed, malformed)

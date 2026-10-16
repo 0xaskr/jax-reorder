@@ -8,7 +8,12 @@ import sympy as sp
 from jax import lax
 from jax._src import compiler, dispatch
 
-from jax_reorder import Status, compare_algebraic_jaxprs
+from jax_reorder import (
+    MathematicalUndecidedError,
+    Status,
+    UnsupportedJaxprError,
+    compare_algebraic_jaxprs,
+)
 from jax_reorder.algebra_symbolic import SymbolicBuilder
 from jax_reorder.algebra_transport import freeze
 
@@ -85,9 +90,10 @@ def test_guard_and_reduction_axis_mapping_must_match(failure):
         denominator = jnp.sum(numerator, axis=0 if failure == "sum_axis" else 1, keepdims=True)
         return jnp.where(~mask if failure == "guard" else mask, numerator / denominator, 0.0)
 
-    result, _ = compare_pv(probabilities, shape=(2, 2))
-    assert result.status == Status.UNKNOWN, result
-    assert "guarded_softmax_finite" not in result.rules
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_pv(probabilities, shape=(2, 2))
+    result = error.value
+    assert "guarded_softmax_finite" not in result.diagnostics["rules"]
 
 
 @pytest.mark.parametrize(
@@ -99,15 +105,17 @@ def test_guard_and_reduction_axis_mapping_must_match(failure):
     ],
 )
 def test_logits_require_proven_finiteness(transform):
-    result, _ = compare_pv(lambda x, m: guarded(transform(x), m))
-    assert result.status == Status.UNKNOWN, result
-    assert "guarded_softmax_finite" not in result.rules
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_pv(lambda x, m: guarded(transform(x), m))
+    result = error.value
+    assert "guarded_softmax_finite" not in result.diagnostics["rules"]
 
 
 def test_complex_tanh_poles_do_not_inherit_the_real_finiteness_rule():
-    result, _ = compare_pv(lambda x, m: guarded(jnp.abs(jnp.tanh(x)), m), dtype=jnp.complex64)
-    assert result.status == Status.UNKNOWN, result
-    assert "guarded_softmax_finite" not in result.rules
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_pv(lambda x, m: guarded(jnp.abs(jnp.tanh(x)), m), dtype=jnp.complex64)
+    result = error.value
+    assert "guarded_softmax_finite" not in result.diagnostics["rules"]
 
 
 @pytest.mark.parametrize("subtract", [False, True])
@@ -118,8 +126,8 @@ def test_complex_tanh_poles_keep_opaque_computation_partial(subtract):
 
     arg = signature((2,), jnp.complex64)
     graphs = jax.make_jaxpr(left)(arg), jax.make_jaxpr(jnp.real)(arg)
-    result = compare_algebraic_jaxprs(*graphs)
-    assert result.status == Status.UNKNOWN, result
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare_algebraic_jaxprs(*graphs)
 
 
 @pytest.mark.parametrize("subtract", [False, True])
@@ -136,9 +144,10 @@ def test_common_jit_cannot_hide_complex_tanh_poles(subtract):
 
     arg = signature((2,), jnp.complex64)
     graphs = jax.make_jaxpr(left)(arg), jax.make_jaxpr(right)(arg)
-    result = compare_algebraic_jaxprs(*graphs)
-    assert result.status == Status.UNKNOWN, result
-    assert result.backend_result.failure_kind == "unsupported_conversion"
+    with pytest.raises(UnsupportedJaxprError) as error:
+        compare_algebraic_jaxprs(*graphs)
+    result = error.value
+    assert result.failure_kind == "unsupported_conversion"
 
 
 @pytest.mark.parametrize("hidden", [False, True])
@@ -157,9 +166,10 @@ def test_complex_tanh_feedback_does_not_assume_finite_next_carry(hidden):
     graphs = tuple(
         jax.make_jaxpr(lambda z, erase=erase: run(z, erase))(arg) for erase in (False, True)
     )
-    result = compare_algebraic_jaxprs(*graphs)
-    assert result.status == Status.UNKNOWN, result
-    assert result.issues[0].path == "algebra.dtype"
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_algebraic_jaxprs(*graphs)
+    result = error.value
+    assert result.path == "algebra.dtype"
 
 
 @pytest.mark.parametrize("dtype", [jnp.float8_e4m3fn, jnp.float8_e4m3fnuz])
@@ -179,9 +189,10 @@ def test_padding_conversion_through_dtype_without_infinity_is_not_preserved(dtyp
     output = builder.graph(freeze(graph))[0]
     assert not output.source.finite
     assert "guarded_softmax_finite" not in builder.rules
-    result, _ = compare_pv(probabilities)
-    assert result.status == Status.UNKNOWN, result
-    assert "guarded_softmax_finite" not in result.rules
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_pv(probabilities)
+    result = error.value
+    assert "guarded_softmax_finite" not in result.diagnostics["rules"]
 
 
 @pytest.mark.parametrize("nonfinite", [complex(-np.inf, 0), complex(np.nan, 0)])
@@ -197,9 +208,10 @@ def test_nonfinite_complex_constant_cannot_escape_through_absolute_value(
         return x + (magnitude - magnitude if subtract else 0 * magnitude)
 
     graphs = jax.make_jaxpr(left)(signature((2,))), jax.make_jaxpr(lambda x: x)(signature((2,)))
-    result = compare_algebraic_jaxprs(*graphs)
-    assert result.status == Status.UNKNOWN, result
-    assert result.issues[0].path == "algebra.constant"
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_algebraic_jaxprs(*graphs)
+    result = error.value
+    assert result.path == "algebra.constant"
 
 
 @pytest.mark.parametrize("fill", [None, -jnp.inf, jnp.inf, jnp.nan])
@@ -236,13 +248,14 @@ def test_scan_constants_and_slices_keep_finiteness_but_carry_does_not():
             )(*args)
             for rewrite in (False, True)
         )
-        result = compare_algebraic_jaxprs(*graphs)
-        assert result.status == (Status.UNKNOWN if unsafe else Status.EQUIVALENT), result
-        if not unsafe:
-            assert "guarded_softmax_finite" in result.rules
+        if unsafe:
+            with pytest.raises(MathematicalUndecidedError) as error:
+                compare_algebraic_jaxprs(*graphs)
+            assert error.value.failure_kind == "condition_undecided"
         else:
-            # The first iteration may be finite; it does not authorize the next carry.
-            assert result.backend_result.failure_kind == "condition_undecided"
+            result = compare_algebraic_jaxprs(*graphs)
+            assert result.status == Status.EQUIVALENT
+            assert "guarded_softmax_finite" in result.rules
 
 
 def test_large_axis_does_not_increase_finiteness_work():
@@ -261,6 +274,7 @@ def test_internal_token_is_rejected_without_attribute_error():
         return x + x
 
     graphs = jax.make_jaxpr(left)(signature(())), jax.make_jaxpr(lambda x: 2 * x)(signature(()))
-    result = compare_algebraic_jaxprs(*graphs)
-    assert result.status == Status.UNKNOWN
-    assert result.issues[0].path == "algebra.shape"
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)) as error:
+        compare_algebraic_jaxprs(*graphs)
+    result = error.value
+    assert result.path == "algebra.shape"
