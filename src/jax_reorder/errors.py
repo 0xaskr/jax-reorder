@@ -1,4 +1,9 @@
-"""比较失败的分类异常；失败不作为正常等价结论返回。"""
+"""比较失败的分类异常；失败不作为正常等价结论返回。
+
+所有异常统一携带 stage、path、failure_kind 和可选诊断；边界用 at() 追加侧别
+或模式，调用方不需要解析异常字符串。非法图、未支持语义、契约不兼容、预算与
+超时、内部故障分别有独立类型，便于区分调用问题和实现缺口。
+"""
 
 
 class ComparisonError(ValueError):
@@ -8,6 +13,11 @@ class ComparisonError(ValueError):
     default_kind = "internal_error"
 
     def __init__(self, path, reason, *, stage=None, failure_kind=None, **diagnostics):
+        """保存位置、原因和分类，并把剩余关键字参数原样保留为诊断字段。
+
+        stage/failure_kind 省略时取类默认值；at() 重建异常依赖这些已保存字段，
+        因此异常字符串只是展示形式，不作为后续解析依据。
+        """
         self.path = path
         self.reason = reason
         self.stage = stage or self.default_stage
@@ -27,7 +37,7 @@ class ComparisonError(ValueError):
 
 
 class JaxprError(ComparisonError):
-    """图处理错误；保留原有基类以便调用方集中捕获图错误。"""
+    """图处理错误的基类；默认阶段为 structural，便于集中捕获非法或不支持图。"""
 
     default_stage = "structural"
 
@@ -45,7 +55,7 @@ class UnsupportedJaxprError(JaxprError):
 
 
 class CorrespondenceError(JaxprError):
-    """结构对应证据校验失败，属于比较器内部错误。"""
+    """原始图对应证据缺失或不保持绑定，按比较器内部错误处理。"""
 
 
 class ComparisonContractError(ComparisonError):

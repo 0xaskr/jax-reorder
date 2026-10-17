@@ -1,4 +1,14 @@
-"""从真实 jaxpr 查询 SymPy 标量恒等式，保留定义域与嵌套求和作用域。"""
+"""从真实 jaxpr 查询 SymPy 标量恒等式，保留定义域与嵌套求和作用域。
+
+覆盖：
+- 正例：exp 的乘法/除法/零点、常数乘除、嵌套 exp、相同部分函数相除、求和相除等恒等式
+  由可信 SymPy 直接判定；相同部分定义域的两侧仍能给出正结论。
+- 反例与拒绝：部分函数（0*log、x/x 等缺少非零证据）、非有限值、缺失的非零事实不能消项；
+  内外求和的作用域必须保持，不能因重名把外层读取捕获到内层。
+- 规模：大归约保持符号表示，不逐元素展开；定义域已知的 exp 可以与归约组合推理。
+- 前置条件：CPU 平台与 SymPy 1.14；helper 在比较期间 patch 掉编译与 primitive 执行，
+  因此这些结论不依赖 JAX 数值执行。
+"""
 
 from unittest.mock import patch
 
@@ -16,11 +26,14 @@ from jax_reorder import (
 
 
 def forbidden(*args, **kwargs):
+    """任何真实数组执行都应失败：本文件的结论只允许来自符号查询。"""
     raise AssertionError("symbolic comparison must not execute JAX")
 
 
 def compare(left, right, shape=(5,), **options):
+    """在禁止执行的环境里追踪两侧函数并做代数比较。"""
     value = jax.ShapeDtypeStruct(shape, jnp.float32)
+    # 先枚举设备，避免把“初始化后端”误判成执行。
     jax.devices()
     with (
         patch.object(compiler, "backend_compile_and_load", forbidden),

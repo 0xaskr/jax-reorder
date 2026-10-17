@@ -51,7 +51,11 @@ CONTEXT_FLAGS = (
 
 
 def _encoder():
-    """创建函数契约专用编码器；元数据中的嵌套图不在这个入口解释。"""
+    """创建函数契约专用编码器；接口元数据里出现图会直接失败。
+
+    函数契约保存 pytree 结构、静态值、变换顺序和抽象值，图由 jaxpr 比较
+    负责；这里出现 jaxpr 说明追踪边界已经丢失，不能当作可忽略的额外字段。
+    """
 
     def unsupported(_, path):
         """把误放进接口元数据的图转成可定位的不支持错误。"""
@@ -107,7 +111,9 @@ class ModeComparison:
     difference: str | None = None
     left: FunctionTrace | None = field(default=None, compare=False, repr=False)
     right: FunctionTrace | None = field(default=None, compare=False, repr=False)
+    # 仅在 auto 模式且结构比较为 different 后填充；结构模式保持 None。
     algebra: AlgebraComparison | None = None
+    # 等价来源：structural（完整图相同）或 algebraic（独立代数证明）。
     equivalence_kind: str | None = None
 
 
@@ -116,15 +122,22 @@ class FunctionComparison:
     """汇总全部请求模式，同时列出本次没有检查的模式。"""
 
     status: Status
+    # 每个已请求模式一项，顺序与请求顺序一致；失败的模式不会出现在这里。
     modes: tuple[ModeComparison, ...]
+    # 本次未请求的模式，按 MODES 的固定顺序列出，不能据此推断其结论。
     unverified_modes: tuple[str, ...]
     # 仅在请求编译且各模式两侧都编译成功时为 True，不表示已执行数值验证。
     cpu_compiled: bool
+    # 与 modes 一致：structural 或 algebraic；整体非等价时为 None。
     equivalence_kind: str | None = None
 
 
 def _context():
-    """编码版本、设备、当前 mesh 和已列入审查范围的配置快照。"""
+    """编码版本、设备、当前 mesh 和已列入审查范围的配置快照。
+
+    这些条件会影响生成的图和求导规则；任一项不同都说明两侧结论不可直接
+    合并，因此快照进入 FunctionTrace.context 参与比较，而不只用于诊断。
+    """
     # 每次追踪重新记录环境；版本、设备或精度配置不同的图不能直接合并比较结论。
     encoder = _encoder()
     values = jax.config.values
@@ -147,7 +160,12 @@ def _inexact(value):
 
 
 def _abstract(value, *, cotangent=False):
-    """把输入转换为追踪签名；请求余切时先采用对应的余切抽象类型。"""
+    """把输入抽象成追踪签名，请求余切时先转成对应的余切抽象类型。
+
+    结果只用于 make_jaxpr 的输入接口，不读取样本数值。构造后与原始抽象值
+    做完整编码比较，无法忠实保留属性时抛出 UnsupportedJaxprError，而不是
+    静默接受一个会在后续比较中丢失分片或布局的签名。
+    """
     aval = core.typeof(value)
     if cotangent:
         aval = aval.to_ct_aval()
@@ -182,6 +200,7 @@ def _prepare(function, args, kwargs, static_argnums, static_argnames, argnums):
 
     返回展平调用器、动态叶子的抽象签名、输入树、静态值及可微叶子索引。
     后续 JVP/VJP 只使用这些叶子索引，不再把原参数位置当作展平位置。
+    static_argnums/static_argnames/argnums 越界或指向静态参数时抛出 ValueError。
     """
     # 先按 Python 签名核对参数；补入默认值后，省略的静态关键字也能被记录。
     signature = inspect.signature(function)
@@ -315,6 +334,9 @@ def trace_function(
     # 求导模式返回（前向值，切线或余切），因此输出树也记录变换后的完整接口。
     # custom_vjp 的非法 JVP 可能先追踪出 custom_lin，直到执行时才抛错。
     # 这是 JAX 自身拒绝的变换，不应记录成比较器尚未支持一个普通原语。
+
+    # 参数容器里可能嵌套 call_jaxpr 或规则图，需要沿 tuple/list/dict 递归检查。
+    # 按对象身份去重，避免共享子图被重复扫描，也避免畸形参数环导致死循环。
     pending = [graph]
     seen = set()
     while pending:
@@ -352,9 +374,19 @@ def compare_function_traces(
     algebra_budget=10000,
     algebra_timeout=10.0,
 ) -> ModeComparison:
-    """先核对完整函数范围，再比较图；不能把不同上下文的追踪结果混为一谈。"""
+    """核对两侧契约一致后比较物化图，返回单个模式的结论。
+
+    追踪模式、上下文和 FunctionSignature 必须先一致，否则抛出
+    ComparisonContractError；不同上下文或不同输入签名下的图没有可比较性，
+    不能先比较图再补说明。equivalence="auto" 只在结构比较为 different 后
+    尝试代数证明。图比较固定使用 derivative_scope="primal"：函数入口已经
+    用公开变换展开实际一阶程序，不能从这次检查外推未请求的高阶规则。
+    比较阶段的 ComparisonError 会补上模式前缀后重新抛出。
+    """
     if equivalence not in ("auto", "structural"):
         raise ValueError("equivalence must be auto or structural")
+    # 结构模式不发起代数查询，也先校验预算和超时参数，使非法参数在入口
+    # 稳定报错，而不是随 equivalence 取值跳过检查。
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
     if left.mode != right.mode or left.context != right.context:
@@ -493,6 +525,8 @@ def compare_functions(
                 algebra_timeout=algebra_timeout,
             )
         )
+    # 汇总取最保守的状态：任一模式数学不等价即整体 inequivalent，否则任一
+    # 模式结构不同即 different。不能因为某个模式等价就忽略其他模式的差异。
     statuses = {result.status for result in results}
     status = (
         Status.INEQUIVALENT
@@ -503,6 +537,8 @@ def compare_functions(
     )
     kind = None
     if status == Status.EQUIVALENT:
+        # 只有全部请求模式都等价时才报告来源；algebraic 表示其中至少一个模式
+        # 依赖独立代数证明，而不是完整图结构相同。
         kind = (
             "algebraic" if any(r.equivalence_kind == "algebraic" for r in results) else "structural"
         )

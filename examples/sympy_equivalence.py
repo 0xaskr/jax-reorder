@@ -1,6 +1,9 @@
 """比较 exp(x + y) 与 exp(x) * exp(y)，追踪后直接采用 SymPy 数学结论。
 
 在仓库根目录运行：uv run python examples/sympy_equivalence.py
+预期结构比较为 different（两份代码的计算图不同），数学比较为 equivalent
+（信赖 SymPy 的实数恒等式判定）。脚本只做抽象追踪，不编译、不执行数值；
+结论限定在理想实数解释，不表示浮点逐位一致或误差很小。
 """
 
 import jax
@@ -10,14 +13,17 @@ from jax_reorder import Status, compare_functions
 
 
 def original(x, y):
+    """基准：只做一次 exp(x + y)。"""
     return jnp.exp(x + y)
 
 
 def rewritten(x, y):
+    """候选：拆成 exp(x) * exp(y)，数学等价但计算图不同。"""
     return jnp.exp(x) * jnp.exp(y)
 
 
 def main():
+    """断言结构不同、数学等价，并打印后端版本与逐输出查询记录。"""
     # 抽象签名足以追踪两份代码，无需构造输入数组或运行数值计算。
     spec = jax.ShapeDtypeStruct((8,), jnp.float32)
     report = compare_functions(original, rewritten, spec, spec, modes=("forward",), check_cpu=False)
@@ -29,6 +35,7 @@ def main():
     print("数学等价比较:", mode.status.value)
     print("等价类型:", mode.equivalence_kind)
 
+    # 结构不同是预期结果；只有数学后端给出约定结论才算通过，防止静默降级为结构比较。
     if mode.comparison.status != Status.DIFFERENT or mode.status != Status.EQUIVALENT:
         raise AssertionError(report)
     if mode.algebra is None or mode.algebra.backend_result is None:

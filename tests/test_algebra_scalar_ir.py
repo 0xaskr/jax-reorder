@@ -1,4 +1,17 @@
-"""用跨算子组合、索引反例和原图证据验收标量语义 IR，禁止逐元素展开。"""
+"""用跨算子组合、索引反例和原图证据验收标量语义 IR，禁止逐元素展开。
+
+覆盖：
+- 正例：完整 reshape 后求和与直接求和（多种 dtype，含零长度与标量 shape）；分块求和的
+  并集覆盖空块与单元素块；标量函数与 reshape/切片/转置交换；部分轴归约与多维块；视图
+  组合；forward/jvp/vjp 下 reshape+scan 的导数分别检查；broadcast 谓词保留长度为 1 的
+  源坐标。
+- 反例：求和域出现缺口、重叠、重复或跨步时绝不等于完整求和；输出位置与 shape 映射保持
+  可观测；前缀相消不能扩展部分函数的定义域。
+- 资源：大 shape 保持符号工作量并遵守预算（ComparisonBudgetError）。
+
+前置条件：CPU 平台与 SymPy 1.14；结论要求 ``equivalence_kind == "algebraic"``，不接受
+结构快路。有限组合不证明任意标量改写。
+"""
 
 import jax
 import jax.numpy as jnp
@@ -33,17 +46,20 @@ def equivalent(left, right, shape, dtype=jnp.float32):
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
 @pytest.mark.parametrize("shape", [(3, 4), (2, 1, 3), (0, 3), (3, 0), (), (1, 1)])
 def test_full_reshape_sum_uses_index_bijection(shape, dtype):
+    """展平 reshape 只是索引双射，与直接求和等价；零长度与标量 shape 也要成立。"""
     equivalent(jnp.sum, lambda x: jnp.sum(x.reshape(-1)), shape, dtype)
 
 
 @pytest.mark.parametrize("shape", [(5,), (3,), (5, 3), (5, 1, 2), (0, 3), (1, 3)])
 @pytest.mark.parametrize("cut", [0, 1, 2, 5])
 def test_partition_domain_union_keeps_empty_and_singleton_blocks(shape, cut):
+    """分块求和的域并集要精确覆盖整个输入；cut 取 0/1/2/5 覆盖空块与单元素块。"""
     equivalent(jnp.sum, lambda x: jnp.sum(x[:cut]) + jnp.sum(x[cut:]), shape)
 
 
 @pytest.mark.parametrize("function", [lambda x: x, jnp.sin, jnp.abs, lambda x: x * x + 2 * x])
 def test_reshape_flat_partition_composes_through_scalar_functions(function):
+    """标量函数逐元素应用于输入，因此可以与展平后的分块求和交换。"""
     equivalent(
         lambda x: jnp.sum(function(x)),
         lambda x: jnp.sum(function(x.reshape(-1)[:5])) + jnp.sum(function(x.reshape(-1)[5:])),
@@ -53,6 +69,7 @@ def test_reshape_flat_partition_composes_through_scalar_functions(function):
 
 @pytest.mark.parametrize("function", [jnp.sin, jnp.abs, lambda x: jnp.where(x > 1, x, -x)])
 def test_shape_maps_commute_with_scalar_calls(function):
+    """reshape/切片/转置与逐元素函数交换；三处分别检查索引映射方向。"""
     equivalent(lambda x: function(x).reshape(2, 6), lambda x: function(x.reshape(2, 6)), (3, 4))
     equivalent(lambda x: function(x)[1:3, 1:], lambda x: function(x[1:3, 1:]), (4, 5))
     equivalent(lambda x: function(x).T, lambda x: function(x.T), (3, 4))

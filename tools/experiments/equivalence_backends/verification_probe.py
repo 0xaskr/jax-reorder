@@ -1,9 +1,14 @@
-"""Symbolic SMT probes, with no JAX/model execution or random sampling.
+"""符号 SMT 探针：不执行 JAX/模型，也不做随机采样。
 
-Install z3-solver and cvc5 in an isolated environment, then run this file.
-Tensor reductions are explicitly encoded at contraction length 3. They are
-universal in their real-valued entries, not proofs for arbitrary tensor sizes.
-The encodings are written for this experiment; neither solver imports jaxpr.
+运行（隔离环境安装 z3-solver 与 cvc5，见
+docs/development-docs/equivalence-backends/verification.md）：
+  <隔离环境>/python tools/experiments/equivalence_backends/verification_probe.py \
+      --backend all --timeout-ms 3000
+
+对实数/整数/布尔表达式查询“是否存在反例”：unsat 证明编码等式，sat 给出
+具体模型，unknown 保留原因。张量归约显式按收缩长度 3 编码，只对符号元素
+普遍成立，不是任意 shape 的证明；求解器不读取 jaxpr，mask-to-zero 等
+编码也由实验提供。输出 JSON；--backend/--timeout-ms 控制后端范围与预算。
 """
 
 from __future__ import annotations
@@ -16,12 +21,24 @@ import time
 
 
 def run_backend(name: str, timeout_ms: int) -> dict:
-    """Ask whether a counterexample exists; unsat proves the encoded equality."""
+    """询问是否存在反例；unsat 证明编码等式，返回该后端的完整结果。
+
+    name 为 "z3" 或 "cvc5"，timeout_ms 为求解预算。返回 backend、version
+    与逐 case 记录（status/scope/assumptions/耗时，sat 时含 witness）。
+    导入缺失依赖直接抛错；不修改任何文件。
+    """
     api = importlib.import_module("z3" if name == "z3" else "cvc5.pythonic")
     version = importlib.metadata.version("z3-solver" if name == "z3" else "cvc5")
     results = []
 
     def check(case, left, right, assumptions=(), *, scope, budget=False):
+        """对单个 case 建求解器、加假设与“左右不等”查询并返回记录。
+
+        left/right 为待查表达式，assumptions 为域条件，scope 说明该编码
+        覆盖的语义范围，budget=True 时施加 1 资源单位限制以观察 unknown。
+        结果写入 results：unsat→equivalent，sat→inequivalent（含模型），
+        其余为 unknown 并记录原因。
+        """
         solver = api.Solver()
         solver.set("timeout" if name == "z3" else "tlimit-per", timeout_ms)
         if budget:
@@ -59,8 +76,8 @@ def run_backend(name: str, timeout_ms: int) -> dict:
         scaled_dot,
         scope="one arbitrary output of QK^T; contraction size 3; real entries",
     )
-    # Dot and broadcast-multiply/reduce are independently expanded from their
-    # standard finite-sum definitions. Reverse terms to require real algebra.
+    # dot 与 broadcast-multiply/reduce 按各自有限求和定义独立展开；反转
+    # token 顺序以要求实数代数（而非同序巧合）成立。
     p = api.Reals("p0 p1 p2")
     v = api.Reals("v0 v1 v2")
     dot_pv = sum(p[t] * v[t] for t in range(3))
@@ -72,8 +89,8 @@ def run_backend(name: str, timeout_ms: int) -> dict:
         scope="one arbitrary output of PV; token size 3; real entries",
     )
 
-    # E6 is deliberately a partial softmax lemma. The adapter must separately
-    # justify finite exp(x)>0 and masked exp(-inf)=0. No exp identity is assumed.
+    # E6 故意只编码部分 softmax 引理；适配器须另行证明有限 exp(x)>0 与
+    # 遮蔽 exp(-inf)=0，这里不假设任何 exp 恒等式。
     w0, w1, common_factor = api.Reals("w0 w1 common_factor")
     m0, m1 = api.Bools("mask0 mask1")
     a = api.If(m0, w0, 0)
@@ -167,8 +184,8 @@ def run_backend(name: str, timeout_ms: int) -> dict:
                     "reason": "no real exp semantic encoder in this Z3 probe",
                 }
             )
-        # A free exp function has more interpretations than the real exp.
-        # Its sat result cannot witness mathematical inequivalence of real exp.
+        # 自由 exp 函数比实数 exp 有更多解释；其 sat 不能作为数学不等价的
+        # 见证，因此 U1 保留 unknown。
         free_exp = api.Function("uninterpreted_exp", api.RealSort(), api.RealSort())
         solver = api.Solver()
         solver.add(free_exp(x + y) != free_exp(x) * free_exp(y))
@@ -194,6 +211,7 @@ def run_backend(name: str, timeout_ms: int) -> dict:
 
 
 def main() -> None:
+    """解析 backend/timeout 参数，逐个后端运行探针并打印 JSON 列表。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("z3", "cvc5", "all"), default="all")
     parser.add_argument("--timeout-ms", type=int, default=3000)

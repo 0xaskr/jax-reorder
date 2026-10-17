@@ -1,4 +1,16 @@
-"""固定上游 DeepSeek-V4.1-Flash mHC 层、AI 改写和完整来源证据。"""
+"""固定上游 DeepSeek-V4.1-Flash mHC 层、AI 改写和完整来源证据。
+
+覆盖：
+- 来源与尺寸：fixture 快照经 hash 校验，源码断言、manifest revision 和配置维度来自真实
+  上游文件，而不是手写常量。
+- 正例：原层与 post_matmul/post_blocked 两种代数改写候选在 float32/bfloat16、多个 profile
+  下 compare_functions 判 equivalent，并核对数值与 sinkhorn 上下文。
+- 反例：形状相同但转置错误、缩放错误、舍入方式错误的候选必须被拒绝并给出数值见证。
+- 资源：完整层代数证明受预算限制，超限抛 ComparisonBudgetError；符号结论与数值核对分开。
+- 前置条件：CPU 平台、业务标记（pytest -m business）与 tests/fixtures/deepseek_v41 快照；
+  该快照是上游文件的固定副本，不是运行中依赖。
+- 单层验收不能外推到整个模型或权重梯度。
+"""
 
 import ast
 

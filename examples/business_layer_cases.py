@@ -1,7 +1,10 @@
 """真实业务基准与 AI 直接编写的固定改写。
 
 运行：uv run python examples/business_layer_cases.py
-所有候选均为下方独立函数，源码与预判 hardcode；随机数只用于测试输入。
+也可用 --scenario 筛选场景、--trials/--seed 调整数值输入、--show-jaxpr 查看
+图、--report 保存 JSON。所有候选均为下方独立函数，源码与预判 hardcode；
+随机数只用于测试输入。每个候选先按预判检查图结论，再用独立 NumPy 参照核对
+base 数值；负例必须找到实际数值反例。采样不证明一般等价，也不能替代图判定。
 基准提取自 Apache-2.0 项目 pallas-kernel / SGLang-JAX，来源与配置见
 docs/development-docs/business-layer-cases.md，许可证见 examples/LICENSE.*。
 """
@@ -397,7 +400,11 @@ def router_numpy(hidden, kernel, bias):
 
 @dataclass(frozen=True)
 class Variant:
-    """AI 运行前预判；图标签与数值要求分别保存，不能由比较器生成真值。"""
+    """AI 运行前预判；图标签与数值要求分开保存，不能由比较器生成真值。
+
+    expected 是预期的图结论；numerical 为 "same" 时所有样本输出必须一致，
+    为 "witness" 时必须找到实际数值反例；reason 记录改写理由供报告使用。
+    """
 
     fn: Callable
     expected: Status
@@ -526,6 +533,7 @@ SCENARIOS = (
     ),
 )
 
+# 三组固定签名：FP32、BF16 与 FP32 小形状；每组另有两个边界样本。
 PROFILES = ("float32", "bfloat16", "small")
 
 
@@ -653,6 +661,7 @@ def serialize_arrays(value):
 
 def verify_variant(scenario, variant, profile, samples, *, show_jaxpr=False):
     """先读取固定预判，再做独立参照、精确图比较和两侧重排执行验证。"""
+    # 图结构只依赖输入签名，因此用第一个样本追踪一次；数值检查仍遍历全部样本。
     graphs = [jax.make_jaxpr(fn)(*samples[0]) for fn in (scenario.base, variant.fn)]
     comparison = compare_jaxprs(*graphs)
     assert comparison.status == variant.expected, (

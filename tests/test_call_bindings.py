@@ -1,4 +1,14 @@
-"""调用私有端口可同步置换，但不能改变外部位置、绑定或位置元数据。"""
+"""调用私有端口可同步置换，但不能改变外部位置、绑定或位置元数据。
+
+覆盖：
+- 正例：jit 调用的输入/输出端口同步置换（reordered / output_reordered）在 float32 与
+  bfloat16 下判 equivalent，对应关系可复核，原图文字不被修改，规范化图幂等且执行结果一致。
+- 反例：错误输入/输出绑定给出数值见证；伪造子区域结果槽位的证书被拒绝。
+- 保护：sharding/layout/donation 等调用元数据不能丢失或挪到另一个操作数；未知元数据显式
+  抛 UnsupportedJaxprError。
+- 前置条件：CPU 平台；example 中的调用固定单设备接口，不要求多设备。
+- 有限调用形状不证明所有私有端口排列。
+"""
 
 from dataclasses import replace
 

@@ -161,7 +161,11 @@ class Encoder:
             self.active.clear()
 
     def _encode(self, value: Any, path: str) -> Frozen:
-        """按语义类别分派；特殊类型须先于其通用容器或数组类型处理。"""
+        """按已核对的类型适配规则分派；每个分支保存足以区分语义的完整字段。
+
+        已审查描述符的子类、未知容器类型和非 JAX 模块的数据类都会被显式拒绝，
+        不提供 repr 或显示文本回退。
+        """
         # 已审查描述符的子类可能新增语义字段，不能只编码基类已知字段。
         exact_types = (
             core.JaxprEqnContext,

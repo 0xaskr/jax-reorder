@@ -1,4 +1,18 @@
-"""把旧用例已证明结构等价的 IR 成对送入代数层，检验蕴含关系。"""
+"""把旧用例已证明结构等价的 IR 成对送入代数层，检验蕴含关系。
+
+覆盖：
+- 正例：lax_cases 中全部固定原语用例（182 组 IR）与其结构规范化结果成对进入代数入口，
+  必须由已有结构证据直接判 equivalent；同时 monkeypatch 掉数学 worker，确认结构直通不会
+  调用 SymPy。
+- 边界：30 次平方的巨大多项式与自身比较时，即使 algebra_budget=1 也由结构证据通过，说明
+  结构蕴含不受代数展开资源限制。
+- 函数入口：forward/jvp/vjp 三个模式各自保留 structural 依据，小预算不影响结论。
+- 反例与拒绝：篡改直通证据的输入/输出端口、换掉源图、或提供空证据时，独立校验器抛
+  CorrespondenceError。
+
+前置条件：与原语清单相同的 CPU 环境；不涉及多设备或上游快照。
+有限原语对不证明任意结构等价的程序都能直通。
+"""
 
 from dataclasses import replace
 
@@ -27,10 +41,12 @@ def test_primitive_structural_pair_bypasses_mathematical_queries(case, monkeypat
     assert structural.status == Status.EQUIVALENT, structural
 
     def forbidden(*args, **kwargs):
+        """结构证据必须先于代数：任何进入独立 SymPy worker 的调用都应失败。"""
         raise AssertionError("structural proof must not invoke the mathematical worker")
 
     from jax_reorder import algebra_trusted
 
+    # 替换 worker 入口，保证下面即使预算极小也不会走到数学查询。
     monkeypatch.setattr(algebra_trusted, "isolated_compare", forbidden)
     result = compare_algebraic_jaxprs(original, normalized.jaxpr, algebra_budget=1)
     assert result.status == Status.EQUIVALENT, result
@@ -92,6 +108,7 @@ def test_structural_correspondence_is_independently_checked(change):
     assert result.status == Status.EQUIVALENT, result
     proof = result.correspondence
     other = graph
+    # 依次破坏输入端口顺序、输出端口顺序、源图身份和证据本身。
     if change == "inputs":
         proof = replace(proof, inputs=(1, 0))
     elif change == "outputs":

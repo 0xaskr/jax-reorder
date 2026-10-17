@@ -1,6 +1,8 @@
 """手动验证图比较与重排：uv run python examples/check_correctness.py。
 
 可修改 original、各候选函数和 make_inputs 来测试自己的计算。
+选项：--trials 每个案例的数值样本数，--seed 为 NumPy 随机种子，
+--show-jaxpr 打印原图、BFS 编号和重排后的图；任一案例失败时退出码为 1。
 数值采样是辅助检查；图不等价也可能在所有这些样本上数值相同。
 """
 
@@ -26,7 +28,8 @@ def original(x, weight, bias):
 
 
 def reordered(x, weight, bias):
-    # 正例：先算独立的 bias 广播，操作数及依赖关系保持不变。
+    """正例：只把独立 bias 广播提前。"""
+    # 先算独立的 bias 广播，操作数及依赖关系保持不变。
     expanded = lax.broadcast_in_dim(bias, (x.shape[0], weight.shape[1]), (1,))
     projected = lax.dot_general(x, weight, (((1,), (0,)), ((), ())))
     activated = lax.tanh(projected)
@@ -34,7 +37,7 @@ def reordered(x, weight, bias):
 
 
 def changed(x, weight, bias):
-    # 负例：偏置加法改为减法，图和数值结果都不同。
+    """负例：偏置加法改为减法，图和数值结果都不同。"""
     projected = lax.dot_general(x, weight, (((1,), (0,)), ((), ())))
     expanded = lax.broadcast_in_dim(bias, (x.shape[0], weight.shape[1]), (1,))
     activated = lax.tanh(projected)
@@ -42,7 +45,8 @@ def changed(x, weight, bias):
 
 
 def swapped_operands(x, weight, bias):
-    # 本轮不使用交换律：样本数值相同，图仍应判断为 different。
+    """负例：交换加法操作数；本轮不使用交换律，图应判为 different。"""
+    # 样本数值相同，但操作数位置属于图语义。
     projected = lax.dot_general(x, weight, (((1,), (0,)), ((), ())))
     expanded = lax.broadcast_in_dim(bias, (x.shape[0], weight.shape[1]), (1,))
     activated = lax.tanh(projected)
@@ -50,7 +54,8 @@ def swapped_operands(x, weight, bias):
 
 
 def unused_branch(x, weight, bias):
-    # 完整图保留未使用分支，增加方程会产生结构差异。
+    """负例：保留未使用分支；额外方程使完整图产生结构差异。"""
+    # 即使 cos 结果未被使用，它仍属于完整图的一部分。
     lax.cos(x)
     return original(x, weight, bias)
 
@@ -74,6 +79,9 @@ class Case:
     same_samples: bool
 
 
+# 四个固定预期：一个换序正例，以及三种不同的负例。
+# Case.expected 是图比较标签，same_samples 表示样本输出是否也应一致。
+# 后两项在图不同的同时采样输出相同，用于区分结构结论与数值证据。
 CASES = (
     Case("独立定义换序", reordered, Status.EQUIVALENT, True),
     Case("加法改成减法", changed, Status.DIFFERENT, False),

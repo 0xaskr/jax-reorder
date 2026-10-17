@@ -1,4 +1,15 @@
-"""真实多 CPU 通信边界的输入输出同步置换与错误绑定。"""
+"""真实多 CPU 通信边界的输入输出同步置换与错误绑定。
+
+覆盖：
+- 正例：shard_map 内 psum/pmax 的输入形参与输出结果同步置换（reordered / reordered_again）
+  判 equivalent，对应关系可复核、规范化幂等且执行结果一致。
+- 反例：错误输入或输出绑定判 different 并给出数值见证。
+- 拒绝路径：shard_map 的未知接口元数据显式抛 UnsupportedJaxprError。
+
+前置条件：需要 2 个逻辑 CPU 设备（conftest.py 的 XLA_FLAGS）；setup fixture 会构造真实
+mesh，因此这里比较的是实际通信接口，而不是伪造的私有参数。
+只覆盖单进程 2 设备的有限组合。
+"""
 
 from functools import partial
 

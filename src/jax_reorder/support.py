@@ -33,7 +33,7 @@ def public_primitives() -> dict[core.Primitive, tuple[str, ...]]:
 def supported_primitive_identities() -> frozenset[core.Primitive]:
     """收集当前环境中可进入语义校验流程的原语身份。
 
-    集合在每次创建规范化器时获取，以包含追踪时已加载的 lax 内部模块。
+    每次创建规范化器或复核对应证据时重新获取，以包含追踪时已加载的 lax 内部模块。
     同名自定义 Primitive 不会自动匹配，避免通过名称冒充受支持的原语。
     """
     # dict 迭代得到原语对象，先以公开导出作为支持身份集合的起点。

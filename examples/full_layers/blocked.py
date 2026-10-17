@@ -1,4 +1,11 @@
-"""原始硬件路径的可重放边界探测；拒绝结果不计入等价通过数。"""
+"""原始硬件路径的可重放边界探测；拒绝结果不计入等价通过数。
+
+针对 Pallas absorbed MLA、Wan USP/Flash cross attention 与 megablox GMM
+EPMoE，加载未经改写的原内核与后端，记录比较器的 unknown 原因以及 CPU 的
+实际编译/追踪拒绝点。这里不启用替代 interpret（EPMoE 的 interpret 是原
+源码的 CPU 分支），也不把“可执行”当作“可比较”。入口由
+evidence.verify_boundaries 调用，最终经 runner --supplemental 报告。
+"""
 
 import abc
 import functools
@@ -20,10 +27,16 @@ from .upstream import classes
 
 @functools.cache
 def mla_dependencies():
+    """加载 absorbed MLA 的真实 Pallas 内核、后端、pool 与 decoder 依赖。
+
+    返回 SimpleNamespace；首次调用执行已校验文件并缓存。内核文件按原
+    AST 整体执行，不改写或替换计算；只注入后端构造实际读取的符号。
+    """
     # 原内核只有 JAX/Pallas 标准导入；直接执行整个已校验文件，不改写 AST。
     name = "sgl_jax.srt.kernels.mla.v2.kernel"
     kernel = types.ModuleType(name)
     exec(compile(source("kernels/mla/v2/kernel.py"), name, "exec"), kernel.__dict__)
+    # 后端、metadata 与 pool 均来自同一锁定快照，维度保持原模型值。
     path = "layers/attention/mla_backend.py"
     metadata = load(
         path,
@@ -46,6 +59,7 @@ def mla_dependencies():
     pool = load(
         pool_path,
         "MLATokenToKVPool",
+        # 复用已加载 MHA pool 的基类，保证与真实 KV 池实现同一来源。
         KVCache=classes().KVPool.__bases__[0],
         register_pytree_node_class=jax.tree_util.register_pytree_node_class,
         _get_kv_zero_allocator=load(
@@ -55,6 +69,7 @@ def mla_dependencies():
         GB=1024**3,
     )
     glm_path = "models/glm5_moe.py"
+    # 完整 Decoder 复用同一 Glm5Attention/RMSNorm；MLP 走非融合实现。
     decoder = load(
         glm_path,
         "Glm5DecoderLayer",
@@ -69,6 +84,10 @@ def mla_dependencies():
 
 @contextmanager
 def mla_original_imports():
+    """把已执行的 MLA 内核模块临时注册到 sys.modules，退出时恢复。
+
+    原后端在函数内部按模块名 import 内核；副作用仅限进程内模块表。
+    """
     kernel = mla_dependencies().kernel
     previous = sys.modules.get(kernel.__name__)
     sys.modules[kernel.__name__] = kernel
@@ -86,10 +105,13 @@ def glm5_absorbed(mesh, *, decoder=False, mode="DECODE"):
 
     正常 Pallas lowering 不启用 interpret，也不将内核换成 NumPy/普通 JAX。
     权重、hidden 与 KV 状态仍是动态输入；本函数用于证明 CPU 的实际拒绝点。
+    decoder=True 时构造完整 Glm5DecoderLayer（非 MoE 层），否则只构造
+    Glm5Attention。返回 (run, args)，run 每次调用重建 metadata/pool/module。
     """
     deps = mla_dependencies()
     if decoder:
         cfg = types.SimpleNamespace(
+            # 配置沿用固定快照的 head/LoRA 维度；只缩小 hidden/intermediate。
             hidden_size=8,
             num_attention_heads=2,
             num_key_value_heads=1,
@@ -101,6 +123,7 @@ def glm5_absorbed(mesh, *, decoder=False, mode="DECODE"):
             _sgl_use_fused_mlp=False,
         )
         model = deps.decoder(cfg, mesh, dtype=jnp.bfloat16)
+        # 确认走 absorbed MHA 且不是 MoE 层，确保探测目标明确。
         assert model.self_attn.use_absorbed and not model.is_moe_layer
     else:
         model = classes().Glm5Attention(
@@ -120,6 +143,7 @@ def glm5_absorbed(mesh, *, decoder=False, mode="DECODE"):
     pool = deps.pool(256, 128, jnp.bfloat16, 512, 64, 1, mesh)
     _, pool_meta = pool.tree_flatten()
     backend = deps.backend(
+        # 显式 block/VMEM 参数避免依赖 TPU 自动调参；数值随快照固定。
         num_attn_heads=2,
         kv_lora_rank=512,
         qk_nope_head_dim=192,
@@ -133,6 +157,7 @@ def glm5_absorbed(mesh, *, decoder=False, mode="DECODE"):
     )
 
     def run(weights, hidden, positions, cache, lengths, pages, q_lens, kv_lens, distribution):
+        """用本次动态参数重建后端 metadata/pool/module，再执行原始层。"""
         # 每次调用都重建原 metadata/pool，避免跨追踪保留动态状态。
         # NNX Module 对象需经自己的构造逻辑初始化；后端的静态配置可共享，
         # 用原 tree_unflatten 复原包含本次动态 metadata 的后端。
@@ -171,7 +196,12 @@ def glm5_absorbed(mesh, *, decoder=False, mode="DECODE"):
 
 @contextmanager
 def _original_modules(paths):
-    """仅给完整原文件建立导入命名空间，结束时还原；不注入计算替代函数。"""
+    """仅给完整原文件建立导入命名空间，结束时还原；不注入计算替代函数。
+
+    paths 为快照内相对路径；按原路径生成 sgl_jax.srt.* 模块名并在
+    sys.modules 中临时注册（含缺失的父包），退出时按逆序还原。副作用仅限
+    进程内模块表，内核代码本身按原文执行。
+    """
     saved = {}
     modules = {}
     try:
@@ -201,6 +231,12 @@ def _original_modules(paths):
 
 @contextmanager
 def cross_attention(mesh):
+    """加载 Wan 的 USP/Flash cross attention 原始调用链。
+
+    paths 为原工具、调度与 Flash 内核文件；上下文产出 (run, args)，run
+    执行原始 WanT2VCrossAttention。该路径最终落到 Pallas，用于记录 CPU
+    边界而不是替换注意力核心。副作用是临时模块表，退出时恢复。
+    """
     paths = (
         "utils/jax_utils.py",
         "multimodal/kernels/tuned_block_sizes.py",
@@ -242,6 +278,7 @@ def cross_attention(mesh):
         weights, tree = jax.tree.flatten(params)
 
         def run(weights, hidden, context):
+            """用动态权重重建原始 WanT2VCrossAttention 并执行 cross attention。"""
             m = nnx.merge(graphdef, tree.unflatten(weights), rest)
             return m(hidden, context, None)
 
@@ -257,6 +294,12 @@ def cross_attention(mesh):
 
 @contextmanager
 def original_moe(mesh):
+    """加载 megablox GMM 与原始 EPMoE，构造 2 专家、top-1 的 CPU 路径。
+
+    CPU 上原后端自动使用 interpret 分支，因此该路径可执行但仍因
+    pallas_call 无法比较。上下文产出 (run, args)；权重与输入使用固定
+    非对称值，便于 oracles.moe 逐专家独立核对。退出时恢复模块表。
+    """
     paths = (
         "utils/jax_utils.py",
         "kernels/gmm/megablox_gmm_kernel/common.py",
@@ -296,6 +339,7 @@ def original_moe(mesh):
         weights, tree = jax.tree.flatten(params)
 
         def run(weights, hidden, gate, indices):
+            """用动态权重重建原 EPMoE；hidden/gate/indices 与上游接口一致。"""
             return nnx.merge(graphdef, tree.unflatten(weights), rest)(hidden, gate, indices)
 
         rng = np.random.default_rng(6500)

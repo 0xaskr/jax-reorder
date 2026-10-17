@@ -2,6 +2,8 @@
 
 可达部分的 BFS 编号固定，未使用部分仍与其共享输入、常量和生产者。
 摘要不作为相等证据：搜索比较完整标签和连接，最终还有原图双射校验。
+本模块只生成排列和重写后的 Graph，不判定等价；结构比较与对应证据由
+canonical 与 correspondence 完成。
 """
 
 import dataclasses
@@ -18,7 +20,11 @@ DEFAULT_SEARCH_BUDGET = 10_000
 
 
 def _variables(value, transform):
-    """只改当前区域的编码变量引用，子 Graph 保持自身的局部命名空间。"""
+    """只改当前区域的编码变量引用，子 Graph 保持自身的局部命名空间。
+
+    transform 接收 Encoder 生成的规范值引用并返回新引用；普通字符串和数组
+    内容不会被当成变量标签。
+    """
     # ready=False 展开子项，ready=True 收集合成；不进入子 Graph 的局部变量空间。
     pending, values = [(False, value)], []
     while pending:
@@ -46,6 +52,7 @@ def _variables(value, transform):
 class _KeyRequest:
     """排序键的子任务占位符，让模板只展开一层，由工作栈继续计算子键。"""
 
+    # 待展开的子值；order_key 的工作栈会为它单独计算键并回填。
     value: object
 
 
@@ -54,6 +61,7 @@ def order_key(value, *, cache=None):
 
     类型/Primitive/PRNG 实现原本按身份区分，最后的身份项仅打破同名对象
     的平局。这是进程内规范表示，不是可跨环境持久化的序列化格式。
+    cache 按对象身份复用已算出的键，并保留原对象以防 id 被回收后重用。
     """
     # 工作栈先处理子键再合成父键；无序集合排序，有序元组维持原元素位置。
     pending, values = [("key", value)], []
@@ -119,10 +127,13 @@ def _key_template(value):
         return (
             8,
             _KeyRequest(type(value)),
+            # 与数据类自身的相等契约一致，只纳入 compare=True 的语义字段。
             tuple(
                 _KeyRequest(getattr(value, f.name)) for f in dataclasses.fields(value) if f.compare
             ),
         )
+    # 没有排序适配的类型必须显式拒绝，不能用 repr 或对象 id 兜底，
+    # 否则未知语义会被悄悄当成可比较的规范键。
     raise UnsupportedJaxprError("graph.search", f"no ordering adapter for encoded {type(value)}")
 
 
@@ -131,7 +142,8 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
 
     rooted_nodes/rooted_constants 是已固定前缀的长度。搜索先按语义标签分组，
     再用连接细化；仍有歧义时逐个拆分候选组，选取完整证书最小的排列。
-    返回两组“新位置 → 旧索引”，分别对应计算节点和常量绑定。
+    返回两组“新位置 → 旧索引”，分别对应计算节点和常量绑定，供 reorder_form
+    重写连接；预算按探索状态而不是节点数计数，超限时整体失败。
     """
     n, nc = len(graph.nodes), len(graph.constants)
     # 搜索中把常量绑定也当作顶点：计算节点占 [0, n)，常量占 [n, n + nc)。
@@ -227,7 +239,8 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
         cells = defaultdict(list)
         for i, color in enumerate(colors):
             cells[color].append(i)
-        # 按颜色选择下一组歧义，而不是按原方程列表中最早出现的节点选择。
+        # 按颜色选择下一组歧义，而不是按原方程列表中最早出现的节点选择；
+        # 颜色编号来自标签排序，搜索顺序因此不受原始索引影响。
         ambiguous = next((cell for _, cell in sorted(cells.items()) if len(cell) > 1), None)
         if ambiguous is None:
             # 每个顶点已有唯一编号，才能构造包含全部标签和连接的完整比较证书。
@@ -282,7 +295,11 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
 
 
 def reorder_form(graph, nodes, constants):
-    """将完整图中的连接统一改编号，保持结果端口和共享次数。"""
+    """按排列重写完整图中的全部连接，保持结果端口和共享次数。
+
+    nodes/constants 是“新位置 → 旧索引”的排列，通常来自 canonical_order。
+    返回新的 Graph，不修改输入，也不重新判断语义或删除未使用节点。
+    """
     # 反转排列得到“旧索引 → 新编号”，所有值引用和顺序边必须一起改编号。
     node_ids = {old: new for new, old in enumerate(nodes)}
     constant_ids = {old: new for new, old in enumerate(constants)}

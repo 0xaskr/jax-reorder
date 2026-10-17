@@ -1,7 +1,8 @@
 """独立 NumPy 参照：不调用上游 forward、AI 候选或 jaxpr 比较器。
 
 矩阵与卷积累加使用较高精度，层边界按真实输出 dtype 舍入。这里的容差
-检查是数值证据；图是否相等仍必须精确比较，不能由 allclose 代替。
+检查是数值证据；图是否相等仍必须精确比较，不能由 allclose 代替。未登记
+的家族直接报错，避免用“看起来对”的公式补齐参照。
 """
 
 import itertools
@@ -10,12 +11,18 @@ import numpy as np
 
 
 def array(value):
+    """取出 NNX/Array 的值并转成 NumPy 数组；兼容带 get_value 的包装类型。"""
     if hasattr(value, "get_value"):
         value = value.get_value()
     return np.asarray(value)
 
 
 def act(x, kind):
+    """按家族名称独立实现激活函数，先升到 float64 再回输入 dtype。
+
+    kind 支持 silu、quick（1.702 缩放 sigmoid）、sigmoid 与 tanh 近似
+    gelu；未知名称抛出 ValueError，避免静默回退到其他激活。
+    """
     full = x.astype(np.float64)
     if kind == "silu":
         out = full / (1 + np.exp(-full))
@@ -31,6 +38,11 @@ def act(x, kind):
 
 
 def dense(layer, x):
+    """独立实现 LinearBase/NNX 线性层：float64 累加后按声明 dtype 舍入。
+
+    layer 提供 weight 或 kernel、可选 bias；LinearBase 用 params_dtype，
+    NNX 路径按输入/权重共同类型计算。返回与上游输出同 shape/dtype。
+    """
     kernel = array(layer.weight if hasattr(layer, "weight") else layer.kernel)
     # LinearBase 显式请求参数 dtype；NNX 路径按输入/权重共同类型计算。
     dtype = (
@@ -45,17 +57,24 @@ def dense(layer, x):
 
 
 def product(a, b):
+    """逐元素乘积，在 float64 计算后回到两个输入的共同 dtype。"""
     return (a.astype(np.float64) * b.astype(np.float64)).astype(np.result_type(a, b))
 
 
 def norm(layer, x, weight):
+    """GatedRMSNorm/QK norm 的 RMS 归一化（无中心化），返回加权结果。"""
     full = x.astype(np.float64)
     inverse = 1 / np.sqrt(np.sum(full * full, axis=-1, keepdims=True) / x.shape[-1] + layer.epsilon)
     return full * inverse * array(weight).astype(np.float64)
 
 
 def conv(layer, x, padding):
-    """逐位置求和的独立 NHWC/NDHWC 卷积，不复用 lax 或 JAX 编译结果。"""
+    """逐位置求和的独立 NHWC/NDHWC 卷积，不复用 lax 或 JAX 编译结果。
+
+    layer 提供 kernel/bias；x 为 [N, *spatial, C]；padding 为每个空间维的
+    (low, high)。返回与上游同 shape/dtype 的输出。卷积与 bias 分两步按
+    真实 dtype 舍入，保留低精度计算边界。
+    """
     kernel, bias = array(layer.kernel), array(layer.bias)
     dims = kernel.ndim - 2
     padded = np.pad(x.astype(np.float64), ((0, 0), *padding, (0, 0)))
@@ -80,6 +99,7 @@ def conv(layer, x, padding):
 
 
 def group_norm(layer, x):
+    """GroupNorm 独立实现：按组统计均值/方差，再应用 scale/bias。"""
     groups = layer.num_groups
     full = x.astype(np.float64).reshape(*x.shape[:-1], groups, -1)
     axes = (*range(1, full.ndim - 2), full.ndim - 1)
@@ -91,7 +111,12 @@ def group_norm(layer, x):
 
 
 def reference(spec, m, *inputs):
-    """依据层的数学定义及 dtype 边界进行独立计算，拒绝未登记家族。"""
+    """依据层的数学定义及 dtype 边界进行独立计算，拒绝未登记家族。
+
+    spec 提供 family；m 为原始层实例，只读取其参数与配置，不调用 forward。
+    *inputs 为与上游接口一致的输入。返回与上游输出 pytree 对应的 NumPy
+    结果；未登记 family 抛出 ValueError，不能静默返回近似值。
+    """
     xs = [array(x) for x in inputs]
     x = xs[0]
     family = spec.family

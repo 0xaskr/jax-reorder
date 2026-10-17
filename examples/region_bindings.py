@@ -1,4 +1,11 @@
-"""循环捕获槽位的固定正反例；全部候选由 AI 手写，不生成改写源码。"""
+"""循环捕获槽位的固定正反例；全部候选由 AI 手写，不生成改写源码。
+
+运行：uv run pytest tests/test_region_bindings.py -q
+本模块没有独立入口，函数由测试导入。scan/while 的捕获实参与形参、carry 及
+xs/ys 角色允许同步置换，外部函数输入输出顺序固定；负例分别交换实际输入或
+误用同 dtype 参数，因此必须判为 different。scan 组覆盖普通捕获与父图生产者
+捕获；while 组覆盖单区域捕获以及 condition/body 两个区域同时调整。
+"""
 
 import jax.numpy as jnp
 from jax import lax
@@ -63,6 +70,7 @@ def scan_producers_original(x, scale, gate, steps=3):
 
 
 def scan_producers_reordered(x, scale, gate, steps=3):
+    """正例：父图生产者的定义顺序改变，捕获值本身及子图连接关系不变。"""
     shifted = gate + 0.25
     projected = x * scale
 
@@ -76,6 +84,8 @@ def scan_producers_reordered(x, scale, gate, steps=3):
 
 
 def while_original(x, scale, gate, steps=3):
+    """基准：while body 捕获 x*scale 与 gate 两个外部值，再累加到 carry。"""
+
     def body(state):
         index, carry = state
         a = jnp.sin(x * scale)
@@ -86,6 +96,8 @@ def while_original(x, scale, gate, steps=3):
 
 
 def while_reordered(x, scale, gate, steps=3):
+    """正例：body 内先算 cos 再算 sin，捕获顺序改变、实际绑定不变。"""
+
     def body(state):
         index, carry = state
         b = jnp.cos(gate)
@@ -96,6 +108,8 @@ def while_reordered(x, scale, gate, steps=3):
 
 
 def while_wrong_source(x, scale, gate, steps=3):
+    """反例：cos 改读 x、sin 改读 gate*scale，捕获槽位的实际来源改变。"""
+
     def body(state):
         index, carry = state
         b = jnp.cos(x)
@@ -106,6 +120,8 @@ def while_wrong_source(x, scale, gate, steps=3):
 
 
 def while_wrong_scale(x, scale, gate, steps=3):
+    """反例：同 dtype 的 scale/gate 互换，不能因类型相同而视为可互换。"""
+
     def body(state):
         index, carry = state
         b = jnp.cos(scale)
@@ -136,6 +152,7 @@ def while_both_regions_original(x, scale, gate, limit, bound):
 
 
 def while_both_regions_reordered(x, scale, gate, limit, bound):
+    """正例：condition 与 body 的捕获顺序同步调整，两个区域接口保持一致。"""
     shifted = gate + 0.25
     projected = x * scale
 

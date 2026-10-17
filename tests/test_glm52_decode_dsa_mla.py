@@ -1,4 +1,15 @@
-"""只追踪 GLM-5.2 核心的 jaxpr，检查支持结果与能力缺口，不运行 layer。"""
+"""只追踪 GLM-5.2 核心的 jaxpr，检查支持结果与能力缺口，不运行 layer。
+
+覆盖：
+- 来源与用例：固定源码与“5 正 + 5 负”手工核心用例；签名与核心输出契约在不分配数组的
+  前提下核对。
+- 正例：完整图包含 dsa/mla 且不含 Pallas；两处 schedule 变化位于核心循环内部且结构等价；
+  其余 8 个核心改写证明有限改动，未证明的缺口如实报告。
+- 反例：负例必须得到数学不等价结果；错误接受优先于比较错误；比较错误使 CLI 退出码非零。
+- CLI：只写 jaxpr 与缺口报告，禁止编译/执行（fixture 拦截 compiler 与 dispatch）。
+- 前置条件：业务标记（pytest -m business）、CPU 平台、固定上游 GLM-5.2 源码快照。
+- 只追踪核心 jaxpr，不代表完整 layer 或 GPU/TPU 行为。
+"""
 
 import ast
 import hashlib

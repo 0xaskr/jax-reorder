@@ -1,4 +1,15 @@
-"""公共比较异常、worker 失败传输和三种成功结论的契约。"""
+"""公共比较异常、worker 失败传输和三种成功结论的契约。
+
+覆盖：
+- 三种成功结论：结构等价、数学等价、数学不等价正常返回；不再存在 Status.UNKNOWN；
+  ``different`` 只是结构差异，不宣称数学不等价。
+- 异常通道：未识别 effect、函数契约不符（auto 与 structural 两种模式）、None 查询、预算
+  失败、内部错误、worker 启动/崩溃/损坏响应都抛出带阶段的分类异常，不能被错标成
+  unsupported；成功载荷不能编码失败；结构实现故障不能伪装成“不支持输入”。
+- 恢复性：远端内部错误保留原始 traceback，且后续请求仍可继续。
+- 前置条件：CPU 平台；worker 失败通过 monkeypatch 模拟，不依赖真实资源故障。
+- 这些是异常契约回归，不评估数学判定的完备性。
+"""
 
 import pickle
 from types import SimpleNamespace

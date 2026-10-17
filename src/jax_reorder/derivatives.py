@@ -2,6 +2,7 @@
 
 普通调用、规则图和残差实际连接均参与比较；运行时参数和 callable 不变。
 这里执行 JAX 延迟追踪接口，不按 callable 名称或 Python 对象身份判断等价。
+本模块只物化注册的一阶规则；更高阶展开由调用方显式追踪，不在此递归证明。
 """
 
 from functools import partial
@@ -40,7 +41,12 @@ def _differentiable(aval):
 
 
 def _activations(avals, symbolic, *, include_float0=False):
-    """列出显式种子掩码；symbolic VJP 的 float0 也能作为显式余切传入。"""
+    """列出需要物化的激活模式；每个模式是对全部叶子的一位布尔掩码。
+
+    普通模式只有一个全激活组合；symbolic 模式枚举非空子集，因为未激活
+    叶子会作为 SymbolicZero 传入，用户规则可能据此走不同分支。include_float0
+    让 VJP 输出余切把 float0 也视为可显式传入的叶子。
+    """
     # 输入切线只激活可微叶子；输出余切需区别显式 float0 与 SymbolicZero，
     # 即使两者数值都是零，用户 bwd 也可以依据其类型选择不同规则。
     indices = [i for i, aval in enumerate(avals) if include_float0 or _differentiable(aval)]
@@ -148,6 +154,8 @@ def _jvp_rules(params, equation, parent):
         graph, constants, out_zeros = params["jvp_jaxpr_fun"].call_wrapped(*(not a for a in active))
         bindings = _constant_bindings(constants, equation, parent)
         n = len(primal.invars)
+        # 规则图输入必须是 [捕获常量, 普通原值, 活跃切线]；数量不符说明锁定
+        # 版本的 thunk 接口假设已变化，继续按位置拼接会错配绑定。
         if len(graph.invars) != len(constants) + len(avals) + sum(active):
             raise InvalidJaxprError("derivative", "invalid custom JVP rule input count")
 
@@ -181,6 +189,8 @@ def _vjp_rules(params, equation, parent):
     # nc 是 call_jaxpr 输入中的捕获前缀长度，不是该图 constvars 的长度。
     nc = params["num_consts"]
     activations = _activations(primal.in_avals[nc:], params["symbolic_zeros"])
+    # 没有可微输出时 _activations 返回空；VJP 仍要物化一次反向规则
+    # （整数余切按显式零数组传入），因此下面用全零模式兜底而不是跳过 bwd。
     cotangents = _activations(
         primal.out_avals, params["symbolic_zeros"], include_float0=params["symbolic_zeros"]
     ) or ((False,) * len(primal.out_avals),)
@@ -199,6 +209,8 @@ def _vjp_rules(params, equation, parent):
         # JAX 的 memoized thunk 只缓存图，不恢复 out_trees 的辅助 store。
         # 不同 symbolic 模式可产生不同 residual 树；再次物化必须重新执行
         # 已审查的原 thunk，否则会把上一个模式的透传表配给当前图。
+        # 只接受由 _memoize 包裹、且没有附加 transform/params 的 WrappedFun；
+        # 其他包装会改变 thunk 的输入布局，也无法从闭包取到原始规则函数。
         if (
             getattr(thunk.f, "__code__", None) is not _MEMOIZED_CODE
             or thunk.transforms
@@ -206,6 +218,8 @@ def _vjp_rules(params, equation, parent):
         ):
             raise UnsupportedJaxprError("derivative", "unreviewed custom VJP forward thunk wrapper")
         uncached = getclosurevars(thunk.f).nonlocals["fn"]
+        # 绕过缓存直接调用原函数时，仍要保持 _memoize 缓存未命中路径的无 trace
+        # 环境，否则规则图会捕获本次 make_jaxpr 的 trace。
         with core.set_current_trace(None):
             graph, constants = uncached(*active)
         bindings = _constant_bindings(constants, equation, parent)
@@ -232,7 +246,11 @@ def _vjp_rules(params, equation, parent):
             # 后遗漏 fwd 透传输入给 residual 的路径。
             @partial(jax.jit, keep_unused=True)
             def fwd(*xs, graph=graph, bindings=bindings):
-                """保留前向调用边界及全部输入，输出非透传残差和原值结果。"""
+                """保留前向调用边界及全部输入，输出非透传残差和原值结果。
+
+                keep_unused 让未被规则使用的输入仍留在接口中，捕获与残差才能
+                按原调用位置连接，而不是被 DCE 掉后丢失绑定证据。
+                """
                 return tuple(
                     core.eval_jaxpr(graph, graph.consts, *_constant_values(bindings, xs), *xs[nc:])
                 )
@@ -241,6 +259,11 @@ def _vjp_rules(params, equation, parent):
                 # 空 pytree 的 VJP 执行 fwd，但 pullback 不调用 bwd；保留 fwd
                 # 边界中的全部残差计算，使隐藏的有序操作仍能被后续校验发现。
                 def forward_only(*xs, fwd=fwd, nr=nr):
+                    """空输出 pytree 的 VJP 只保留前向区域，不实例化反向规则。
+
+                    pullback 不会被调用；切掉残差前缀后返回原值输出，隐藏在前向
+                    区域里的有序操作仍由后续校验检查。
+                    """
                     return fwd(*xs)[nr:]
 
                 inputs = tuple(_abstract(aval) for aval in primal.in_avals)
@@ -301,7 +324,11 @@ def _vjp_rules(params, equation, parent):
 
             @partial(jax.jit, keep_unused=True)
             def bwd(*xs, graph=backward_graph, bindings=local_bindings, count=capture_count):
-                """以紧凑捕获前缀、残差和余切调用反向图，保留其独立区域边界。"""
+                """以紧凑捕获前缀、残差和余切调用反向图，保留其独立区域边界。
+
+                keep_unused 与 fwd 同理：未被本模式使用的捕获或种子仍保留在
+                接口中，避免未用输入被 DCE 掉后接口位置无法逐项比较。
+                """
                 return tuple(
                     core.eval_jaxpr(
                         graph, graph.consts, *_constant_values(bindings, xs[:count]), *xs[count:]
@@ -333,6 +360,8 @@ def semantic_parameters(equation, *, scope="all", parent=None):
 
     返回值仅供比较使用，原方程仍保留 callable 以支持执行和 JAX 变换。
     parent 提供捕获常量的原始绑定；scope 由调用入口约束为 all 或 primal。
+    custom 调用的返回视图固定包含 call_jaxpr、num_consts、symbolic_zeros，
+    scope="all" 时再附加物化的一阶 rules；参数模式变化时明确拒绝。
     """
     if equation.primitive not in CUSTOM_PRIMITIVES:
         return equation.params

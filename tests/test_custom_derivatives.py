@@ -1,4 +1,17 @@
-"""自定义规则内容、残差连接、一阶作用域及公开 AD 变换的交叉验证。"""
+"""自定义规则内容、残差连接、一阶作用域及公开 AD 变换的交叉验证。
+
+覆盖：
+- 正例：custom_vjp/custom_jvp 的重新排序规则、透传残差、不同显式形状下判 equivalent，且
+  规范化图执行结果与原图一致、幂等、方向对称；规则在 jit/vmap 等声明变换内也保持。
+- 反例：错误残差、错误前向、错误切向量系数、额外 schema 字段、静态不可微参数、整数
+  pytree 叶子、混合输出/全离散输出/空输出、symbolic float0 组合、不同残差树、闭包动态与
+  常量捕获、latent 有序规则，都在对应模式（forward/jvp/vjp）被判出差异。
+- 拒绝路径：动态 while 的反向被 JAX 拒绝（TraceError，trace_rejected）；非法反向接口、
+  规则预算耗尽（ComparisonBudgetError）、只在规则中捕获的动态值（未显式展开时拒绝）都
+  显式报错，不回退成忽略。
+- 前置条件：锁定 JAX 0.11.2 的 custom_derivatives 私有实现；CPU 平台；只覆盖一阶规则。
+- 固定案例不证明任意高阶求导或所有 symbolic 组合。
+"""
 
 from functools import partial
 

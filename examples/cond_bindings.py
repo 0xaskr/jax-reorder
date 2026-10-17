@@ -1,4 +1,10 @@
-"""重放 RMSNorm 的 cond 闭包误判修复，候选和预期均由 AI 手写并固定。"""
+"""重放 RMSNorm 的 cond 闭包误判修复，候选和预期均由 AI 手写并固定。
+
+运行：uv run python examples/cond_bindings.py --show-jaxpr
+对每个签名执行真假两个分支：闭包参数同步换序与显式传参对照必须 equivalent，
+实际输入绑定错误必须 different 并找到数值反例。脚本只验证 cond 数据实参与
+分支形参的同步置换，不声称一般 cond 程序或代数改写等价。
+"""
 
 import argparse
 
@@ -47,6 +53,7 @@ def reference(x, gate, scale, flag):
     return business.norm_numpy(x, gate, scale) if bool(flag) else np.zeros_like(x)
 
 
+# 场景固定三个候选：两个正例分别覆盖闭包换序和显式传参，一个绑定错误负例。
 SCENARIO = business.Scenario(
     "cond_gated_rmsnorm",
     original,
@@ -69,6 +76,7 @@ def make_samples(profile, trials=3, seed=42):
 
 
 def main():
+    """三种签名分别重放三个候选；断言失败即抛错退出。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show-jaxpr", action="store_true")
     args = parser.parse_args()

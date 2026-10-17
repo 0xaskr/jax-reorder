@@ -1,4 +1,14 @@
-"""Pinned paired upstream formulas test conversion separately from whole-program comparison."""
+"""固定配对的 Nerva 上游公式：转换检查与整程序比较分开。
+
+覆盖：
+- 来源：fixture 中的 nerva_jax 与 nerva_sympy 源码逐文件校验 sha256 后写入临时目录再导入，
+  不引入训练栈；这里只使用固定副本，不联网。
+- 转换：12 组源程序与其独立 SymPy 公式逐坐标对照，检查转换结果而不是数值抽样。
+- 比较：同样的程序对经公共入口（compare_functions）比较，正反例标签来自独立公式。
+- 独立改写：5 组手写公式改写直接验证 equal 的判定。
+- 前置条件：CPU 平台与 SymPy 1.14；比较期间通过 fixture patch 禁止编译/执行 JAX。
+- 有限公式集不证明转换器覆盖任意 JAX 程序。
+"""
 
 import hashlib
 import importlib

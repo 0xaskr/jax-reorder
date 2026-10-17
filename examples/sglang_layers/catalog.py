@@ -1,10 +1,19 @@
-"""手工选择真实层及模型调用关系；注册清单另由源码独立读取。"""
+"""手工选择真实层及模型调用关系；注册清单另由源码独立读取。
+
+LAYERS 为每个通过注册入口选出的真实层（key、源文件、类名、数值家族、
+固定配置）；MODEL_LAYERS、CONFIG_LAYERS、COMPONENT_LAYERS、
+MULTIMODAL_LAYERS 把四类注册入口显式映射到层 key，别名与继承不会按名字
+自动归类。runner 用 LAYERS 逐层执行；覆盖核对通过 upstream.py 的静态
+注册表独立提取后与这些手工映射比对。
+"""
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class LayerSpec:
+    """一个选定层：注册 key、快照内路径、类名、数值参照家族与固定配置说明。"""
+
     key: str
     path: str
     class_name: str
@@ -12,6 +21,8 @@ class LayerSpec:
     configuration: str = "非量化、小形状、CPU 单设备 data/tensor mesh"
 
 
+# 每个 key 对应固定提交中真实注册入口使用的层；同 family 复用候选函数，
+# 但 runner 仍逐层执行各自原类的方法。
 LAYERS = (
     LayerSpec("llama", "models/llama.py", "LlamaMLP", "up_silu"),
     LayerSpec("qwen", "models/qwen.py", "QWenMLP", "qwen"),
@@ -158,6 +169,7 @@ MODEL_LAYERS = {
     "UMT5ForConditionalGeneration": "umt5",
 }
 
+# 配置注册表的全名/短名保持原样，均指向同一选定层；不把任意匹配字符串计为新模型。
 CONFIG_LAYERS = {
     "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": "wan",
     "Wan2.1-T2V-1.3B-Diffusers": "wan",
@@ -206,6 +218,7 @@ COMPONENT_LAYERS = {
     "WanTransformer3DModel": "wan",
 }
 
+# 多模态 ConfigRegistry 的架构名到层 key；与模型注册表分开核对。
 MULTIMODAL_LAYERS = {
     "FluxTransformer2DModel": "flux",
     "CLIPTextModel": "clip",

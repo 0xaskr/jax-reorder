@@ -3,7 +3,7 @@
 本模块维护两种顺序：规范结构中的节点按 BFS 编号存放，可执行 jaxpr
 中的方程按（依赖深度，BFS 编号）存放。BFS 访问顺序不能直接作为执行顺序。
 保留普通运算的操作数位置、结果端口和共享关系，不应用交换律或结合律。
-cond 的内部实参和循环捕获形参允许同步置换，外部函数输入顺序保持不变。
+jit/cond/shard_map 的私有端口与循环捕获形参允许同步置换，外部函数输入顺序保持不变。
 """
 
 import dataclasses
@@ -144,7 +144,7 @@ class Graph:
     inputs 保存有序输入的抽象值，outputs 保存有序输出的值引用。
     constants 记录（抽象值，常量内容），其可达前缀按首次使用顺序编号；
     nodes 的可达前缀按 BFS 编号，剩余常量和节点由完整图搜索确定顺序。
-    未使用部分也参与精确搜索，只有搜索完成且语义全部可解释才报告完整。
+    未使用部分也参与精确搜索；保留未使用节点和常量本身不使结果变为不完整。
     """
 
     inputs: tuple
@@ -346,7 +346,7 @@ class _Normalizer:
         return rebound
 
     def _rebind_outputs(self, graph, order):
-        """同步调用输出槽位时保留原子引用，并记录方程来源供独立校验。"""
+        """按调用结果的置换重排子图输出槽位，只移动 Var 对象并登记方程来源。"""
         # 这里只重排返回列表；父方程的结果变量列表需由调用者采用相同置换。
         if tuple(order) == tuple(range(len(graph.outvars))):
             return graph
@@ -360,6 +360,8 @@ class _Normalizer:
 
     def _jit_bindings(self, eq, output_order, path, issues):
         """调用输入、输出和分片/布局/donation 描述同步置换，调用边界仍保留。"""
+        # 参数集合按锁定的 JAX 0.11.2 核对：出现未知或缺失参数时明确失败，
+        # 不能只按已知子集置换，否则升级后可能静默漏比新增语义。
         expected = {
             "jaxpr",
             "in_shardings",
@@ -638,6 +640,8 @@ class _Normalizer:
         """编码全部参数；仅对已核对语义的特定参数采用专门适配。"""
         encoded_params = []
         # 参数按名称取序，消除字典插入顺序差异；这不是按算子名称排列计算节点。
+        # semantic_parameters 会物化自定义求导规则，同一方程在发现与编码两轮
+        # 中复用同一次结果，避免重复物化并保证两轮参数一致。
         params = self.semantic_views.get(eq)
         if params is None:
             params = semantic_parameters(eq, scope=self._scope(eq_path), parent=parent)
@@ -663,7 +667,14 @@ class _Normalizer:
         return encoded_params
 
     def _normalize(self, graph: core.Jaxpr, path: str) -> Canonicalized:
-        """依次建立依赖、BFS 编号、处理子图、计算深度并构造完整比较表示。"""
+        """构造规范比较表示和可执行重排结果；输入图不被修改。
+
+        先做 SSA 检查与值来源索引，沿有序根计算最短使用路径并同步重绑已适配的
+        区域接口；再按输出根反向 BFS 编号、给无根部分补临时编号；随后编码全部
+        方程、计算依赖深度并构造完整表示，未使用部分交给 canonical_order 搜索。
+        返回的 graph 使用 BFS/搜索编号，reordered jaxpr 使用（依赖深度, 规范编号），
+        两种顺序不能混用。
+        """
         _validate(graph, path)
         equations = list(graph.eqns)
         # 1. 原 Var 只用于查表。多结果方程还必须记录结果端口，不能只记生产者。
@@ -936,7 +947,8 @@ class _Normalizer:
             original_nodes, original_constants = tuple(identifiers), tuple(constant_ids)
             identifiers = {original_nodes[old]: new for new, old in enumerate(node_order)}
             constant_ids = {original_constants[old]: new for new, old in enumerate(const_order)}
-            # 可达部分不变；孤立部分也必须保持定义顺序，不能按搜索编号直接执行。
+            # 可达部分不变；孤立部分同样按（依赖深度, 规范编号）排列，
+            # 不能直接按搜索编号执行。
             order = tuple(sorted(bfs_order, key=lambda i: (depths[i], identifiers[i]))) + tuple(
                 sorted(unused, key=lambda i: (depths[i], identifiers[i]))
             )
@@ -950,6 +962,8 @@ class _Normalizer:
             core.check_jaxpr(reordered)
         except (core.JaxprTypeError, TypeError, ValueError, NameError) as exc:
             raise InvalidJaxprError(path, f"JAX type check failed: {exc}") from exc
+        # 共享子图可能被多处引用，相同 issue 只保留首次出现；变量映射覆盖输入、
+        # 常量和方程结果，供对应关系模块把规范引用还原到原始绑定。
         return Canonicalized(
             reordered,
             form,
@@ -969,8 +983,8 @@ def canonicalize(
     """规范化一个包含常量绑定的 CPU jaxpr，保留操作及其依赖关系。
 
     返回 Canonicalized，可分别查看可执行图、规范结构、编号和未完成原因。
-    未使用纯分支参与完整比较；非法图抛出 InvalidJaxprError，未知语义
-    抛出 UnsupportedJaxprError。本函数不执行 CPU 编译，也不证明数值等价。
+    输入图不被修改；未使用纯分支参与完整比较。非法图抛出 InvalidJaxprError，
+    未知语义抛出 UnsupportedJaxprError。本函数不执行 CPU 编译，也不证明数值等价。
 
     调用方需保持追踪上下文一致，并另行核对展平前的函数输入输出 pytree。
     依赖链、嵌套区域和参数使用显式栈；JAX 自身的检查仍可能受其资源限制。
@@ -1097,6 +1111,8 @@ def compare_jaxprs(
 ) -> Comparison:
     """结构阶段诊断：返回 equivalent/different；未完成检查直接抛出异常。
 
+    两侧分别规范化，失败以 ComparisonError 子类抛出并在路径前补充 left/right。
+    非法图、不支持语义、预算耗尽或对应证据复核失败都不会转成 different。
     different 仅表示完整图结构不同，不提供数学不等价结论。
     完整数学比较请使用 compare_algebraic_jaxprs 或默认 compare_functions。
     """
@@ -1111,6 +1127,7 @@ def compare_jaxprs(
                 graph, derivative_scope=derivative_scope, search_budget=search_budget
             )
             if not result.complete:
+                # 部分完成不再是正常结果：取首个 issue 转成显式异常并补充侧别路径。
                 issue = result.issues[0]
                 raise UnsupportedJaxprError(issue.path, issue.reason)
             normalized.append(result)
@@ -1128,6 +1145,7 @@ def compare_jaxprs(
             correspondence = build_correspondence(left, right, a, b)
             verify_correspondence(left, right, correspondence, derivative_scope=derivative_scope)
     except ComparisonError:
+        # 已分类的比较错误保留原类型和诊断；其余异常包装成内部错误，保留异常链。
         raise
     except Exception as exc:
         raise ComparisonInternalError(

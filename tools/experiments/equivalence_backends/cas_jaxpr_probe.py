@@ -1,7 +1,15 @@
-"""Translate actual GLM helper jaxprs to indexed SymPy expressions, without execution.
+"""把真实 GLM helper jaxpr 转成带索引的 SymPy 表达式，不做执行。
 
-Run as a module using the project interpreter, with the isolated SymPy site-packages
-on PYTHONPATH. This deliberately small experimental adapter is not production code.
+运行（见 docs/development-docs/equivalence-backends/cas.md）：
+  PYTHONPATH=/tmp/jax-reorder-equivalence-eval/cas/venv/lib/python3.12/site-packages \
+      .venv/bin/python -m tools.experiments.equivalence_backends.cas_jaxpr_probe \
+      > /tmp/jax-reorder-equivalence-eval/cas/jaxpr-result.json
+
+只支持正静态维度、无 effects、无捕获常量、float32 有限实数解释的
+add/mul/broadcast_in_dim/dot_general/reduce_sum 与同 dtype 转换。它是本次
+手写的有限适配器，不是生产转换器：负例只在均匀符号输入族上成立，不能
+升级为整层不等价，也不覆盖 mask、softmax、top-k、区域或求导。追踪期间
+阻断 JAX 编译与 eager 执行，同时阻断 SymPy 的随机判等。
 """
 
 from __future__ import annotations
@@ -21,18 +29,24 @@ from examples import glm52_decode_dsa_mla as layer
 
 
 class Unsupported(ValueError):
+    """适配器不支持的图特征；调用方据此把结论降为 unknown。"""
+
     pass
 
 
 def forbidden(*args, **kwargs):
+    """在 tracing/转换期间拦截 JAX 执行与数值判等。"""
     raise AssertionError("JAX execution and numerical equality heuristics are forbidden")
 
 
 @dataclass
 class Lowering:
+    """把单张 jaxpr 逐方程转成自由索引 + 绑定求和的 SymPy 表达式。"""
+
     graph: object
 
     def __post_init__(self):
+        """校验输入/方程与维度约束，并建立变量到方程/输入的映射。"""
         if self.graph.consts or self.graph.jaxpr.effects:
             raise Unsupported("captured constants and effects are outside this adapter")
         self.inputs = {var: index for index, var in enumerate(self.graph.jaxpr.invars)}
@@ -52,6 +66,11 @@ class Lowering:
                 raise Unsupported(f"only float32 interpreted as finite real: {var.aval.dtype}")
 
     def read(self, var, indices):
+        """按给定自由索引返回变量的符号表达式。
+
+        var 可为输入、字面量或方程输出；indices 为该变量的完整输出索引。
+        不支持的 primitive、dtype 变化、空维度或秩不匹配都抛 Unsupported。
+        """
         if isinstance(var, core.Literal):
             if var.aval.shape or not math.isfinite(float(var.val)):
                 raise Unsupported("only finite scalar literals")
@@ -122,6 +141,7 @@ class Lowering:
         return sp.Sum(product, *limits) if limits else product
 
     def outputs(self):
+        """为每个输出构造自由索引表达式，展开并合并同类项后返回。"""
         outputs = []
         for var in self.graph.jaxpr.outvars:
             indices = tuple(sp.Symbol(f"out{axis}", integer=True) for axis in range(var.aval.ndim))
@@ -131,6 +151,7 @@ class Lowering:
 
 
 def trace(function, args):
+    """追踪函数，返回 (ClosedJaxpr, (pytree 结构, 叶子 shape/dtype 契约))。"""
     graph, output = jax.make_jaxpr(function, return_shape=True)(*args)
     leaves, tree = jax.tree.flatten(output)
     contract = [(tuple(leaf.shape), str(leaf.dtype)) for leaf in leaves]
@@ -138,6 +159,12 @@ def trace(function, args):
 
 
 def compare(name, left, right, args, *, negative=False):
+    """比较两个真实追踪图：先比对输出契约与支持域，再判定状态。
+
+    返回报告 dict，status 为 equivalent / inequivalent / unknown。正例要求
+    两侧索引表达式完全一致；negative=True 时额外在均匀符号输入族上检查
+    非零残差，得到 inequivalent；其余情况一律 unknown，不伪造负例。
+    """
     left_graph, left_contract = trace(left, args)
     right_graph, right_contract = trace(right, args)
     report = {
@@ -160,11 +187,12 @@ def compare(name, left, right, args, *, negative=False):
     if lhs == rhs:
         return report | {"status": "equivalent", "evidence": "identical exact indexed normal forms"}
     if negative:
-        # A uniform symbolic tensor family is a legal subdomain of these inputs.
-        # After substitution, Sum.doit closes constant sums; no tensor is allocated.
+        # 均匀符号张量族是这些输入的一个合法子域；替换后 Sum.doit 会闭合
+        # 常量求和，不分配任何张量。只有该族出现非零残差才记为 inequivalent。
         parameters = {}
 
         def uniform(element):
+            """把每个 Indexed 的基替换成同一符号，构造均匀符号输入族。"""
             name = str(element.base.label)
             return parameters.setdefault(name, sp.Symbol(f"uniform_{name}", real=True))
 
@@ -189,9 +217,15 @@ def compare(name, left, right, args, *, negative=False):
 
 
 def run():
+    """追踪 GLM helper 与最小控制用例，断言预期状态并返回报告。
+
+    使用 examples/glm52_decode_dsa_mla.py 的 glm profile 真实 helper shape；
+    断言只覆盖本探针声明支持域内的 7 个用例，结果写入报告。不执行模型。
+    """
     p = layer.PROFILES["glm"]
 
     def abstract(shape):
+        """构造 float32 静态形状描述，不分配数组。"""
         return jax.ShapeDtypeStruct(shape, jnp.float32)
 
     qk_args = (
@@ -257,6 +291,7 @@ def run():
 
 
 def main():
+    """在禁止 JAX 执行与 SymPy 随机判等的补丁下运行探针并打印 JSON。"""
     jax.devices()
     with (
         patch.object(compiler, "backend_compile_and_load", forbidden),

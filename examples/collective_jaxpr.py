@@ -1,7 +1,9 @@
 """在多个逻辑 CPU 设备上验证带通信的 jaxpr。
 
 运行：uv run python examples/collective_jaxpr.py --show-jaxpr
-默认创建两个 CPU 设备，也可用 --devices 4 检查四设备通信。
+默认创建两个 CPU 设备，也可用 --devices 4 检查四设备通信；--trials/--seed
+控制每个组合的数值样本。共 20 个基础组合加 2 个分片矩阵乘法用例：每个用例
+同时检查图标签、重排图的可执行性与数值证据，断言失败即非零退出。
 模块导入时不初始化后端，pytest 可以复用用例而不改变自己的设备配置。
 """
 
@@ -55,7 +57,11 @@ class Case:
 
 
 def cases(mesh, *, check_vma=True):
-    """组合显式通信、本地计算与嵌套区域，保存 AI 给出的预期判断。"""
+    """组合显式通信、本地计算与嵌套区域，保存 AI 给出的预期判断。
+
+    返回的每个 Case 都记录了预期图标签、样本数值是否应相同，以及必须真实
+    出现在追踪图里的通信 primitive 名称；标签是预先写下的，不由比较器生成。
+    """
     count = mesh.size
     ring = [(i, (i + 1) % count) for i in range(count)]
     identity = [(i, i) for i in range(count)]
@@ -78,11 +84,13 @@ def cases(mesh, *, check_vma=True):
     add("独立的两种通信换序", independent, reordered, Status.EQUIVALENT, True, sum_name, "pmax")
 
     def sum_pair(x, y):
+        """两个独立的 psum 分别作用于 x、y，再按固定顺序相减。"""
         a = lax.psum(x, AXIS)
         b = lax.psum(y, AXIS)
         return lax.sub(a, b)
 
     def sum_pair_reordered(x, y):
+        """正例：只交换两个 psum 的定义顺序，减法操作数位置不变。"""
         b = lax.psum(y, AXIS)
         a = lax.psum(x, AXIS)
         return lax.sub(a, b)
@@ -260,7 +268,11 @@ def cases(mesh, *, check_vma=True):
 
 
 def parallel_matmul(mesh, reverse=False, missing_sum=False):
-    """按收缩维分片的矩阵乘法；各设备的局部乘积经 psum 合并后加偏置。"""
+    """按收缩维分片的矩阵乘法；各设备的局部乘积经 psum 合并后加偏置。
+
+    reverse=True 为独立偏置广播换序的正例；missing_sum=True 漏掉 psum，
+    输出签名仍合法，但各设备只看到局部乘积，因此能给出数值反例。
+    """
 
     def body(x, weight, bias):
         if reverse:

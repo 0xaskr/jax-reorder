@@ -25,7 +25,8 @@ class EquationCorrespondence:
 
     # 方程编号使用原图中的位置，不是规范化后的 BFS 编号或执行列表位置。
     right: int
-    # 子图以参数路径定位，例如 params.branches[0]；路径顺序不改变分支语义。
+    # 子图以参数路径定位，例如 params.branches[0]；元组排列顺序不参与语义
+    # 比较，真正的区域顺序由参数容器结构和所对应的方程表达。
     children: tuple[tuple[str, "GraphCorrespondence"], ...] = ()
     # outputs[p] = q 表示左侧结果端口 p 对应右侧端口 q，与方程在列表中的位置无关。
     outputs: tuple[int, ...] = ()
@@ -60,7 +61,9 @@ def _parameter_view(
     """保留参数内容，用子图路径作占位并另行交给图校验器。
 
     不读取规范图的参数编码。jit 名称和 reduce callable 是锁定版本中
-    已审查的两个例外；其余值一律由完整编码检查。
+    已审查的两个例外；其余值一律由完整编码检查。parameters 可传入已物化
+    的语义视图；parent 提供捕获常量所在的原始区域；derivative_scope 控制
+    规则适配器展开到什么范围。
 
     inputs/outputs 是从左侧槽位到当前右侧槽位的映射，只用于把右侧的逐位置
     元数据投影到左侧顺序。返回参数编码及“参数路径 → 原始子图”的映射。
@@ -83,6 +86,8 @@ def _parameter_view(
     for key, value in sorted(params.items()):
         if equation.primitive is pjit.jit_p and key == "name":
             continue
+        # 逐位置元数据必须随槽位置换同步投影；inputs/outputs 为 None 时不做
+        # 投影，父调用映射由上层另行校验。
         if equation.primitive is pjit.jit_p:
             if inputs is not None and key in {"in_shardings", "in_layouts", "donated_invars"}:
                 value = tuple(value[i] for i in inputs)
@@ -105,6 +110,8 @@ def _parameter_view(
             and isinstance(equation.params.get("jaxpr"), core.Jaxpr)
             and callable(value)
         ):
+            # 锁定版本中 reduce 的 computation 由已追踪的 reducer 子图表达；
+            # 比较该子图而不是 Python callable 身份，返回方程仍保留原 callable。
             encoded = ("represented_by_reducer_jaxpr",)
         else:
             encoded = encoder.encode(value, f"params.{key}")
@@ -113,7 +120,14 @@ def _parameter_view(
 
 
 def build_correspondence(left, right, left_normalized, right_normalized):
-    """利用来源记录构造证据；构造成功本身不表示证据正确。"""
+    """利用规范化来源构造左右原始图的对应证据；构造成功本身不表示正确。
+
+    left/right 是原始区域 jaxpr，left_normalized/right_normalized 是
+    canonicalize 的结果。函数用 lineage 把可执行顺序还原为原方程索引，
+    再逐区域生成 GraphCorrespondence；子图交给外部工作栈处理，避免递归。
+    结果必须交给 verify_correspondence 复核后才能作为等价证据；来源缺失或
+    绑定不一致时抛出 CorrespondenceError，不返回部分证据。
+    """
 
     def ports(a, b, an, bn):
         """通过规范化后配对的值，恢复两份原始接口之间的端口映射。"""
@@ -129,7 +143,11 @@ def build_correspondence(left, right, left_normalized, right_normalized):
         return tuple(result)
 
     def build(a, b, an, bn, required_outputs=None):
-        """为一个区域构造对应表，遇到子区域时交由外部生成器栈处理。"""
+        """为一个区域构造对应表，遇到子区域时交由外部生成器栈处理。
+
+        required_outputs 由父调用已核对的结果端口提供，只用于重复返回同一
+        Var 的区域；普通区域从两侧原始 outvars 恢复端口映射。
+        """
         # a/b 是原区域，an/bn 是规范化后的可执行区域；不能混用这两套索引。
         # 来源表把可执行列表位置还原到原方程位置，规范节点编号不直接用于证据。
         source_a, order_a = left_normalized.lineage[an]
@@ -224,6 +242,8 @@ def build_correspondence(left, right, left_normalized, right_normalized):
                     stack.append((children, build(*children)))
         return value
     except (KeyError, ValueError, TypeError, IndexError) as exc:
+        # CorrespondenceError 是 ValueError 子类；已带路径的证据错误直接
+        # 重抛，其他来源或绑定错误统一补上构造阶段的上下文。
         if isinstance(exc, CorrespondenceError):
             raise
         raise CorrespondenceError(
@@ -237,6 +257,8 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
     本函数不接受规范化器对象，也不调用 canonicalize/compare_jaxprs。
     即使规范化器忽略了一个参数或错误地合并节点，原图校验仍应拒绝。
     接口校验、SSA 和支持域在此独立检查；完整 JAX 类型检查仍由调用方执行。
+    derivative_scope 控制参数视图里物化的自定义求导规则范围；规则内部
+    一律收窄为 primal，避免递归展开未请求的高阶规则。
     """
 
     def require(condition, path, reason):
@@ -296,7 +318,11 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
         )
 
     def ordered_positions(graph):
-        """从原始区域识别隐式顺序约束，不能相信规范图已保存了这些边。"""
+        """从原始区域识别隐式顺序约束，不能相信规范图已保存了这些边。
+
+        返回需要保持相对顺序的方程索引；调用方经方程映射后与右侧逐项比较，
+        确保两侧有序操作一一对应且顺序一致，而不是仅按名称放行。
+        """
         positions = []
         for index, equation in enumerate(graph.eqns):
             work = [equation]
@@ -454,6 +480,8 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                 require("params.jaxpr" in children, where, "missing call child correspondence")
                 input_order = children["params.jaxpr"].inputs
                 permutation(input_order, len(equation.invars), len(other.invars), where)
+            # 规则区域内部不再展开更高阶规则；其余区域按调用方传入的范围复核，
+            # 与规范化时使用的 derivative_scope 保持一致。
             scope = "primal" if ".params.rules[" in where else derivative_scope
             # 此处重新读取原参数并物化求导规则，不接受规范化器提供的相等结论。
             ap, ac = _parameter_view(

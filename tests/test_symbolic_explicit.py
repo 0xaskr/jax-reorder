@@ -1,4 +1,13 @@
-"""Keep the retained explicit converter's formula baseline reproducible."""
+"""保留的显式转换器公式基线可复现；不参与生产数学判等。
+
+覆盖：
+- 23 项固定探针：默认映射连续两次调用一致；除 conditional_region 外的用例都转换为公式，
+  并逐条对照独立参照；changed_coefficient 与 ordered_outputs 是对照失败的反例。
+- 拒绝：区域构造（cond）不走显式公式基线，报告为 error 而不是静默跳过。
+- 前置条件：纯 SymPy 1.14 转换；测试期间 monkeypatch 禁止编译与 JAX 执行，因此结果只
+  来自公式转换。
+- 该基线是历史转换代码的回归，不代表生产数学后端的支持范围。
+"""
 
 import jax
 from jax._src import compiler, dispatch

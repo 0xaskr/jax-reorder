@@ -1,4 +1,14 @@
-"""Nested regions keep their interfaces and are normalized independently."""
+"""嵌套区域保留各自接口，并在内部独立规范化。
+
+覆盖：
+- 正例：jit/cond/scan/while 四种外壳中的独立换序（sin 与 cos）仍判 equivalent，规范化幂等
+  且执行结果一致；外壳参数（分支位置、scan 长度等）不被改写。
+- 反例：同一外壳内把 sub 改成 add（changed）必须判 different；未使用工作保留并参与比较；
+  分支位置与 scan 参数属于语义，改动后判不同。
+
+前置条件：CPU 平台；单设备即可，不涉及多设备或上游快照。
+四种外壳只覆盖有限的嵌套深度与参数组合。
+"""
 
 import jax
 import jax.numpy as jnp

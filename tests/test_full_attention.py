@@ -1,4 +1,15 @@
-"""原始完整 Attention、AI 固定改写、状态反例及可复现的 CPU 边界。"""
+"""原始完整 Attention、AI 固定改写、状态反例及可复现的 CPU 边界。
+
+覆盖：
+- 正例：GLM5 完整层在多个 profile 下给出固定标签序列（两正两负），负例带可序列化的数值
+  见证；Llama/CLIP/Flux 等代表性完整层同样重放；索引器即使输出未使用也保留。
+- 反例：Flux 的显式 sharding constraint、单头配置、交叉注意力的不透明调用、MoE interpret
+  模式都按预期拒绝；真实 Pallas/吸收路径断言 CPU lowering 失败。
+- 独立证据：attention 依赖文件与 git blob 摘要对照，确认使用的是固定上游源码。
+- 求导边界：forward 与 JVP 相同不表示 VJP 累加顺序一致，四种层族分别检查。
+- 前置条件：业务标记（pytest -m business）、CPU 平台、tests/fixtures 上游快照。
+- 这些是固定层与配置的验收，不覆盖全部模型或硬件后端。
+"""
 
 import hashlib
 import json

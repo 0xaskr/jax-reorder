@@ -1,4 +1,10 @@
-"""Rebuild the audited lax fixture inventory; execution evidence comes from pytest."""
+"""重新追踪 lax 固定用例并核对原语清单文档；--write 才写回。
+
+清单只记录“测试绑定关系”，执行证据来自完整 pytest 运行，脚本本身不执行全部计算。
+默认模式把重新追踪的结果与 docs/development-docs/lax-coverage.md 逐字比较，清单过期
+即断言失败，从而阻止文档漂移或漏掉公开原语；--write 只应在审查覆盖变化后使用。
+前置条件：conftest 之外的独立入口自行固定 CPU 平台和 2 个 host 设备。
+"""
 
 import argparse
 import os
@@ -15,6 +21,7 @@ from jax_reorder.support import public_primitives  # noqa: E402
 
 
 def primitives(graph):
+    """收集图及其子图参数中出现的全部 primitive，用于核对用例实际追踪结果。"""
     found = set()
     pending = [graph]
     while pending:
@@ -31,6 +38,7 @@ def primitives(graph):
 
 
 def report():
+    """生成清单文档全文；每个公开原语都必须能由一个固定用例绑定，否则当场断言失败。"""
     fixtures = cases()
     traced = {c.name: primitives(trace_case(c)) for c in fixtures}
     exported = public_primitives()
@@ -108,6 +116,7 @@ def report():
 
 
 def main():
+    """比较或写回清单文档；默认只核对，--write 才更新受审查的覆盖表。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args()

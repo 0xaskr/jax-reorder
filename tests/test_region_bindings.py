@@ -1,4 +1,16 @@
-"""固定循环改写的回归：图结论、执行、幂等及错误参数路径分别核对。"""
+"""固定循环改写的回归：图结论、执行、幂等及错误参数路径分别核对。
+
+覆盖：
+- 正例：scan/while 的捕获槽位同步置换在 0/1/3 步、float32/bfloat16、标量与矩阵形状下判
+  equivalent；比较前后原图快照不变、规范化幂等、接口列表保持、重排图执行结果一致。
+- 附加：原始捕获顺序确实改变（防止改写被追踪消去）；while 的 condition 与 body 双区域
+  分别核对。
+- 反例与拒绝：错误循环绑定既有图差异也有数值见证；未知循环元数据与缺失实参显式抛
+  InvalidJaxprError / UnsupportedJaxprError。
+
+前置条件：CPU 平台；固定源码来自 examples/region_bindings.py，不涉及多设备。
+有限步数与形状不证明任意循环反馈拓扑。
+"""
 
 from functools import partial
 

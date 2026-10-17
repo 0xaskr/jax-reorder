@@ -1,4 +1,13 @@
-"""锁定版本的 IR 字段/区域参数清单；候选升级只报告差异与拒绝状态。"""
+"""锁定版本的 IR 字段/区域参数清单；候选升级只报告差异与拒绝状态。
+
+默认模式要求当前 JAX/jaxlib 0.11.2 的私有字段、各区域 primitive 参数、公开 lax 身份
+与快照 fixtures/jax-adapter-0.11.2.json 逐项一致，并断言一次自比较为 equivalent。
+--candidate 用于在独立环境中评估升级候选：不修改 uv.lock、快照或版本允许表，只输出
+变更区域和比较/拒绝状态；未审查的新版本若被静默接受会触发断言。
+
+前置条件：CPU 平台与 1 个 CPU 设备即可（shard_map 探测只用到单设备 mesh）。
+脚本证明的是“适配面未漂移”，不是所有原语或业务路径都已覆盖。
+"""
 
 import argparse
 import json
@@ -21,6 +30,8 @@ SNAPSHOT = Path(__file__).with_name("fixtures") / "jax-adapter-0.11.2.json"
 
 
 def inventory():
+    """追踪各区域探测函数，记录私有 IR 字段和每个区域 primitive 的参数类型。"""
+
     @jax.custom_jvp
     def jvp(x):
         return x * x
@@ -36,6 +47,7 @@ def inventory():
 
     vjp.defvjp(lambda x: (x * x, x), lambda r, ct: ((2 * r) * ct,))
     mesh = Mesh(np.array(jax.devices("cpu")[:1]), ("workers",))
+    # 每个探测只负责让目标区域 primitive 出现在图中，参数结构才是快照要锁定的内容。
     probes = {
         "jit": jax.jit(lax.sin),
         "cond": lambda x: lax.cond(x > 0, lax.sin, lax.cos, x),
@@ -53,6 +65,7 @@ def inventory():
             key: f"{type(value).__module__}.{type(value).__qualname__}"
             for key, value in sorted(eq.params.items())
         }
+    # 记录私有 dataclass 的槽位顺序；字段增删会让快照差异暴露，而不是静默沿用旧编码。
     fields = {
         name: list(getattr(getattr(core, name), "__slots__", ()))
         for name in (
@@ -78,6 +91,7 @@ def inventory():
 
 
 def main():
+    """默认核对快照并断言自比较通过；--candidate 只输出升级评估结果。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", action="store_true")
     parser.add_argument("--report", type=Path)
@@ -85,6 +99,7 @@ def main():
     actual = inventory()
     expected = json.loads(SNAPSHOT.read_text())
     graph = jax.make_jaxpr(lax.neg)(jnp.float32(1))
+    # 候选环境中适配面可能已变，比较被显式拒绝也属于需要报告的结果；默认模式则直接失败。
     try:
         comparison = compare_jaxprs(graph, graph)
     except UnsupportedJaxprError as error:

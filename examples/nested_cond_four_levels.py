@@ -1,7 +1,10 @@
 """手写四层 cond：完整分支树、独立计算换序、显式绑定和最深层错误。
 
+运行：uv run python examples/nested_cond_four_levels.py [--show-jaxpr] [--report PATH]
 运行时只生成数值样本，不生成候选或修改 AST/jaxpr。四个布尔输入决定
-16 条路径，结果中的整数编号能检查每条路径确实被执行。
+16 条路径，结果中的整数编号能检查每条路径确实被执行。SCENARIO 含一个
+equivalent 正例和两个 different 负例；入口先断言 15 个 cond 节点、深度 4，
+避免写成四次连续浅层 cond 却声称四层嵌套。
 """
 
 import argparse
@@ -104,6 +107,7 @@ def _original(true_leaf, x, y, scale, f0, f1, f2, f3):
 
 
 def original(x, y, scale, f0, f1, f2, f3):
+    """基准入口：外三层共用 _original，第四层真分支使用 leaf_true。"""
     return _original(leaf_true, x, y, scale, f0, f1, f2, f3)
 
 
@@ -182,11 +186,12 @@ def reordered(x, y, scale, f0, f1, f2, f3):
 
 
 def wrong_deep_binding(x, y, scale, f0, f1, f2, f3):
+    """负例：只替换最深层真分支的 sin/cos 输入绑定，其余层保持基准源码。"""
     return _original(leaf_wrong_binding, x, y, scale, f0, f1, f2, f3)
 
 
 def wrong_third_predicate(x, y, scale, f0, f1, f2, f3):
-    """固定负例：改变第三层选择条件，不增加 cond 嵌套层数。"""
+    """负例：第三层条件取反（传入 ~f2），实际执行路径与基准不同。"""
     return _original(leaf_true, x, y, scale, f0, f1, ~f2, f3)
 
 
@@ -281,6 +286,7 @@ def structure(graph):
 
 
 def main():
+    """检查嵌套结构后逐签名重放三个候选，并打印是否找到数值反例。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--show-jaxpr", action="store_true")
     parser.add_argument("--report", type=Path, help="保存结构判断与完整数值反例")

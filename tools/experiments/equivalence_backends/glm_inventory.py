@@ -1,4 +1,14 @@
-"""Inventory actual GLM graphs without compiling or evaluating array operations."""
+"""在禁止编译与 eager 执行的条件下清点真实 GLM 图的 primitive/参数。
+
+运行（见 docs/development-docs/equivalence-backends/compiler.md）：
+  python -m tools.experiments.equivalence_backends.glm_inventory \
+      --json /tmp/jax-reorder-equivalence-eval/glm-inventory.json
+
+追踪 examples/glm52_decode_dsa_mla.py 的 base 与全部固定改写，递归统计
+嵌套图（cond/scan/jit 等）中的方程出现次数、primitive 集合与关键参数。
+统计是语法出现次数，不是执行次数；不编译、不执行数组运算，也不判断
+等价。输出 JSON；--profile/--dtype 选择签名，参数非法时 parser.error。
+"""
 
 import argparse
 import json
@@ -15,6 +25,11 @@ from jax_reorder import trace_function
 
 
 def nested_graphs(value, path="root"):
+    """递归遍历 jaxpr 及嵌套区域，按路径产出 (path, 图对象)。
+
+    value 可为带 eqns 的 jaxpr、带 jaxpr 属性的 ClosedJaxpr、dict 或
+    tuple/list；path 记录进入区域/参数的路径，便于在报告中定位。
+    """
     if hasattr(value, "eqns"):
         yield path, value
         for index, equation in enumerate(value.eqns):
@@ -31,10 +46,17 @@ def nested_graphs(value, path="root"):
 
 
 def forbidden(*args, **kwargs):
+    """在 tracing 期间拦截后端编译与 eager 执行，确保清单不运行模型。"""
     raise AssertionError("inventory must not compile or evaluate JAX array operations")
 
 
 def inventory(graph):
+    """统计一张图（含嵌套区域）的方程出现次数、primitive 与参数样例。
+
+    graph 为追踪结果；返回 equation_occurrences、primitives、
+    parameter_examples 与 regions。参数样例只保留影响索引/收缩/填充语义
+    的键，用 repr 记录，不做数值执行。
+    """
     counts = Counter()
     parameters = {}
     regions = []
@@ -43,6 +65,7 @@ def inventory(graph):
         for equation in child.eqns:
             name = equation.primitive.name
             counts[name] += 1
+            # 只保留影响索引、收缩、填充与归约语义的参数，避免输出过大。
             selected = {
                 key: repr(value)
                 for key, value in equation.params.items()
@@ -73,6 +96,12 @@ def inventory(graph):
 
 
 def run(profile, dtype):
+    """追踪 base 与全部固定改写，返回可 JSON 序列化的清单报告。
+
+    profile/dtype 选择 GLM 签名；在禁止编译与 eager 执行的补丁下只做
+    tracing。返回环境、来源提交、profile/dtype、primitive 并集与每张图的
+    清单；不写文件、不判断等价。
+    """
     jax.devices()
     with (
         patch.object(compiler, "backend_compile_and_load", forbidden),
@@ -90,6 +119,7 @@ def run(profile, dtype):
         "dtype": str(jnp.dtype(dtype)),
         "compiled": False,
         "executed": False,
+        # 该字段说明统计口径，防止把图内出现次数误读为运行时执行次数。
         "interpretation": "recursive syntactic occurrences, not executed iteration counts",
         "all_primitives": sorted({op for graph in graphs.values() for op in graph["primitives"]}),
         "graphs": graphs,
@@ -97,6 +127,7 @@ def run(profile, dtype):
 
 
 def main():
+    """解析参数、生成清单并按需写 JSON；始终打印摘要，不执行模型。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=layer.PROFILES, default="glm")
     parser.add_argument("--dtype", choices=("float32", "bfloat16"), default="float32")

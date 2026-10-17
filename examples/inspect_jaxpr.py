@@ -1,7 +1,9 @@
 """展示独立运算换序前后的 jaxpr、BFS 编号和图比较结果。
 
 运行：uv run python examples/inspect_jaxpr.py
-两个函数保持 add 的操作数顺序，只交换 sin 与 cos 的定义位置。
+两个函数保持 add 的操作数顺序，只交换 sin 与 cos 的定义位置。脚本只做
+抽象追踪和规范化，不执行数值、不编译。打印的 BFS 编号和方程索引是各自
+原图的局部信息，等价结论以最后一行图比较状态为准，不能由索引列表直接读出。
 """
 
 import jax
@@ -25,7 +27,7 @@ def second(x, y):
 
 
 def main():
-    """仅按固定输入签名追踪，不生成具体数组；展示重排和比较接口。"""
+    """按固定抽象签名追踪两份代码，打印编号、重排图和最终图比较状态。"""
     x = jax.ShapeDtypeStruct((4,), jnp.float32)
     y = jax.ShapeDtypeStruct((4,), jnp.float32)
     print(f"jax-reorder {__version__}; JAX {jax.__version__}")

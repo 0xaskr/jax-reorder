@@ -1,9 +1,16 @@
-"""Audit upstream symbolic components on generic formulas, without executing JAX.
+"""在通用公式上审查上游符号组件的复用能力，不执行 JAX 编译。
 
-Sources and optional import dependencies must be supplied outside the repository.
-This is a converter audit, not a replacement for the production comparator.
-Each project runs in a subprocess with a wall-clock limit. An optional local fork
-is reported separately from the pinned, unmodified upstream source.
+运行（见 docs/development-docs/equivalence-backends/architecture-reuse.md）：
+  uv run --no-sync --offline python \
+      tools/experiments/equivalence_backends/architecture_reuse_probe.py \
+      --sources-root /tmp/jax-reorder-architecture-eval \
+      --deps /tmp/jax-reorder-architecture-eval/deps \
+      --json /tmp/jax-reorder-architecture-eval/results.json
+
+源码与可选依赖必须位于仓库之外；每个项目在子进程内运行并受墙钟限制，
+父进程校验固定提交。可选 --jax2sympy-fork 的本地改动与固定上游源码分开
+报告。这是转换器审查，不替代生产比较器；不编译也不 eager 执行 JAX 数组
+运算，结论只覆盖列出的通用公式，不代表真实模型层已通过。
 """
 
 from __future__ import annotations
@@ -36,11 +43,17 @@ REVISIONS = {
 
 
 def forbidden(*args, **kwargs):
+    """拦截 JAX 后端编译与 eager 执行，确保审查不运行模型。"""
     raise AssertionError("JAX backend compilation and eager execution are forbidden")
 
 
 def query(left, right):
-    """Compare explicit symbolic outputs, without inventing a negative from !=."""
+    """比较两侧显式符号输出；只有在能证明全等时才返回 True。
+
+    逐元素求残差并用 equals(0) 查询，Piecewise 先显式化分支条件。返回
+    same_shape/all_equal/methods；存在 None 时 all_equal 也为 None，不能
+    把“未证明”当成“不等价”。
+    """
     left, right = np.asarray(left, dtype=object), np.asarray(right, dtype=object)
     if left.shape != right.shape:
         return {"same_shape": False, "all_equal": False}
@@ -49,7 +62,7 @@ def query(left, right):
         a, b = sp.sympify(a), sp.sympify(b)
         residual = a - b
         if residual.has(sp.Piecewise):
-            # Make ordered branch conditions explicit before querying the residual.
+            # 在查询残差前把有序分支条件显式化，避免依赖隐式化简。
             residual = sp.simplify(
                 sp.piecewise_exclusive(sp.piecewise_fold(residual.rewrite(sp.Piecewise)), deep=True)
             )
@@ -61,6 +74,11 @@ def query(left, right):
 
 
 def measure(outputs):
+    """统计输出规模、自由符号、节点数与运算数，供报告横向对比。
+
+    outputs 为符号数组序列；返回可 JSON 序列化的规模字典，并保留首个
+    输出的截断字符串。只做结构统计，不做数值求值。
+    """
     elements = [sp.sympify(x) for a in outputs for x in np.asarray(a).flat]
     symbols = set().union(*(e.free_symbols for e in elements))
     nodes = [node for e in elements for node in sp.preorder_traversal(e)]
@@ -76,6 +94,13 @@ def measure(outputs):
 
 
 def jax2sympy_probe(*, convert=None, mappings=None):
+    """审查 jax2sympy 在通用公式上的真实 jaxpr 转换输出。
+
+    convert/mappings 可注入（用于本地 fork 审查），缺省导入固定上游版本。
+    返回 primitive 映射数量、默认映射重复调用结果、逐 case 记录与 caveats。
+    每个 case 记录真实输出契约、规模、NumPy 参照查询结果与耗时/内存；
+    失败记为 error，不清除失败信息。
+    """
     if convert is None:
         from jax2sympy import jaxpr_to_sympy_expressions as convert
     if mappings is None:
@@ -87,13 +112,14 @@ def jax2sympy_probe(*, convert=None, mappings=None):
     records = []
 
     def audit(name, function, args, reference):
+        """追踪一个通用函数，转换其输出并与独立 SymPy 参照比较。"""
         record = {"case": name, "scope": "actual_jaxpr_to_symbolic_outputs"}
         started = time.perf_counter()
         tracemalloc.start()
         try:
             graph = jax.make_jaxpr(function)(*args)
             record["jaxpr"] = str(graph)
-            # Fresh mappings are an explicit public API argument, not a source patch.
+            # 传入全新 var2sym 映射是公开 API 参数，不是修改上游源码。
             outputs, bindings, _, _ = convert(graph, var2sym={})
             inputs = [bindings[v] for v in graph.jaxpr.invars]
             expected = reference(*inputs)
@@ -216,6 +242,12 @@ def jax2sympy_probe(*, convert=None, mappings=None):
 
 
 def nerva_probe():
+    """审查 nerva-sympy 的公式函数，并用新的符号查询检查其恒等式。
+
+    返回 scope、shape、assumptions、checks、规模指标与“未运行上游测试”
+    的原因。上游测试工具会无条件导入 TensorFlow/Torch，因此本轮不运行；
+    也不声称存在 jaxpr 转换器。
+    """
     from nerva_sympy.activation_functions import sigmoid, sigmoid_derivative
     from nerva_sympy.matrix_operations import Diag, hadamard
     from nerva_sympy.softmax_functions import (
@@ -252,6 +284,11 @@ def nerva_probe():
 
 
 def sympy_probe():
+    """检查 SymPy 原生符号表示与指标求和转换，不是 JAX 转换器。
+
+    返回矩阵求和转乘积、符号维度张量收缩与节点数；不枚举元素，也不声称
+    已接入 jaxpr。
+    """
     from sympy.tensor.array.expressions import ArrayContraction, ArraySymbol, ArrayTensorProduct
 
     m, n, k = sp.symbols("m n k", integer=True, positive=True)
@@ -273,6 +310,11 @@ def sympy_probe():
 
 
 def tensorgrad_probe():
+    """检查 tensorgrad 手构符号张量的化简与相等 API 语义。
+
+    返回 shape、化简后分配律结论与相等 API 说明；不枚举元素，也不声称
+    存在 jaxpr 转换。
+    """
     import tensorgrad as tg
 
     n, m, k = sp.symbols("n m k", integer=True, positive=True)
@@ -289,6 +331,11 @@ def tensorgrad_probe():
 
 
 def sympy2jax_probe():
+    """检查 sympy2jax 的公式→JAX 测试生成方向，并记录真实 jaxpr。
+
+    返回公式往返比较、jaxpr、输出数量与“任意 jaxpr→SymPy”的支持说明。
+    只覆盖本实验列出的公式，不代表完整转换器。
+    """
     import sympy2jax
 
     x, y = sp.symbols("x y")
@@ -307,6 +354,11 @@ def sympy2jax_probe():
 
 
 def nerva_jax_probe():
+    """把 nerva-jax 的抽象追踪图转换为 SymPy，并与 nerva-sympy 函数比较。
+
+    对固定 2×3 输入逐个函数对执行 make_jaxpr + 转换 + 查询；返回 scope、
+    shape、逐 case 记录与“未运行整模型/非程序对比较器”的边界说明。
+    """
     from jax2sympy import jaxpr_to_sympy_expressions as convert
     from nerva_jax import activation_functions as ja
     from nerva_jax import matrix_operations as jm
@@ -358,6 +410,13 @@ def nerva_jax_probe():
 
 
 def main():
+    """运行父进程或单个 worker，输出汇总 JSON。
+
+    --worker 模式只在子进程内：设置隔离搜索路径、阻断 JAX 编译/eager 执行，
+    运行一个项目探针并打印其 JSON。父进程模式校验各项目固定提交，为每个
+    项目启动带 45 秒墙钟限制的子进程，汇总退出码/超时/结果，并按需把
+    报告写入 --json。参数非法时由 argparse 以退出码 2 结束。
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sources-root", type=Path, required=True)
     parser.add_argument("--deps", type=Path)
@@ -370,6 +429,7 @@ def main():
     args = parser.parse_args()
     sources = args.sources_root.resolve()
     if args.worker:
+        # 隔离环境路径优先，避免误用仓库内同名包或全局安装版本。
         search_paths = [
             str(args.jax2sympy_fork.resolve() if args.jax2sympy_fork else sources / "jax2sympy"),
             str(sources / "nerva-sympy" / "src"),
@@ -388,7 +448,9 @@ def main():
             "sympy2jax": sympy2jax_probe,
             "nerva-jax": nerva_jax_probe,
         }
+        # 初始化 JAX 后端；worker 只 tracing，不编译也不执行生成的计算。
         jax.devices()
+        # 阻断后端编译与 eager 执行，保证审查只读取表达式。
         with (
             patch.object(compiler, "backend_compile_and_load", forbidden),
             patch.object(dispatch, "apply_primitive", forbidden),
@@ -406,6 +468,7 @@ def main():
         "projects": {},
     }
     if args.jax2sympy_fork:
+        # 本地 fork 单独记录文件摘要，不与固定上游结果混合。
         report["jax2sympy_fork"] = {
             "path": str(args.jax2sympy_fork.resolve()),
             "files_sha256": {
@@ -417,6 +480,7 @@ def main():
         }
     for project in ("jax2sympy", "nerva-sympy", "sympy", "tensorgrad", "sympy2jax", "nerva-jax"):
         if project in REVISIONS:
+            # 父进程独立校验固定提交，不信任 sources 目录里的自报版本。
             revision = subprocess.check_output(
                 ["git", "-C", str(sources / project), "rev-parse", "HEAD"], text=True
             ).strip()

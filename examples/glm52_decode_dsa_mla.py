@@ -2,8 +2,10 @@
 
 uv run python -m examples.glm52_decode_dsa_mla --json /tmp/glm52-jaxpr.json
 只构造 ShapeDtypeStruct、追踪和比较；不编译、不执行 layer、不采样数值。
-退出码：0=比较完成且无缺口，1=预期关系冲突，2=有比较错误。
-来源及 Apache-2.0 许可证见 tests/fixtures/sglang_jax/。
+5 个正例是循环内换序或理想实数恒等式，5 个负例改变公式；预期关系由公式
+推导预先标注，不是比较器的输出。退出码：0=全部完成且无预期冲突，1=误接受
+或预期不符，2=存在比较错误（如语义不支持）。来源及 Apache-2.0 许可证见
+tests/fixtures/sglang_jax/。
 """
 
 import argparse
@@ -27,6 +29,8 @@ SCALE = 256**-0.5
 
 @dataclass(frozen=True)
 class Profile:
+    """一组固定抽象签名尺寸；各字段直接对应 DSA/MLA 输入的 shape 参数。"""
+
     batch: int
     heads: int
     latent: int
@@ -38,6 +42,7 @@ class Profile:
     top_k: int
 
 
+# small 用于快速追踪；glm 为文档记录的完整 decode 配置（batch=2、64 heads）。
 PROFILES = {
     "small": Profile(2, 2, 8, 4, 3, 8, 4, 3, 4),
     "glm": Profile(2, 64, 512, 64, 32, 128, 128, 32, 2048),
@@ -61,6 +66,7 @@ def upstream():
 
 
 def _qk(q, keys, scale):
+    """基准 QK 点积：FP32 einsum 之后乘 softmax 温度 scale。"""
     logits = jnp.einsum("thd,tkd->thk", q.astype(jnp.float32), keys.astype(jnp.float32))
     return logits * scale
 
@@ -76,6 +82,7 @@ def _qk_without_scale(q, keys, scale):
 
 
 def _pv(probabilities, values):
+    """基准 PV：对选中 token 的概率加权求和，再用 query dtype 输出。"""
     return jnp.einsum("thk,tkd->thd", probabilities, values.astype(jnp.float32))
 
 
@@ -85,6 +92,7 @@ def _pv_reduce(probabilities, values):
 
 
 def _valid_indices(indices, length, in_seq):
+    """有效索引：非负、未越界，且属于当前 query 所在序列。"""
     return (indices >= 0) & (indices < length) & in_seq[:, None]
 
 
@@ -94,6 +102,7 @@ def _negative_index_is_valid(indices, length, in_seq):
 
 
 def _key_softmax(logits):
+    """基准 softmax：沿选中 token 轴归一化，-inf mask 对应概率 0。"""
     return jax.nn.softmax(logits, axis=-1)
 
 
@@ -172,6 +181,7 @@ def _mla_core(
 
 
 def _head_scores(weights, products):
+    """基准 DSA 打分：逐 head 加权 relu(QK) 后求和，得到候选 token 的分数。"""
     return jnp.einsum("th,thk->tk", weights, jax.nn.relu(products))
 
 
@@ -186,6 +196,7 @@ def _head_scores_without_relu(weights, products):
 
 
 def _visible(positions, length):
+    """基准可见性：位置严格小于有效长度；长度本身是无效槽位。"""
     return (positions < length)[None, :]
 
 
@@ -257,47 +268,59 @@ def _dsa_core(
 
 
 def mla_schedule(*args, **kwargs):
+    """E1 正例：只把 MLA 循环内 mask/索引计算移到 paged gather 之前。"""
     return _mla_core(*args, **kwargs, reorder=True)
 
 
 def dsa_schedule(*args, **kwargs):
+    """E2 正例：只把 DSA 循环内 query/gate 读取移到页表读取之前。"""
     return _dsa_core(*args, **kwargs, reorder=True)
 
 
 def mla_scale_first(*args, **kwargs):
+    """E3 正例：理想实数下 (Q Kᵀ)s 等于 (Qs)Kᵀ，FP32 cast 位置不动。"""
     return _mla_core(*args, **kwargs, qk=_qk_scale_first)
 
 
 def mla_value_reduce(*args, **kwargs):
+    """E4 正例：理想实数下 P V 等于广播乘积再沿 token 求和。"""
     return _mla_core(*args, **kwargs, pv=_pv_reduce)
 
 
 def dsa_head_reduce(*args, **kwargs):
+    """E5 正例：head 加权点积改写为乘积归约，ReLU 位置保持不变。"""
     return _dsa_core(*args, **kwargs, score=_head_scores_reduce)
 
 
 def mla_missing_scale(*args, **kwargs):
+    """N1 负例：去掉 logits 温度，softmax 的相对概率随之改变。"""
     return _mla_core(*args, **kwargs, qk=_qk_without_scale)
 
 
 def mla_unmasked_padding(*args, **kwargs):
+    """N2 负例：-1 padding 被当作第 0 个 token，参与 softmax 与 value 归约。"""
     return _mla_core(*args, **kwargs, validity=_negative_index_is_valid)
 
 
 def mla_wrong_softmax_axis(*args, **kwargs):
+    """N3 负例：沿 attention head 轴而非选中 token 轴归一化。"""
     return _mla_core(*args, **kwargs, softmax=_head_softmax)
 
 
 def dsa_missing_relu(*args, **kwargs):
+    """N4 负例：去掉 ReLU 后负的 QK 项参与打分，可能改变 top-k 排名。"""
     return _dsa_core(*args, **kwargs, score=_head_scores_without_relu)
 
 
 def dsa_inclusive_length(*args, **kwargs):
+    """N5 负例：有效长度上界由 < 改为 <=，多纳入一个无效位置。"""
     return _dsa_core(*args, **kwargs, visible=_inclusive_visible)
 
 
 @dataclass(frozen=True)
 class Case:
+    """一个候选：function 替换 target 指定的核心，expected 为公式推导的预期关系。"""
+
     function: object
     target: str
     expected: str
@@ -305,9 +328,12 @@ class Case:
 
     @property
     def name(self):
+        """候选函数名，用作报告中的案例标识。"""
         return self.function.__name__
 
 
+# 10 个手写候选：5 个换序/代数正例，5 个改变公式的负例。
+# Case.expected 取 "equivalent"/"inequivalent"，是公式推导的预期关系。
 CASES = (
     Case(mla_schedule, "mla", "equivalent", "MLA 循环内 mask/索引计算提前，依赖保持不变"),
     Case(dsa_schedule, "dsa", "equivalent", "DSA 循环内 query/gate 读取提前，依赖保持不变"),
@@ -348,6 +374,7 @@ CASES = (
 
 
 def signatures(profile="glm", dtype=jnp.float32):
+    """返回 6 组抽象输入签名；只描述 shape/dtype，不分配数组。"""
     p = PROFILES[profile]
     pages = p.batch * p.pages_per_seq
     abstract = jax.ShapeDtypeStruct
@@ -369,7 +396,11 @@ def signatures(profile="glm", dtype=jnp.float32):
 
 
 def function(profile="glm", case=None):
-    """只替换指定核心；原始基线直接调用两个未修改的上游 reference。"""
+    """只替换指定核心；原始基线直接调用两个未修改的上游 reference。
+
+    target="dsa" 时替换 indexer（streamindex_topk_ref），target="mla" 时替换
+    attention（sparse_mla_ref）；另一个核心保持上游原文，因此差异只来自所选核心。
+    """
     p = PROFILES[profile]
     indexer = upstream().streamindex_topk_ref
     attention = upstream().sparse_mla_ref
@@ -413,6 +444,7 @@ def function(profile="glm", case=None):
 
 
 def classify(expected, status):
+    """把预期关系与实际 status 映射为报告 outcome；必须已完成数学比较。"""
     if status not in (Status.EQUIVALENT, Status.INEQUIVALENT):
         raise ValueError("classify requires a completed mathematical comparison")
     if expected == "equivalent":
@@ -423,6 +455,7 @@ def classify(expected, status):
 
 
 def compare(case, base_trace, args, profile="glm"):
+    """追踪候选并比较；比较异常单独记录阶段、路径与失败原因，不吞掉。"""
     candidate = trace_function(function(profile, case), *args)
     try:
         comparison = compare_function_traces(base_trace, candidate)
@@ -464,6 +497,7 @@ def compare(case, base_trace, args, profile="glm"):
 
 
 def exit_code(report):
+    """0=无预期冲突；1=误接受或预期不符；2=存在比较错误。"""
     outcomes = {row["outcome"] for row in report["comparisons"]}
     if outcomes & {"false_acceptance", "unexpected_mismatch"}:
         return 1
@@ -471,6 +505,7 @@ def exit_code(report):
 
 
 def run(profile="glm", dtype=jnp.float32, jaxpr_dir=None):
+    """追踪 base 与全部候选，可选导出 jaxpr 文本，并汇总各 outcome 计数。"""
     args = signatures(profile, dtype)
     base_trace = trace_function(function(profile), *args)
     if jaxpr_dir is not None:
@@ -520,6 +555,7 @@ def run(profile="glm", dtype=jnp.float32, jaxpr_dir=None):
 
 
 def main():
+    """CLI 入口：只追踪和比较，不编译、不执行 layer，返回上述退出码。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=PROFILES, default="glm")
     parser.add_argument("--dtype", choices=("float32", "bfloat16"), default="float32")

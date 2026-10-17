@@ -1,4 +1,16 @@
-"""负无穷 mask 的图级支持：有限分支可改写，非有限路径不可消项。"""
+"""负无穷 mask 的图级支持：有限分支可改写，非有限路径不可消项。
+
+覆盖：
+- 正例：在 mask 与非线性算子（直通、softmax、top-k）不变时，``x+x`` 与 ``2*x`` 的有限
+  分支改写等价；矩阵乘法中 0.5 的缩放位置可移动；命中 ``negative_infinity_constant`` 规则
+  并带浮点警告；捕获数组保留有限元素与 ``-inf`` 的精确值。
+- 反例：否定谓词、分支写成 ``-1e9``、直接返回 ``2*x`` 都拒绝；非有限的加减乘除与幂运算、
+  共同 JIT 内的常量/参数、gather 非有限 fill、scan carry 与后续迭代、条件返回的非有限值、
+  全 mask softmax 的 NaN 路径与最终 guard 都不能被消项或交换。
+- 拒绝：正无穷与 NaN 字面量在多种 shape 下仍不支持（UnsupportedJaxprError）。
+
+前置条件：CPU 平台与 SymPy 1.14；结论是实数解释下的局部证据，不承诺 IEEE 浮点逐位等价。
+"""
 
 import jax
 import jax.numpy as jnp
@@ -16,10 +28,12 @@ from jax_reorder import (
 
 
 def signature(shape=(), dtype=jnp.float32):
+    """构造抽象输入签名，使结论覆盖全部取值而不是某个样本。"""
     return jax.ShapeDtypeStruct(shape, dtype)
 
 
 def compare(left, right, *args):
+    """追踪两侧函数并返回（代数比较结果，两张图），便于同时检查规则与图。"""
     graphs = jax.make_jaxpr(left)(*args), jax.make_jaxpr(right)(*args)
     return compare_algebraic_jaxprs(*graphs), graphs
 
@@ -27,6 +41,7 @@ def compare(left, right, *args):
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16, jnp.float16])
 @pytest.mark.parametrize("operation", [lambda x: x, jax.nn.softmax, lambda x: lax.top_k(x, 2)])
 def test_finite_rewrite_under_unchanged_mask_and_nonlinearity(dtype, operation):
+    """mask 与非线性算子不变时，只在有限分支内做代数改写应成立。"""
     result, graphs = compare(
         lambda x, m: operation(jnp.where(m, x + x, -jnp.inf)),
         lambda x, m: operation(jnp.where(m, 2 * x, -jnp.inf)),

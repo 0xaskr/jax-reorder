@@ -1,4 +1,12 @@
-"""Freeze already-validated jaxprs for an isolated symbolic worker, without JAX execution."""
+"""把已校验的 jaxpr 冻结成隔离符号 worker 的输入，不执行 JAX。
+
+冻结结果只保留 SymbolicBuilder 实际消费的字段：带稳定编号的变量描述、
+方程名、已适配参数以及输入/常量/输出端口。JIT 布局、名称和编译元数据
+不参与理想实数解释，default_jit 已核对其为默认值，因此不再跨进程传递。
+无法解释或无法安全传递的语义（effects、token、非默认 scan/cast 接口、
+非默认 JIT 契约）明确抛 UnsupportedJaxprError，不猜测也不丢弃。
+本模块不执行数组、不做数学判断，也不构造 SymPy 对象。
+"""
 
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -12,17 +20,32 @@ from .errors import UnsupportedJaxprError
 
 @dataclass(frozen=True)
 class Variable:
+    """冻结图中的轻量变量描述；number 是本进程分配的稳定顺序编号。
+
+    shape/dtype 构成 worker 侧要核对的抽象契约；aval 属性提供只含这两项的
+    视图，让按 JAX aval 读取形状的接口无需依赖 core.Var。编号按首次出现
+    分配，用于报告位置和跨进程对应，不暴露原始变量名。
+    """
+
     number: int
     shape: tuple
     dtype: object
 
     @property
     def aval(self):
+        """只含 shape 与 dtype 的 aval 视图，供按抽象值读取的接口使用。"""
         return SimpleNamespace(shape=self.shape, dtype=self.dtype)
 
 
 def freeze(graph, common_calls=None, common_ids=None):
-    """Only the mathematical builder's supported parameters cross the process boundary."""
+    """冻结一张图（ClosedJaxpr 或裸 jaxpr）为 worker 可读的普通对象。
+
+    common_calls 是父进程构造的 CommonCalls，用于识别两侧完整相同的纯 JIT；
+    common_ids 是跨两侧共享的“语义身份 → 编号”表：同一共同调用或同一
+    不透明 reducer 在两张图中得到相同编号，数学层才能建立同一符号。
+    变量按首次出现分配编号；字面量不占变量编号，直接携带数值与抽象值。
+    嵌套子图、tuple/list/dict 参数递归冻结，不透明 callable 原样保留。
+    """
     closed = hasattr(graph, "jaxpr")
     if common_ids is None:
         common_ids = {}
@@ -32,6 +55,8 @@ def freeze(graph, common_calls=None, common_ids=None):
     variables = {}
 
     def variable(var):
+        """把 Var 或字面量转换成 worker 侧的变量描述或常量值。"""
+        # token 等非数组值没有实数解释，worker 也无法按元素坐标读取。
         if not isinstance(var.aval, core.ShapedArray):
             raise UnsupportedJaxprError(
                 "algebra.shape", "requires shaped array values; tokens are unsupported"
@@ -43,6 +68,8 @@ def freeze(graph, common_calls=None, common_ids=None):
         return variables[var]
 
     def parameter(value):
+        """递归冻结参数里的嵌套图与容器，保持其他值原样。"""
+        # 只深入已知容器，其他值原样传递；不在这里猜测未知参数的语义。
         if isinstance(value, (core.Jaxpr, core.ClosedJaxpr)):
             return freeze(value, common_calls, common_ids)
         if isinstance(value, (tuple, list)):
@@ -57,15 +84,19 @@ def freeze(graph, common_calls=None, common_ids=None):
     for eq in inner.eqns:
         if eq.effects:
             raise UnsupportedJaxprError("algebra.effects", "effectful equation")
-        # JIT layout/name/compiler metadata has already been validated structurally.
-        # It is not part of the declared ideal-arithmetic interpretation.
+        # 取完整语义参数；下面按 primitive 只保留数学层能解释的部分。
         params = semantic_parameters(eq, scope="primal", parent=graph)
         if eq.primitive in CUSTOM_PRIMITIVES:
+            # 自定义求导只比较实际被调用的程序；残差与 symbolic-zero 参数
+            # 属于 JAX 接口元数据，不是数学函数的一部分。
             params = {"call_jaxpr": params["call_jaxpr"]}
         if eq.primitive.name == "reduce":
             from .canonical import canonicalize
             from .correspondence import _parameter_view
 
+            # reduce 的 computation 可能是 callable 或 jaxpr。用完整参数编码
+            # 加规范化后的子图组成稳定身份，并让两侧同一 reducer 共享编号；
+            # 不能按函数名或对象 id 判等。
             encoded, children = _parameter_view(
                 eq, lambda _: None, derivative_scope="primal", parent=graph
             )
@@ -83,12 +114,14 @@ def freeze(graph, common_calls=None, common_ids=None):
         if eq.primitive.name == "convert_element_type" and params.get("sharding") is not None:
             from .algebra_semantics import encode
 
+            # 默认分片不改变布局语义，可以丢弃；非默认分片必须拒绝。
             aval = eq.outvars[0].aval
             default = core.ShapedArray(aval.shape, aval.dtype).sharding
             if encode(params["sharding"]) != encode(default):
                 raise UnsupportedJaxprError("algebra.cast", "non-default cast sharding")
             params = {**params, "sharding": None}
         if eq.primitive.name == "scan":
+            # FlatTree 接口元数据不属于数学语义，只保留常量与 carry 数量。
             ft_in, ft_out = params["ft_in"], params["ft_out"]
             if (
                 not ft_in.unpackable
@@ -109,6 +142,8 @@ def freeze(graph, common_calls=None, common_ids=None):
                 from .algebra_finiteness import nonfinite_graph
 
                 key, input_ports, output_ports = common_calls.invocations[eq]
+                # 子图含 -inf 等非有限值时不能写成不透明共同符号，
+                # 否则会丢失特殊值语义；此类调用保留完整展开。
                 if not nonfinite_graph(params["jaxpr"], common_calls.budget):
                     if key not in common_ids:
                         common_ids[key] = len(common_ids)
@@ -124,6 +159,7 @@ def freeze(graph, common_calls=None, common_ids=None):
     return SimpleNamespace(
         invars=inputs,
         constvars=constants,
+        # 裸 jaxpr 的 constvars 只是外部绑定描述，没有可传递的常量值。
         consts=tuple(np.asarray(x) for x in graph.consts) if closed else (),
         eqns=tuple(equations),
         outvars=tuple(variable(v) for v in inner.outvars),

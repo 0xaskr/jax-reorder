@@ -1,9 +1,11 @@
 """重放预先保存的 AI 图变换、判断及 CPU 数值反例，不调用在线 AI。
 
+运行：uv run python examples/bfs_reordering.py
 LlamaMLP 提取自 SGLang-JAX（Apache-2.0），提交为
 538abe3fdba84b586a6a2fd151cac67cc974d35f，来源与配置见
 docs/development-docs/bfs-cases.md。以下函数保存变换前后的代码；预期标签和
 数值反例在调用比较器前写入，不能用比较器的输出反过来生成预期答案。
+固定 8 个基础组合各一正一负，加 LlamaMLP 一正一负，共 18 例；断言失败即抛错。
 """
 
 from collections.abc import Callable
@@ -304,7 +306,7 @@ def verify_case(case):
 
 
 def main():
-    """在明确的 CPU 模型分片上下文中重放所有案例并打印判断和证据。"""
+    """在明确的 CPU 模型分片上下文中重放所有案例，打印判断和数值证据。"""
     mesh = model_mesh()
     print(f"JAX {jax.__version__}; backend={jax.default_backend()}; x64={jax.config.x64_enabled}")
     with jax.set_mesh(mesh):

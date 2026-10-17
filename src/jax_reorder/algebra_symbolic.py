@@ -23,7 +23,14 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-"""Shape-preserving SymPy construction from validated JAX graphs."""
+"""把已通过结构校验的 JAX 图构造成保持 shape 的 SymPy 表达式。
+
+沿用 jax2sympy 的 SSA 遍历和逐点映射：每个输出端口表示为在自由坐标上取值
+的 Indexed/Sum 表达式，同时保存原始定义条件、有限性事实和来源路径。
+这里只负责忠实构造与显式拒绝，不做数学判断；化简和恒等查询由
+algebra_trusted 交给可信 SymPy。未适配的原语、区域或 dtype 必须报错，
+不能为了得到结论而丢弃语义。
+"""
 
 from dataclasses import dataclass, replace
 from functools import reduce
@@ -41,6 +48,10 @@ from .errors import UnsupportedJaxprError
 
 
 def coordinates(shape):
+    """按输出 shape 生成自由坐标符号；单位轴固定为 0。
+
+    同名整数符号全图共享身份，广播和单位轴读取直接写 0，不额外引入绑定。
+    """
     return tuple(
         sp.S.Zero if size == 1 else sp.Symbol(f"_i{axis}", integer=True, nonnegative=True)
         for axis, size in enumerate(shape)
@@ -48,11 +59,19 @@ def coordinates(shape):
 
 
 def dtype_kind(dtype):
+    """把 dtype 归并成 "f"/"b"/"i"/"u" 等类别；所有浮点格式共用 "f"。"""
     return "f" if dtypes.issubdtype(dtype, np.floating) else np.dtype(dtype).kind
 
 
 def _exact_array(value):
+    """把常量数组逐元素转成精确 SymPy 值，保留 shape 与完整内容。
+
+    浮点字面量按其 Python 二进制值转成有理数，不做十进制“取整”解释；
+    NaN/±Inf 不在这里处理，由调用方显式拒绝或按特殊值保留。
+    """
+
     def exact_scalar(x):
+        """按 Python 标量类型分派；布尔必须先于整数判断（bool 是 int 子类）。"""
         x = np.asarray(x).item()
         if isinstance(x, (bool, np.bool_)):
             return sp.true if x else sp.false
@@ -60,20 +79,24 @@ def _exact_array(value):
             return sp.Integer(int(x))
         if isinstance(x, (float, np.floating)) and np.isfinite(x):
             return sp.Rational(float(x))
+        # 其余标量（如 -inf 或扩展浮点）交给 sympify；是否有实数解释由调用方决定。
         return sp.sympify(x)
 
     return np.vectorize(exact_scalar, otypes=[object])(np.asarray(value))
 
 
 def rename_bounds(expression, *, fresh=False):
-    """Respect nested lexical scopes when renaming Sum/Product variables.
+    """按词法作用域重命名 Sum/Product 的绑定变量，防止嵌套求和捕获外层读取。
 
-    SymPy 1.14 as_dummy reuses _0 inside nested sums and can capture outer
-    references. Construction uses fresh Dummies; query keys use depth-qualified names.
+    SymPy 1.14 的 as_dummy 在嵌套求和里会复用 `_0` 这类名字，把外层引用误绑到
+    内层。构造期用新 Dummy 保证唯一；查询键用带深度和位置的固定名字，使同一表达
+    式得到可复现的规范文本，不依赖 Dummy 的全局计数。缓存键包含当前绑定环境：
+    同一节点在不同环境下不能共用结果。
     """
     cache = {}
 
     def visit(node, environment, depth):
+        """在给定绑定环境下递归改写；环境只解释被绑定的符号，不改变其他节点。"""
         if node in environment:
             return environment[node]
         if not node.args:
@@ -85,12 +108,15 @@ def rename_bounds(expression, *, fresh=False):
             bound = dict(environment)
             limits = []
             for position, (variable, start, stop) in enumerate(node.limits):
+                # fresh 用于实例化，每次读取生成互不冲突的 Dummy；非 fresh 用于
+                # 查询键，名字由深度和位置决定，便于稳定比较。
                 symbol = (
                     sp.Dummy("bound", integer=True)
                     if fresh
                     else sp.Symbol(f"_bound_{depth}_{position}", integer=True)
                 )
                 bound[variable] = symbol
+                # 上下限仍在外层环境求值，只有被积函数进入新的绑定层。
                 limits.append(
                     (symbol, visit(start, environment, depth), visit(stop, environment, depth))
                 )
@@ -104,12 +130,19 @@ def rename_bounds(expression, *, fresh=False):
 
 
 def normalize_coordinates(expression, shape):
-    """Adapt exact integer coordinates using their known shape and summation bounds."""
+    """用已知 shape 与求和上下限，把精确整数坐标适配到统一的索引规范形式。
+
+    该函数服务读取实例化：把自由轴符号、求和绑定变量以及常量上的 floor/mod
+    运算翻译成 algebra_indices 的标量索引，再回写到 Indexed 读取上。这样
+    slice/reshape/广播得到的坐标与展开后的求和坐标可以比较；无法解释的坐标
+    保持原样，不为了匹配而猜测改写。
+    """
     from .algebra_indices import Index, add, divide, integer, scale
 
     symbols = {
         symbol: Index("free", axis) for axis, symbol in enumerate(coordinates(shape)) if symbol != 0
     }
+    # Index 的域用半开区间 (start, stop)；Sum/Product 的上下限是闭区间。
     domains = {index: (0, shape[index.number]) for index in symbols.values()}
     for node in expression.atoms(sp.Sum, sp.Product):
         for symbol, start, stop in node.limits:
@@ -120,6 +153,7 @@ def normalize_coordinates(expression, shape):
     reverse = {value: key for key, value in symbols.items()}
 
     def parse(value):
+        """把 SymPy 表达式转成标量索引；无法表达时抛 ValueError。"""
         if value in symbols:
             return symbols[value]
         if value.is_Integer:
@@ -139,6 +173,7 @@ def normalize_coordinates(expression, shape):
         raise ValueError("not a supported coordinate expression")
 
     def emit(index):
+        """把标量索引还原成 SymPy 表达式；优先复用原符号，其余按索引种类展开。"""
         if index in reverse:
             return reverse[index]
         if index.kind in ("zero", "const"):
@@ -158,12 +193,21 @@ def normalize_coordinates(expression, shape):
         try:
             replacements[read] = read.base[tuple(emit(parse(i)) for i in read.indices)]
         except ValueError:
+            # 只替换能完整解释的读取；其余保留原始坐标，避免丢失映射。
             continue
     return expression.xreplace(replacements)
 
 
 @dataclass(frozen=True)
 class SymbolicTensor:
+    """一个输出端口的元素公式及附加事实。
+
+    expression 在自由坐标上取值；defined 是原始定义条件，表示该元素何时有实数
+    解释，不是化简后的域；finite 表示在保留条件下可作有限实数解释，与
+    source.finite 的“无需附加条件的有限”事实分开使用。source 保存源图节点，
+    供有限性分析和查询键使用。
+    """
+
     shape: tuple
     dtype: object
     expression: sp.Basic
@@ -172,6 +216,11 @@ class SymbolicTensor:
     source: object = None
 
     def read(self, indices):
+        """用具体或符号坐标实例化元素公式，返回 (expression, defined)。
+
+        实例化前先给内部 Sum/Product 绑定换新 Dummy，避免调用方已有绑定与读取
+        写入的坐标相互捕获；单位轴坐标是常量 0，不出现在替换表中。
+        """
         replacements = dict(zip(coordinates(self.shape), map(sp.sympify, indices), strict=True))
         replacements.pop(sp.S.Zero, None)
         return (
@@ -180,6 +229,8 @@ class SymbolicTensor:
         )
 
 
+# 已核对语义的逐点原语到 SymPy 函数的映射；这里只建立数学表达式。
+# 部分函数（除法、log、sqrt、反三角函数等）的定义条件由 _operation 另行补充。
 SCALAR = {
     "add": add,
     "sub": sub,
@@ -221,18 +272,34 @@ SCALAR = {
 
 
 class SymbolicBuilder:
-    """Construct values and conditions; all algebraic decisions belong to SymPy."""
+    """把一份已校验的 jaxpr 构造成 SymbolicTensor 序列。
+
+    构造器只维护 SSA 环境、定义条件、来源、有限性和资源计数；所有数学判断
+    （恒等、化简、分支合并）都交给可信 SymPy。遇到无法完整表达的语义就抛出
+    UnsupportedJaxprError，不用近似或丢弃条件换取转换成功。
+    """
 
     def __init__(self, budget=10000):
+        """budget 可以是 Budget 或正整数上限；同一构造器内共享扣减。"""
         self.budget = budget if isinstance(budget, Budget) else Budget(budget)
+        # rules 记录实际使用的适配/规则名，作为后端审计信息，不参与判定。
         self.rules = set()
+        # 预留的常量缓存槽位；当前构造流程直接返回 SymbolicTensor，不读取该列表。
         self.constants = []
+        # 归约绑定变量按次递增命名，保证同一表达式内互不冲突。
         self.next_bound = 0
         self.finiteness = Finiteness()
+        # 不透明运算的稳定身份表；只有完整内容相同才共享同一个函数编号。
         self.definitions = {}
+        # 规范化表达式缓存；键含 shape，只影响构造成本，不改变运算身份。
         self.canonical_values = {}
 
     def input(self, aval, position):
+        """为第 position 个函数输入建立符号值。
+
+        浮点输入取实数假设，整数输入取整数假设，布尔输入用 Eq(x, 1) 表示真值；
+        输入按位置命名，不跟随原 Python 变量名。source 标记该值无条件有限。
+        """
         kind = dtype_kind(aval.dtype)
         if kind not in "fbiu":
             raise UnsupportedJaxprError("algebra.dtype", "requires real, integer or Boolean inputs")
@@ -251,6 +318,12 @@ class SymbolicBuilder:
         )
 
     def constant(self, value, aval):
+        """把一个字面量或捕获常量编码成精确表达式，并记录有限性。
+
+        +Inf 与 NaN 没有当前实数表示，直接拒绝；-Inf 保留为 SymPy 的 -oo。
+        常量数组按具体坐标展开成 Piecewise，而不是引入新的自由符号，因此相同
+        常量的两次出现拥有同一身份，不同常量不会被误认。
+        """
         array = np.asarray(value, dtype=aval.dtype)
         if dtype_kind(aval.dtype) not in "fbiu":
             raise UnsupportedJaxprError("algebra.constant", "non-real constants are unsupported")
@@ -260,14 +333,17 @@ class SymbolicBuilder:
             raise UnsupportedJaxprError(
                 "algebra.constant", "positive infinity and NaN literals are not represented"
             )
+        # 先按元素个数扣预算：常量内容本身也可能很大。
         self.budget.spend(max(1, array.size), path="algebra.constants")
         exact = _exact_array(array)
         if array.size == 0:
+            # 空张量没有元素可读；表达式只作为占位。
             expression = sp.S.Zero
         elif array.size == 1 or np.all(array == array.flat[0]):
+            # 标量或所有元素相同：用一个统一表达式表示，避免无意义的 Piecewise。
             expression = sp.sympify(exact.flat[0])
         else:
-            # Immutable explicit constants retain their values, never fresh symbolic identities.
+            # 具体常量保留字面值，不引入新的自由符号身份。
             indices = coordinates(array.shape)
             expression = sp.Piecewise(
                 *[
@@ -293,6 +369,12 @@ class SymbolicBuilder:
         )
 
     def graph(self, graph, inputs=None):
+        """按 SSA 顺序转换一张（子）图并返回有序输出。
+
+        未提供实参的 invar 变成位置符号输入，constvar 绑定常量；inputs 用于区域
+        适配器把父图已构造的值传入子图。Literal 操作数不进入环境，读取时单独转成
+        常量。未被输出使用的计算不会删除，而是在 finish 中保留其定义条件。
+        """
         environment = {} if inputs is None else dict(zip(graph.invars, inputs, strict=True))
         for position, var in enumerate(graph.invars):
             if var not in environment:
@@ -301,20 +383,23 @@ class SymbolicBuilder:
             environment[var] = self.constant(value, var.aval)
 
         def read(var):
+            """把操作数解析成 SymbolicTensor；字面量直接编码，变量查 SSA 环境。"""
             if hasattr(var, "val"):
                 return self.constant(var.val, var.aval)
             return environment[var]
 
         for position, equation in enumerate(graph.eqns):
+            # 每条方程单独计费，便于定位预算耗尽的具体位置。
             self.budget.spend(path=f"algebra.convert.eqns[{position}]")
             values = [read(var) for var in equation.invars]
             outputs = self.operation(equation, values, position)
             for var, output in zip(equation.outvars, outputs, strict=True):
                 if tuple(var.aval.shape) != output.shape:
+                    # 构造器自身形状错误属于适配器缺陷，按内部错误向上传递。
                     raise ValueError("symbolic output shape differs from the jaxpr")
                 environment[var] = output
 
-        # Unused partial computations still constrain the original program's domain.
+        # 未被使用的部分计算仍可能产生除零等定义条件，不能当作 DCE 删除。
         used = {var for var in graph.outvars if not hasattr(var, "val")}
         unused = []
         for equation in reversed(graph.eqns):
@@ -326,6 +411,12 @@ class SymbolicBuilder:
         return self.finish([read(var) for var in graph.outvars], unused)
 
     def finish(self, outputs, unused):
+        """把未使用计算的定义条件合取到所有输出上，返回最终值。
+
+        删除未使用计算会放宽原程序的定义域，从而可能把只在部分输入上有定义的
+        程序误判为等价；因此这些条件必须并入每个输出。若整张图没有输出却存在
+        部分计算，没有任何输出能承载该条件，只能明确拒绝。
+        """
         from .algebra_trusted import _domain
 
         condition = sp.And(*(value.defined for value in unused))
@@ -339,7 +430,13 @@ class SymbolicBuilder:
         return [replace(value, defined=sp.And(value.defined, condition)) for value in outputs]
 
     def definition(self, operation, values, outputs):
-        """Intern exact tensor definitions; scalar SymPy functions carry only output indices."""
+        """为一次不透明运算登记稳定身份，并返回需要捕获的输入符号。
+
+        身份由原语名、编码后的参数、各输入的 shape/dtype/规范化表达式/条件以及
+        输出抽象值共同决定；只有完整内容相同才共享同一个函数编号。返回的
+        captured 是表达式中来自外层的整数/Dummy 符号，之后会改名成显式参数，
+        避免把张量容器或循环绑定误当成普通实数参数。
+        """
         from sympy.core.function import AppliedUndef
 
         from .algebra_trusted import _domain, simplify
@@ -355,6 +452,7 @@ class SymbolicBuilder:
                 ):
                     captured.add(symbol)
         captured = tuple(sorted(captured, key=sp.default_sort_key))
+        # 改写为固定参数名，使同一运算在不同组合中的身份保持一致。
         replacements = {
             s: sp.Symbol(f"_capture{i}", **({"integer": True} if s.is_integer else {"real": True}))
             for i, s in enumerate(captured)
@@ -372,6 +470,8 @@ class SymbolicBuilder:
                     for pw in expression.atoms(sp.Piecewise)
                     for _, condition in pw.args
                 )
+                # 整数/布尔表达式没有编码溢出语义，含不透明函数的条件缺少实数
+                # 不等式模型；这两类只统一绑定名，不做实数化简。
                 self.canonical_values[cache_key] = (
                     rename_bounds(expression)
                     if dtype_kind(value.dtype) in "biu" or opaque_guard
@@ -379,6 +479,8 @@ class SymbolicBuilder:
                 )
             canonical = self.canonical_values[cache_key].xreplace(replacements)
             if operation[0] == "convert_element_type":
+                # cast 的元素值依赖具体坐标；在小张量上把至多 64 个点的规范表达式
+                # 展开成元组，防止不同输入被错误合并成同一换算身份。
                 selected, count = [], 1
                 for axis, extent in enumerate(value.shape):
                     if 1 < extent and count * extent <= 64:
@@ -408,11 +510,20 @@ class SymbolicBuilder:
         return self.definitions[key], captured
 
     def bound(self, extent):
+        """生成一次归约的绑定变量，返回 (symbol, 0, extent - 1)。
+
+        使用 Dummy 保证同一表达式中多次归约不会共用绑定名；名字只用于打印，
+        身份由对象本身决定。extent 为 0 时上下限退化，调用方需另行处理空归约。
+        """
         symbol = sp.Dummy(f"k{self.next_bound}", integer=True, nonnegative=True)
         self.next_bound += 1
         return symbol, 0, extent - 1
 
     def broadcast(self, value, shape):
+        """把值按 JAX 广播规则读取到 shape，返回 (expression, defined)。
+
+        广播只允许在左侧补轴或扩展长度为 1 的轴；扩展轴读 0 号元素。
+        """
         indices = coordinates(shape)[len(shape) - len(value.shape) :]
         return value.read(
             tuple(
@@ -421,6 +532,12 @@ class SymbolicBuilder:
         )
 
     def universal(self, condition, limits):
+        """把逐点定义条件提升为“对整个归约域都成立”的条件。
+
+        小域直接逐点合取；大域用 Product(Piecewise) == 1 的惰性等式表达同一
+        语义，避免生成长布尔表达式。该提升只用于归约轴，不能拿单点条件代表
+        整个域。
+        """
         if condition == sp.true or not limits:
             return condition
         count = prod(int(stop - start + 1) for _, start, stop in limits)
@@ -439,7 +556,13 @@ class SymbolicBuilder:
         return sp.Eq(sp.Product(sp.Piecewise((1, condition), (0, True)), *limits), 1)
 
     def summation(self, expression, limits, defined=sp.true):
-        """Use the existing zero-based coordinate convention for total rectangular domains."""
+        """构造有限求和，并在可证明安全时改写为零基前缀差分形式。
+
+        只改写保持同一覆盖的矩形域：单点轴先代入，所有读取都带同一非负偏移时
+        平移绑定，读取完整轴时用“全长前缀减前缀”扩展起点。任何可能越界、部分
+        定义或含非有限值的求和都保留原始 Sum，交给 SymPy 以惰性形式比较。
+        """
+        # 长度为 1 的轴没有可选坐标；先代入常量即可消去绑定。
         singletons = {
             variable: sp.sympify(start) for variable, start, stop in limits if start == stop
         }
@@ -448,6 +571,7 @@ class SymbolicBuilder:
         if not limits:
             return expression
         node = sp.Sum(expression, *limits)
+        # 部分函数在未定义点不能按实数恒等式改写；非有限值同理。
         if defined != sp.true or expression.has(sp.oo, -sp.oo, sp.nan, sp.zoo):
             return node
         for variable, _, _ in tuple(node.limits):
@@ -463,7 +587,7 @@ class SymbolicBuilder:
             if len(offsets) == 1 and None not in offsets and next(iter(offsets)) > 0:
                 offset = next(iter(offsets))
                 node = node.change_index(variable, variable + offset)
-        # Extension is valid only for total reads that stay inside the source array.
+        # 只有读取范围不越界时，才能把起点扩展成 0..stop 的完整前缀。
         for variable, start, stop in node.limits:
             if start == 0:
                 continue
@@ -477,6 +601,7 @@ class SymbolicBuilder:
             ((1, (v, 0, stop)),) if start == 0 else ((1, (v, 0, stop)), (-1, (v, 0, start - 1)))
             for v, start, stop in node.limits
         ]
+        # 多轴同时扩展会产生前缀差分的笛卡尔积，逐项计费后再构造。
         self.budget.spend(prod(len(choice) for choice in choices), path="algebra.index_domains")
         return sp.Add(
             *(
@@ -487,10 +612,17 @@ class SymbolicBuilder:
         )
 
     def operation(self, eq, values, position):
-        """Keep the existing source-defined finiteness analysis at the conversion boundary."""
+        """转换一条方程：先建立来源与有限性，再选择逐点映射或不透明同余。
+
+        Source 沿用源图的有限性分析（如 guarded softmax），作为“在保留条件下可
+        作有限实数解释”的依据。区域原语交给 algebra_symbolic_regions 绑定；非有限
+        输入、离散原语和窄化 cast 没有完整实数模型，改走 opaque() 只保留整个运算
+        的身份与条件，禁止套用实数代数。返回值必须与方程输出端口一一对应。
+        """
         from sympy.core.function import AppliedUndef
 
         name = eq.primitive.name
+        # 区域原语由 algebra_symbolic_regions 统一绑定，这里不对内部逐点展开。
         region = name in (
             "jit",
             "pjit",
@@ -502,6 +634,7 @@ class SymbolicBuilder:
         )
         sources = []
         for var in eq.outvars:
+            # 部分值（如区域适配器新构造的输出）没有来源，用有限性标记构造占位来源。
             inputs = tuple(
                 v.source or Source(None, v.shape, v.dtype, finite=v.finite) for v in values
             )
@@ -512,13 +645,16 @@ class SymbolicBuilder:
                 inputs,
                 eq.params,
             )
+            # 区域和多输出没有逐点有限性规则；保守标为非有限，避免误用实数消项。
             source.finite = (
                 self.finiteness.is_finite(source) if not region and len(eq.outvars) == 1 else False
             )
             if dtype_kind(var.aval.dtype) in "biu":
+                # 整数/布尔值没有浮点非有限状态。
                 source.finite = True
             sources.append(source)
         self.rules.update(self.finiteness.rules)
+        # 纯布局/视图原语：输出元素与输入元素一一对应，有限性只取决于输入。
         layouts = {
             "broadcast_in_dim",
             "reshape",
@@ -533,6 +669,7 @@ class SymbolicBuilder:
             "pad",
         }
         if name == "reduce_sum" and all(values[0].shape[axis] == 1 for axis in eq.params["axes"]):
+            # 单位轴求和等于恒等，不产生新值。
             layouts.add(name)
         narrowing = (
             name == "convert_element_type"
@@ -545,6 +682,8 @@ class SymbolicBuilder:
         if narrowing:
             from .algebra_trusted import simplify
 
+            # 浮点窄化 cast 可能把有限输入变成 inf；不能用实数恒等式表示，
+            # 改为逐元素不透明函数，并把“该点转换有定义”作为条件保留。
             value = values[0]
             bounds = sp.And(
                 *(i < n for i, n in zip(coordinates(value.shape), value.shape, strict=True))
@@ -610,10 +749,15 @@ class SymbolicBuilder:
                 )
             )
         ):
+            # 以上情况没有已核对的实数模型：非有限输入、窄化、离散/比较类原语、
+            # 含符号的整数运算，以及依赖不透明函数结果的值域转换。失败方向必须
+            # 保守：保留整个运算同余，而不是猜测数学等价。
             return self.opaque(eq, values, sources)
         outputs = self._operation(eq, values, position)
         if region:
             return outputs
+        # 纯布局运算的输出有限性由输入决定；其余运算的 finite 已由 result() 按
+        # 表达式是否含非有限值给出。
         return [
             replace(
                 value,
@@ -624,7 +768,13 @@ class SymbolicBuilder:
         ]
 
     def opaque(self, eq, values, sources):
-        """Congruence of a complete operation, without applying real algebra to nonfinite values."""
+        """把整个运算表示成一个未解释函数调用，只保留完整同余。
+
+        参数是捕获变量和输出坐标，另设 defined_ 函数保存“该输出端口有定义”的
+        条件。适用于非有限值、离散语义和窄化：对这些值套用实数代数没有依据，
+        而相同运算加相同输入条件仍可安全判等。该表示只能支持同余的正结论，
+        泛化问题的 False 不能当作源程序反例。
+        """
         from .algebra_semantics import encode
 
         name = eq.primitive.name
@@ -635,6 +785,7 @@ class SymbolicBuilder:
             shape = tuple(var.aval.shape)
             args = (*captured, *coordinates(shape))
             label = f"{name}_{identity}_{port}"
+            # 非有限输出不加 real 假设：有限实数恒等式不能用于消项。
             expression = sp.Function("opaque_" + label, real=True if source.finite else None)(*args)
             if dtype_kind(var.aval.dtype) == "b":
                 expression = sp.Eq(expression, 1)
@@ -645,10 +796,16 @@ class SymbolicBuilder:
         return result
 
     def _operation(self, eq, values, position):
+        """把一条已核对原语映射成逐点/索引表达式，返回按端口排列的 SymbolicTensor。
+
+        每个分支都必须保留完整的操作数、坐标和参数语义；没有适配的分支在末尾
+        显式抛出 UnsupportedJaxprError，不能返回近似表达式。
+        """
         name, params = eq.primitive.name, eq.params
         path = f"algebra.convert.eqns[{position}].{name}"
         self.rules.add(name)
         if "call_jaxpr" in params and name in ("custom_jvp_call", "custom_vjp_call"):
+            # 自定义求导调用保留调用边界，内部图交给同一个构造器。
             return self.graph(params["call_jaxpr"], values)
         if name in ("jit", "pjit"):
             if (
@@ -656,12 +813,15 @@ class SymbolicBuilder:
                 and all(value.finite for value in values)
                 and all(dtype_kind(v.aval.dtype) == "f" for v in eq.outvars)
             ):
+                # 两份图中已核对相同的共享调用不必再次展开；用不透明函数按端口
+                # 保留身份和整体定义条件，避免依赖各自的私有实现细节。
                 identity, inputs, outputs = params["common_call"]
                 identity, captured = self.definition(
                     ("common_jit", identity),
                     [values[i] for i in inputs],
                     [eq.outvars[i] for i in outputs],
                 )
+                # 定义条件覆盖整个调用，所有输出端口共用同一份条件。
                 domain = sp.Eq(sp.Function(f"defined_call_{identity}")(*captured), 1)
                 result = [None] * len(outputs)
                 for port, mapped in enumerate(outputs):
@@ -680,6 +840,7 @@ class SymbolicBuilder:
         if name in ("cond", "scan", "while"):
             from .algebra_symbolic_regions import region
 
+            # 区域内部用同一个构造器绑定实参、carry 和返回口。
             return region(self, eq, values, path)
         if len(eq.outvars) != 1 and name != "split":
             raise UnsupportedJaxprError(path, "multiple-output primitive has no symbolic adapter")
@@ -687,6 +848,7 @@ class SymbolicBuilder:
         shape, axes = tuple(aval.shape), coordinates(aval.shape)
 
         def result(expression, defined=sp.true):
+            """包装单输出：统一坐标规范化，并按表达式是否含非有限值标记 finite。"""
             return [
                 SymbolicTensor(
                     shape,
@@ -698,24 +860,28 @@ class SymbolicBuilder:
             ]
 
         if name == "empty2":
-            # The pinned JAX primitive's _empty2_lower emits a scalar zero,
-            # including residual placeholders introduced by transpose rules.
+            # 锁定版本 JAX 的 _empty2_lower 返回标量零（含转置规则产生的残差占位），
+            # 因此按全定义零处理；该结论不能外推到其他原语。
             return result(0)
 
         if name in SCALAR:
             if params.get("accuracy") is not None:
+                # 非默认 accuracy 改变浮点语义，当前映射只覆盖默认值。
                 raise UnsupportedJaxprError(path, "non-default scalar accuracy")
             args, conditions = zip(*(self.broadcast(v, shape) for v in values), strict=True)
             if name in ("not", "and", "or") and any(dtype_kind(v.dtype) != "b" for v in values):
+                # 整数的 and/or/not 是位运算，不是布尔逻辑。
                 raise UnsupportedJaxprError(path, "integer bitwise arithmetic is not Boolean logic")
             if (
                 dtype_kind(aval.dtype) in "iu"
                 and name not in ("max", "min")
                 and any(arg.free_symbols for arg in args)
             ):
+                # 固定宽度整数没有编码溢出语义，不对符号整数套用实数代数。
                 raise UnsupportedJaxprError(
                     path, "fixed-width integer arithmetic has no real interpretation"
                 )
+            # 为部分函数补上原始定义条件；条件成立前不做实数化简。
             domain = sp.And(*conditions)
             if name == "div":
                 domain &= sp.Ne(args[1], 0)
@@ -736,6 +902,7 @@ class SymbolicBuilder:
             scalar_args = (*args, params["y"]) if name == "integer_pow" else args
             expression = sp.sympify(SCALAR[name](*scalar_args))
             if dtype_kind(aval.dtype) in "iu" and not expression.free_symbols:
+                # 常量整数运算按 dtype 值域检查；溢出值没有可表示的数学结果。
                 limits = np.iinfo(aval.dtype)
                 if not expression.is_Integer or not limits.min <= expression <= limits.max:
                     raise UnsupportedJaxprError(
@@ -743,18 +910,22 @@ class SymbolicBuilder:
                     )
             return result(expression, domain)
         if name in ("stop_gradient", "copy"):
+            # 两者不改变元素值，只是视图/停止梯度包装。
             return result(*values[0].read(axes))
         if name == "convert_element_type":
             value = values[0]
             if np.dtype(value.dtype) == np.dtype(aval.dtype):
+                # 同 dtype 转换（含 weak_type 变化）不改变元素值。
                 return result(*value.read(axes))
             expression, domain = value.read(axes)
             if np.dtype(value.dtype).kind == "b":
                 return result(sp.Piecewise((1, expression), (0, True)), domain)
             if not expression.free_symbols:
+                # 常量转换交给 NumPy 按目标 dtype 舍入，再取精确值。
                 converted = np.asarray(float(expression), dtype=aval.dtype)
                 return result(_exact_array(converted).item(), domain)
             if dtype_kind(value.dtype) == dtype_kind(aval.dtype) == "f":
+                # 不同浮点格式之间的舍入没有实数恒等式，只能逐元素保留为不透明函数。
                 function = sp.Function(f"cast_{value.dtype}_to_{aval.dtype}", real=True)
                 self.rules.add("scalar:convert_element_type")
                 return result(function(expression), domain)
@@ -785,9 +956,11 @@ class SymbolicBuilder:
         if name == "reshape":
             original = values[0]
             if prod(shape) == 0:
+                # 空张量没有元素可读，表达式只作为占位。
                 return result(0)
             order = params.get("dimensions") or tuple(range(len(original.shape)))
             old_shape = tuple(original.shape[i] for i in order)
+            # 把新坐标压成行主序线性下标，再按旧 shape 的步长还原每个轴。
             flat = sum(i * prod(shape[axis + 1 :]) for axis, i in enumerate(axes))
             indices = [None] * len(old_shape)
             for axis, source in enumerate(order):
@@ -812,6 +985,8 @@ class SymbolicBuilder:
             for coordinate, extent, (low, _, interior) in zip(
                 axes, original.shape, params["padding_config"], strict=True
             ):
+                # 输出坐标减去低侧 padding 后还原到原数组坐标；只有落在内部且
+                # 对齐到内部采样点时才读取，否则使用填充值。
                 shifted = coordinate - low
                 indices.append(sp.floor(shifted / (interior + 1)))
                 guards.extend(
@@ -829,6 +1004,7 @@ class SymbolicBuilder:
                 sp.Or(sp.And(guard, domain), sp.And(sp.Not(guard), fill_domain)),
             )
         if name == "dynamic_slice":
+            # JAX 会把动态起点钳制到 [0, size - extent]；起点的定义条件也必须保留。
             indices = tuple(
                 i + sp.Min(sp.Max(start.expression, 0), size - extent)
                 for i, start, size, extent in zip(
@@ -847,6 +1023,7 @@ class SymbolicBuilder:
                 )
             )
         if name == "tile":
+            # 块内坐标取原数组坐标的模；左侧补 1 便于与输出轴对齐。
             padded = (1,) * (len(shape) - len(values[0].shape)) + values[0].shape
             indices = tuple(
                 0 if size == 1 else sp.Mod(i, size) for size, i in zip(padded, axes, strict=True)
@@ -873,6 +1050,7 @@ class SymbolicBuilder:
             expression, domain = original.read(indices)
             empty = any(original.shape[axis] == 0 for axis in params["axes"])
             if empty:
+                # 空归约使用各原语的单位元；-inf/+inf 在这里只作为该原语的值。
                 return result(
                     {
                         "reduce_sum": 0,
@@ -893,6 +1071,7 @@ class SymbolicBuilder:
                     else function(expression, *limits),
                     self.universal(domain, limits),
                 )
+            # 有限域上的 max/min/布尔归约逐点展开；展开成本先扣预算。
             count = prod(stop + 1 for _, _, stop in limits)
             self.budget.spend(count, path=path)
             terms = [
@@ -908,12 +1087,14 @@ class SymbolicBuilder:
             return result(function(*terms), self.universal(domain, limits))
         if name == "dot_general":
             if params.get("precision") not in (None, (None, None)):
-                # Explicit precision remains outside this ideal-real adapter's contract.
+                # 显式精度属于浮点执行细节，不在理想实数适配的契约内。
                 raise UnsupportedJaxprError(path, "non-default dot precision")
             left, right = values
             (ca, cb), (ba, bb) = params["dimension_numbers"]
             ia, ib = [None] * len(left.shape), [None] * len(right.shape)
             free = iter(axes)
+            # 批次维共享输出自由坐标；收缩维稍后变成同一个求和绑定；其余维按
+            # 输出位置依次取自由坐标。
             for a, b in zip(ba, bb, strict=True):
                 ia[a] = ib[b] = next(free)
             for indices, contracted, batched in ((ia, ca, ba), (ib, cb, bb)):
@@ -928,6 +1109,7 @@ class SymbolicBuilder:
             a, da = left.read(ia)
             b, db = right.read(ib)
             if any(left.shape[axis] == 0 for axis in ca):
+                # 空收缩维求和是零。
                 return result(0)
             return result(
                 self.summation(a * b, limits, sp.And(da, db)),
@@ -937,6 +1119,7 @@ class SymbolicBuilder:
             pred, pred_domain = self.broadcast(values[0], shape)
             branches = [self.broadcast(value, shape) for value in values[1:]]
             boolean = np.dtype(values[0].dtype).kind == "b"
+            # 布尔谓词只有两支（谓词真/假）；整数谓词按取值选择对应分支。
             guards = [
                 (sp.Not(pred) if i == 0 else pred) if boolean else sp.Eq(pred, i)
                 for i in range(len(branches))
@@ -958,6 +1141,7 @@ class SymbolicBuilder:
         if name in ("concatenate", "stack"):
             axis = params.get("dimension", params.get("axis"))
             branches, domains, offset = [], [], 0
+            # 沿拼接轴给每个输入加半开区间守卫，再合成 Piecewise。
             for value in values:
                 index = list(axes)
                 if name == "stack":
@@ -979,6 +1163,7 @@ class SymbolicBuilder:
             )
         if name == "split":
             outputs, offset = [], 0
+            # 每个输出只在 split 轴的一段区间上读取输入；各段首尾相接覆盖该轴。
             for var, extent in zip(eq.outvars, params["sizes"], strict=True):
                 index = list(coordinates(var.aval.shape))
                 index[params["axis"]] += offset

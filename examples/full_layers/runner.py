@@ -1,4 +1,18 @@
-"""完整层验收与可重放报告；只运行预先 hardcode 的 AI 候选。"""
+"""完整层验收与可重放报告；只运行预先 hardcode 的 AI 候选。
+
+对 FAMILIES 中的 GLM5、Llama、CLIP、Flux joint attention，逐配置执行原图
+IR 检查、原图对应证据、对称性、规范化幂等、两侧规范化前后 CPU 执行、
+独立 NumPy 参照及数值见证。报告保存 cases/counts；--supplemental 另加
+derivatives、indexer、boundaries、unverified 与 supplemental_counts。
+
+运行：
+  uv run python -m examples.full_layers.runner --supplemental --report /tmp/full-layers.json
+  uv run python -m examples.full_layers.runner --family glm5 --samples 3
+
+成功时打印 counts 并返回 0；断言失败、参数非法或 original 源码边界改变时
+抛出异常/parser.error，退出码非零。报告是本地 CPU 证据，不声明全模型或
+所有配置的通过，也不把 unknown/拒绝路径计入等价数。
+"""
 
 import argparse
 import hashlib
@@ -23,10 +37,16 @@ from .upstream import original_imports
 
 
 def signature(args):
+    """把 pytree 叶子编码为 shape、dtype 与内容 SHA-256，供精确重放。
+
+    返回列表，每项对应一个叶子。大权重不嵌入报告，只保留摘要；重放时
+    按报告记录的 family/profile/seed 重新构造输入并核对摘要。
+    """
     return [
         {
             "shape": list(x.shape),
             "dtype": str(x.dtype),
+            # 摘要用于确认重放输入一致，不代替数值比较。
             "sha256": hashlib.sha256(np.asarray(x).tobytes()).hexdigest(),
         }
         for x in jax.tree.leaves(args)
@@ -38,6 +58,9 @@ def raw_schedule(graph):
 
     连续三个 dense 的算子名序列可能完全相同；实际 Q/K/V 权重实参改变
     已经构成真实换序，不能只用 Primitive 名称序列作覆盖证据。
+
+    返回 tuple((primitive, inputs))，inputs 把每个操作数编码为输入、常量、
+    字面量或前序结果端口。该结果只用于判断实际换序，不参与等价判定。
     """
     values = {v: ("input", i) for i, v in enumerate(graph.invars)}
     values.update({v: ("constant", i) for i, v in enumerate(graph.constvars)})
@@ -55,7 +78,11 @@ def raw_schedule(graph):
 
 
 def numerical_witness(left, right):
-    """保存反例的差异位置与两个实际值；输入由报告的 seed/config 精确重放。"""
+    """保存反例的差异位置与两个实际值；输入由报告的 seed/config 精确重放。
+
+    返回第一个超出 rtol=atol=2e-3 的端口、索引、两侧值与最大绝对差；
+    全部在容差内时返回 None。该阈值只用于标记数值见证，不构成图结论。
+    """
     for port, (a, b) in enumerate(zip(jax.tree.leaves(left), jax.tree.leaves(right), strict=True)):
         a, b = np.asarray(a).astype(np.float64), np.asarray(b).astype(np.float64)
         wrong = ~np.isclose(a, b, rtol=2e-3, atol=2e-3, equal_nan=True)
@@ -71,6 +98,8 @@ def numerical_witness(left, right):
     return None
 
 
+# family -> (profiles, hardcode 候选组, 独立 NumPy 参照)。完整 Flux block 的
+# 原图追踪被拒绝，不在表内；其候选只在 candidates.py 中保留源码。
 FAMILIES = {
     "glm5": (PROFILES, GLM5_CASES, oracles.glm5),
     "llama": (PROFILES, LLAMA_CASES, oracles.llama),
@@ -80,6 +109,7 @@ FAMILIES = {
 
 
 def build_case(family, profile, mesh):
+    """按 family 构造对应原始层，返回提供 sample/function 的 case 对象。"""
     if family == "glm5":
         return Glm5Case(profile, mesh)
     if family == "llama":
@@ -88,6 +118,13 @@ def build_case(family, profile, mesh):
 
 
 def verify(profile, *, family="glm5", samples=3):
+    """对单个 family/profile 执行全部候选的图比较与数值验收。
+
+    返回每个候选一行的报告记录。samples 为独立随机种子数，每个种子使用
+    独立权重与输入。不打印、不写文件；失败时抛出断言异常。验证内容包括
+    原图 IR、NumPy 参照、图预判、对应证据、对称性、幂等、原图不变、
+    规范化前后执行及负例数值见证。
+    """
     profiles, candidates, oracle = FAMILIES[family]
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), original_imports():
@@ -99,6 +136,7 @@ def verify(profile, *, family="glm5", samples=3):
         core.check_jaxpr(graph)
         base_compiled = jax.jit(base)
         expected_outputs = [base_compiled(*args) for args in inputs]
+        # 每个样本的 base 输出先与独立 NumPy 参照核对，防止两侧同时算错。
         for args, expected in zip(inputs, expected_outputs, strict=True):
             close(
                 expected, oracle(case, args), low_precision=profile.dtype != np.float32, oracle=True
@@ -109,9 +147,11 @@ def verify(profile, *, family="glm5", samples=3):
             other = jax.make_jaxpr(candidate)(*inputs[0])
             core.check_jaxpr(other)
             report = compare_jaxprs(graph, other)
+            # 预判是写候选时人工固定的标签，不相符即失败。
             assert report.status.value == expected, (fn.__name__, report)
             if expected == "equivalent":
                 assert report.correspondence is not None
+                # 正例还要求反向比较，确认不是单向偶然匹配。
                 assert compare_jaxprs(other, graph).status == Status.EQUIVALENT
                 # 确认实际依赖排列改变，排除仅改变 Python 函数名称的伪覆盖。
                 assert raw_schedule(graph) != raw_schedule(other)
@@ -120,6 +160,7 @@ def verify(profile, *, family="glm5", samples=3):
             for form in normalized:
                 assert form is not None and form.complete
                 core.check_jaxpr(form.jaxpr)
+                # 幂等：再次规范化必须得到同一图，避免表示不稳定。
                 assert canonicalize(form.jaxpr).graph == form.graph
                 executables.append(
                     jax.jit(lambda *xs, g=form.jaxpr: core.eval_jaxpr(g, g.consts, *xs))
@@ -130,6 +171,7 @@ def verify(profile, *, family="glm5", samples=3):
                 output = compiled(*args)
                 assert jax.tree.structure(value) == jax.tree.structure(output)
                 flat = jax.tree.leaves(args)
+                # 两侧规范化图分别执行，证明重排前后数值一致。
                 close(value, executables[0](*flat))
                 close(output, executables[1](*flat))
                 if expected == "equivalent":
@@ -138,6 +180,7 @@ def verify(profile, *, family="glm5", samples=3):
                     evidence = numerical_witness(value, output)
                     if evidence is not None:
                         witness = {"seed": seed, "inputs": signature(args), **evidence}
+            # 负例必须有数值见证，不能用“图不同”代替数值证据。
             assert expected == "equivalent" or witness is not None
             rows.append(
                 {
@@ -151,6 +194,7 @@ def verify(profile, *, family="glm5", samples=3):
                         if family in ("glm5", "llama")
                         else "original pure JAX/CPU XLA"
                     ),
+                    # 记录静态构造开关，说明该结论对应的实际运行分支。
                     "static_configuration": (
                         {
                             "forward_mode": profile.mode,
@@ -188,15 +232,24 @@ def verify(profile, *, family="glm5", samples=3):
                     },
                 }
             )
+        # 所有候选跑完后原图字符串必须不变，防止验收过程意外修改基准。
         assert str(graph) == before
         return rows
 
 
 def verify_glm5(profile, *, samples=3):
+    """兼容旧调用：等价于 family="glm5" 的 verify。"""
     return verify(profile, samples=samples)
 
 
 def main():
+    """解析参数，逐 family/profile 运行 verify 并输出报告与 counts。
+
+    --family 限定单个 family，--samples 为每组数值样本数，--supplemental
+    另列求导、索引器与硬件边界证据（要求不指定 --family）。--report 写 JSON；
+    始终把 counts 打印到标准输出。参数非法时 parser.error 以退出码 2 结束；
+    验证失败时异常向上传播，退出码非零。
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--family", choices=tuple(FAMILIES))
@@ -226,6 +279,7 @@ def main():
             "jax_default_prng_impl": jax.config.jax_default_prng_impl,
         },
         "cases": rows,
+        # counts 只统计前向主表；unknown/拒绝路径由 supplemental 单独列出。
         "counts": {
             "source_classes": len(families),
             "candidates": sum(len(FAMILIES[family][1]) for family in families),
@@ -246,6 +300,7 @@ def main():
             parser.error("--supplemental checks all families; omit --family")
         from .evidence import supplemental_report
 
+        # supplemental 证据不并入 cases/counts，避免把 unknown 或拒绝计作通过。
         result["supplemental"] = supplemental_report()
         result["supplemental_counts"] = {
             group: {

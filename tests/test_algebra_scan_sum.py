@@ -1,4 +1,15 @@
-"""独立 scan 累加与有限求和互认，以及反馈、序列输出和资源反例。"""
+"""独立 scan 累加与有限求和互认，以及反馈、序列输出和资源反例。
+
+覆盖：
+- 正例：独立累加 scan（含初值、reverse、unroll、零长度与多维序列）与 ``initial + sum``
+  在 forward/jvp/vjp 下等价，命中 ``scan:independent_accumulation`` 规则；独立 carry、
+  捕获的线性增量、序列输出与常量增量（长度 0/1/9）也保持。
+- 反例：减法、换输入、双倍、错误初值、错误轴、交叉 carry 反馈、序列历史/输出顺序改变、
+  死代码体与错误自定义梯度都不能匹配。
+- 资源：求和长度与查询工作量保持符号表示并受预算限制。
+
+前置条件：CPU 平台与 SymPy 1.14；JVP/VJP 只覆盖实际追踪出的一阶程序。
+"""
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +34,7 @@ def _scan(initial, x, *, reverse=False, unroll=1):
 @pytest.mark.parametrize(
     "shape,reverse,unroll",
     [
+        # 长度为 0/1/7，reverse 与多种 unroll（含 0 表示自动）组合；形状含多维序列。
         ((0,), False, 1),
         ((1,), True, 1),
         ((7,), False, 2),
@@ -35,6 +47,7 @@ def _scan(initial, x, *, reverse=False, unroll=1):
 )
 @pytest.mark.parametrize("mode", ["forward", "jvp", "vjp"])
 def test_scan_equals_sum_with_initial_and_all_derivative_modes(shape, reverse, unroll, mode):
+    """独立累加与 initial+sum 等价；reverse/unroll 不改变累加语义。"""
     initial = jnp.full(shape[1:], 2.0, dtype=jnp.float32)
     x = jnp.ones(shape, dtype=jnp.float32)
     result = compare_functions(
@@ -48,6 +61,7 @@ def test_scan_equals_sum_with_initial_and_all_derivative_modes(shape, reverse, u
     assert result.status == Status.EQUIVALENT, result
     assert result.cpu_compiled
     evidence = result.modes[0]
+    # 只有实际走了代数路径时才要求规则名；结构等价时 algebra 为 None。
     if evidence.algebra is not None:
         assert evidence.algebra.equivalence_kind == "algebraic"
         assert "scan:independent_accumulation" in evidence.algebra.rules

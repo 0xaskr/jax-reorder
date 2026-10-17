@@ -1,4 +1,16 @@
-"""遮蔽 softmax 的有限输出事实仅由完整源图建立；全部检查只 tracing。"""
+"""遮蔽 softmax 的有限输出事实仅由完整源图建立；全部检查只 tracing。
+
+覆盖：
+- 正例：guarded softmax（先 mask 成 -inf 再 softmax，最后 where 归零）在 float32/
+  float16/bfloat16、普通与嵌套 jit 下都能证明 P@V 的两种写法等价，命中
+  ``guarded_softmax_finite`` 规则；全 mask 行同样成立。
+- 反例：guard 与归约轴不匹配、谓词/分支/常量被替换、logits 未经证明有限、复数 tanh 的
+  极点、float8 不含无穷的转换、非有限复数常量经过 abs、gather 的非有限填充值、scan
+  carry 与后续迭代的非有限值都拒绝或判不等价。
+- 附注：内部 Token 必须被显式拒绝，不能因属性访问抛 AttributeError。
+- 前置条件：CPU 平台与 SymPy 1.14；autouse fixture 禁止真实数组执行，只允许 tracing 与
+  符号推理，因此这些测试不产生 CPU 执行证据。
+"""
 
 import jax
 import jax.numpy as jnp
@@ -20,31 +32,39 @@ from jax_reorder.algebra_transport import freeze
 
 @pytest.fixture(autouse=True)
 def no_array_execution(monkeypatch):
+    """阻止编译与 primitive 执行；这些结论必须只靠 tracing 和符号推理得到。"""
     jax.devices()
 
     def forbidden(*args, **kwargs):
         raise AssertionError("this test must only trace and reason symbolically")
 
+    # 同时拦截编译入口和 primitive 分发，任何误触发的执行都会立即失败。
     monkeypatch.setattr(compiler, "backend_compile_and_load", forbidden)
     monkeypatch.setattr(dispatch, "apply_primitive", forbidden)
 
 
 def signature(shape, dtype=jnp.float32):
+    """构造抽象输入，使结论覆盖全部取值而不依赖具体样本。"""
     return jax.ShapeDtypeStruct(shape, dtype)
 
 
 def guarded(x, mask):
+    """guarded softmax：全 mask 行在最后 where 中归零，有限性依赖这个最终 guard。"""
     return jnp.where(mask, jax.nn.softmax(jnp.where(mask, x, -jnp.inf)), 0.0)
 
 
 def compare_pv(probabilities, shape=(2, 3), dtype=jnp.float32):
+    """比较 P@V 与“广播乘积再求和”两种写法；rewrite 只是同一函数里的布尔开关。"""
+
     def apply(x, mask, values, rewrite):
         p = probabilities(x, mask)
         if rewrite:
             return jnp.sum(p[:, :, None] * values[None, :, :], axis=1)
         return p @ values
 
+    # values 是独立的 float32 输入，不参与有限性证明。
     args = signature(shape, dtype), signature(shape, jnp.bool_), signature((shape[1], 4))
+    # 用同一个 Python 函数加静态布尔开关生成两张图，避免手写两份相似代码。
     graphs = tuple(
         jax.make_jaxpr(lambda x, m, v, rewrite=rewrite: apply(x, m, v, rewrite))(*args)
         for rewrite in (False, True)
@@ -55,6 +75,7 @@ def compare_pv(probabilities, shape=(2, 3), dtype=jnp.float32):
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])
 @pytest.mark.parametrize("nested", [False, True])
 def test_guarded_softmax_proves_pv_with_source_conditions(dtype, nested):
+    """半精度与嵌套 jit 下仍需建立完整源图条件，不读取具体数值。"""
     operation = jax.jit(jax.jit(guarded)) if nested else guarded
     result, graphs = compare_pv(lambda x, m: operation(x.astype(jnp.float32), m), dtype=dtype)
     assert result.status == Status.EQUIVALENT, result
@@ -63,7 +84,9 @@ def test_guarded_softmax_proves_pv_with_source_conditions(dtype, nested):
 
 
 def test_guarded_output_is_finite_but_retains_partial_internal_path():
+    """输出可证明有限，但内部 softmax 仍保留部分路径，不能据此删掉防护。"""
     graph = jax.make_jaxpr(guarded)(signature((2, 3)), signature((2, 3), jnp.bool_))
+    # 100_000 是符号构造预算，足够展开这个小图而不触发停止。
     builder = SymbolicBuilder(100_000)
     output = builder.graph(freeze(graph))[0]
     assert output.source.finite

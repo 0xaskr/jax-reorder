@@ -1,4 +1,15 @@
-"""The public mathematical path trusts SymPy without executing JAX."""
+"""公共数学路径完全信任 SymPy，且不执行 JAX 数组。
+
+覆盖：
+- 正例：标量恒等式、张量求和线性与空域、大求和保持惰性、矩阵结合、嵌套收缩与独立双重
+  求和一致、dot 广播与 reshape、条件与 jit 绑定、共享调用的捕获与界限。
+- 反例与拒绝：负结论必须覆盖完整最终输出；整数 dtype 值域、原始定义条件（x/x、
+  exp(log(x))*0+1）、循环拒绝与 false 循环谓词、None 查询、布尔/数值 Piecewise 分支顺序、
+  超时/预算、非法 timeout 值、转换异常都按契约分类，不把未决当作不等价。
+- 恢复性：超时与远端异常之后的下一次查询仍可继续；worker 本身不执行 JAX。
+- 前置条件：CPU 平台与 SymPy 1.14；helper 在比较期间 patch 掉编译与执行入口。
+- 这些是固定公式与边界回归，不证明 SymPy 对所有程序都能在预算内判定。
+"""
 
 from unittest.mock import patch
 
