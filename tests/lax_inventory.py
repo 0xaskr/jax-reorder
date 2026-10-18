@@ -17,7 +17,7 @@ import jax  # noqa: E402
 from jax._src import core  # noqa: E402
 from lax_cases import cases, trace_case  # noqa: E402
 
-from jax_reorder.support import public_primitives  # noqa: E402
+from jax_reorder.core.support import public_primitives  # noqa: E402
 
 
 def primitives(graph):

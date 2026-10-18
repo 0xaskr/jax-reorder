@@ -9,7 +9,7 @@ from jax._src import pjit
 from jax._src.api import Inline
 from jax._src.sharding_impls import UNSPECIFIED
 
-from .algebra_semantics import plain_equation
+from .semantics import plain_equation
 
 
 def default_jit(eq, params):

@@ -18,8 +18,8 @@ import pytest
 import sympy as sp
 
 from jax_reorder import Status, compare_functions
-from jax_reorder.algebra_budget import Budget
-from jax_reorder.algebra_trusted import equal
+from jax_reorder.algebra.budget import Budget
+from jax_reorder.algebra.sympy_ops import equal
 
 
 @pytest.mark.parametrize(

@@ -20,7 +20,7 @@
 
 ## 可复核的证据
 
-- [对应关系实现](../../src/jax_reorder/correspondence.py)：证据构造与原图校验分离。
+- [对应关系实现](../../src/jax_reorder/core/correspondence.py)：证据构造与原图校验分离。
 - [破坏证据的测试](../../tests/test_correspondence.py)：漏节点、重复映射、错绑常量、外部位置变化、单分支错绑、漏 effect，以及故意让规范比较忽略参数。
 - [调用槽位测试](../../tests/test_call_bindings.py)：同步输入/输出置换及 donation 元数据；只改一侧的反例有实际输出差异。
 - [函数入口测试](../../tests/test_functions.py)：输入输出 pytree、静态参数、环境和分别追踪的前向/JVP/VJP。

@@ -22,7 +22,7 @@ from jax import lax
 from jax._src import core
 
 from jax_reorder import ComparisonBudgetError, Status, canonicalize, compare_jaxprs
-from jax_reorder.correspondence import verify_correspondence
+from jax_reorder.core.correspondence import verify_correspondence
 
 
 def diamond(x, y):

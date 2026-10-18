@@ -105,7 +105,7 @@ def test_each_primitive_with_an_independent_branch(case):
 
 
 def test_public_inventory_has_no_unexplained_omissions():
-    from jax_reorder.support import public_primitives
+    from jax_reorder.core.support import public_primitives
 
     found = set().union(*(nested_primitives(trace_case(c)) for c in cases()))
     # stage 被 JAX 追踪消去；ragged_all_to_all 虽然出现，但它的 CPU 拒绝在上面的

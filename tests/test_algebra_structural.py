@@ -44,7 +44,7 @@ def test_primitive_structural_pair_bypasses_mathematical_queries(case, monkeypat
         """结构证据必须先于代数：任何进入独立 SymPy worker 的调用都应失败。"""
         raise AssertionError("structural proof must not invoke the mathematical worker")
 
-    from jax_reorder import algebra_trusted
+    from jax_reorder.algebra import trusted as algebra_trusted
 
     # 替换 worker 入口，保证下面即使预算极小也不会走到数学查询。
     monkeypatch.setattr(algebra_trusted, "isolated_compare", forbidden)

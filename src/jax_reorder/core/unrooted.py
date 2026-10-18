@@ -13,7 +13,7 @@ import numpy as np
 from jax._src import core
 from jax._src.random.prng import KeyTy
 
-from .errors import ComparisonBudgetError, UnsupportedJaxprError
+from ..errors import ComparisonBudgetError, UnsupportedJaxprError
 
 # 搜索预算按候选状态计数；达到预算也不能以当前最优候选代替完整结论。
 DEFAULT_SEARCH_BUDGET = 10_000

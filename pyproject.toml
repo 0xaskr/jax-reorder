@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jax-reorder"
-version = "0.1.0"
+version = "0.2.0"
 description = "Canonicalize and compare JAX computation graphs."
 readme = "README.md"
 requires-python = ">=3.12"

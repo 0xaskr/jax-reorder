@@ -16,9 +16,9 @@ import jax.numpy as jnp
 import numpy as np
 import sympy as sp
 
-from jax_reorder.algebra_explicit import jaxpr_to_sympy_expressions
-from jax_reorder.algebra_symbolic import SymbolicBuilder
-from jax_reorder.algebra_transport import freeze
+from jax_reorder.algebra.adapter.transport import freeze
+from jax_reorder.algebra.explicit import jaxpr_to_sympy_expressions
+from jax_reorder.algebra.symbolic import SymbolicBuilder
 
 
 def main():

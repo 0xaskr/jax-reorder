@@ -16,7 +16,7 @@ from jax import lax
 from jax._src import core
 
 from jax_reorder import Status, UnsupportedJaxprError, compare_functions
-from jax_reorder.algebra_transport import freeze
+from jax_reorder.algebra.adapter.transport import freeze
 
 
 @pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])

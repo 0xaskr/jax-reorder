@@ -39,7 +39,7 @@ import numpy as np
 import sympy as sy
 from jax.extend.core import Literal
 
-from .algebra_symbolic import _exact_array as exact_array
+from .expression import _exact_array as exact_array
 
 # 逐点映射：对象数组上的二元运算可直接用 Python 运算符完成；
 # 一元超越函数用 np.vectorize 包装，otypes=[object] 阻止 NumPy 推断浮点 dtype。

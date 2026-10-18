@@ -30,8 +30,8 @@ from jax_reorder import (
     compare_functions,
     compare_jaxprs,
 )
-from jax_reorder.algebra_transport import freeze
-from jax_reorder.algebra_trusted import (
+from jax_reorder.algebra.adapter.transport import freeze
+from jax_reorder.algebra.trusted import (
     RemoteWorkerError,
     SympyResult,
     compare_symbolic,
@@ -91,7 +91,7 @@ def test_function_contract_failure_is_an_exception_in_both_modes(equivalence):
 
 
 def test_none_queries_raise_and_preserve_output_query_records(monkeypatch):
-    import jax_reorder.algebra_trusted as trusted
+    import jax_reorder.algebra.trusted as trusted
 
     original = trusted.equal
 
@@ -129,7 +129,7 @@ def test_remote_internal_error_retains_original_traceback_and_next_call_recovers
 
 @pytest.mark.parametrize("response", [b"", b"not a pickle", pickle.dumps(None)])
 def test_damaged_worker_response_is_an_internal_error(monkeypatch, response):
-    import jax_reorder.algebra_trusted as trusted
+    import jax_reorder.algebra.trusted as trusted
 
     process = SimpleNamespace(
         communicate=lambda *args, **kwargs: (response, b""),
@@ -143,7 +143,7 @@ def test_damaged_worker_response_is_an_internal_error(monkeypatch, response):
 
 
 def test_worker_start_failure_retains_original_exception(monkeypatch):
-    import jax_reorder.algebra_trusted as trusted
+    import jax_reorder.algebra.trusted as trusted
 
     def fail(*args, **kwargs):
         raise OSError("cannot spawn worker")
@@ -155,7 +155,7 @@ def test_worker_start_failure_retains_original_exception(monkeypatch):
 
 
 def test_worker_crash_is_not_a_mathematical_result(monkeypatch):
-    import jax_reorder.algebra_trusted as trusted
+    import jax_reorder.algebra.trusted as trusted
 
     process = SimpleNamespace(
         communicate=lambda *args, **kwargs: (b"", b"worker fault"),
@@ -168,7 +168,7 @@ def test_worker_crash_is_not_a_mathematical_result(monkeypatch):
 
 
 def test_conversion_bug_is_not_reclassified_as_an_unsupported_primitive(monkeypatch):
-    import jax_reorder.algebra_transport as transport
+    import jax_reorder.algebra.adapter.transport as transport
 
     def fail(*args, **kwargs):
         raise TypeError("conversion bug")
@@ -188,7 +188,7 @@ def test_success_payload_cannot_encode_a_failure():
 
 
 def test_structural_implementation_failure_is_not_an_unsupported_input(monkeypatch):
-    import jax_reorder.canonical as canonical
+    import jax_reorder.core.canonical as canonical
 
     def fail(*args, **kwargs):
         raise RuntimeError("broken structural checker")

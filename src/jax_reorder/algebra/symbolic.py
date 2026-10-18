@@ -28,11 +28,11 @@
 沿用 jax2sympy 的 SSA 遍历和逐点映射：每个输出端口表示为在自由坐标上取值
 的 Indexed/Sum 表达式，同时保存原始定义条件、有限性事实和来源路径。
 这里只负责忠实构造与显式拒绝，不做数学判断；化简和恒等查询由
-algebra_trusted 交给可信 SymPy。未适配的原语、区域或 dtype 必须报错，
+algebra.trusted 交给可信 SymPy。未适配的原语、区域或 dtype 必须报错，
 不能为了得到结论而丢弃语义。
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from functools import reduce
 from itertools import product
 from math import prod
@@ -42,20 +42,12 @@ import numpy as np
 import sympy as sp
 from jax import dtypes, lax
 
-from .algebra_budget import Budget
-from .algebra_finiteness import Finiteness, Source
-from .errors import UnsupportedJaxprError
-
-
-def coordinates(shape):
-    """按输出 shape 生成自由坐标符号；单位轴固定为 0。
-
-    同名整数符号全图共享身份，广播和单位轴读取直接写 0，不额外引入绑定。
-    """
-    return tuple(
-        sp.S.Zero if size == 1 else sp.Symbol(f"_i{axis}", integer=True, nonnegative=True)
-        for axis, size in enumerate(shape)
-    )
+from ..errors import UnsupportedJaxprError
+from .budget import Budget
+from .expression import SymbolicTensor, _exact_array, coordinates, rename_bounds
+from .finiteness import Finiteness, Source
+from .regions import region
+from .sympy_ops import domain_condition, simplify
 
 
 def dtype_kind(dtype):
@@ -63,81 +55,15 @@ def dtype_kind(dtype):
     return "f" if dtypes.issubdtype(dtype, np.floating) else np.dtype(dtype).kind
 
 
-def _exact_array(value):
-    """把常量数组逐元素转成精确 SymPy 值，保留 shape 与完整内容。
-
-    浮点字面量按其 Python 二进制值转成有理数，不做十进制“取整”解释；
-    NaN/±Inf 不在这里处理，由调用方显式拒绝或按特殊值保留。
-    """
-
-    def exact_scalar(x):
-        """按 Python 标量类型分派；布尔必须先于整数判断（bool 是 int 子类）。"""
-        x = np.asarray(x).item()
-        if isinstance(x, (bool, np.bool_)):
-            return sp.true if x else sp.false
-        if isinstance(x, (int, np.integer)):
-            return sp.Integer(int(x))
-        if isinstance(x, (float, np.floating)) and np.isfinite(x):
-            return sp.Rational(float(x))
-        # 其余标量（如 -inf 或扩展浮点）交给 sympify；是否有实数解释由调用方决定。
-        return sp.sympify(x)
-
-    return np.vectorize(exact_scalar, otypes=[object])(np.asarray(value))
-
-
-def rename_bounds(expression, *, fresh=False):
-    """按词法作用域重命名 Sum/Product 的绑定变量，防止嵌套求和捕获外层读取。
-
-    SymPy 1.14 的 as_dummy 在嵌套求和里会复用 `_0` 这类名字，把外层引用误绑到
-    内层。构造期用新 Dummy 保证唯一；查询键用带深度和位置的固定名字，使同一表达
-    式得到可复现的规范文本，不依赖 Dummy 的全局计数。缓存键包含当前绑定环境：
-    同一节点在不同环境下不能共用结果。
-    """
-    cache = {}
-
-    def visit(node, environment, depth):
-        """在给定绑定环境下递归改写；环境只解释被绑定的符号，不改变其他节点。"""
-        if node in environment:
-            return environment[node]
-        if not node.args:
-            return node
-        key = (node, tuple(environment.items()), depth)
-        if key in cache:
-            return cache[key]
-        if isinstance(node, (sp.Sum, sp.Product)):
-            bound = dict(environment)
-            limits = []
-            for position, (variable, start, stop) in enumerate(node.limits):
-                # fresh 用于实例化，每次读取生成互不冲突的 Dummy；非 fresh 用于
-                # 查询键，名字由深度和位置决定，便于稳定比较。
-                symbol = (
-                    sp.Dummy("bound", integer=True)
-                    if fresh
-                    else sp.Symbol(f"_bound_{depth}_{position}", integer=True)
-                )
-                bound[variable] = symbol
-                # 上下限仍在外层环境求值，只有被积函数进入新的绑定层。
-                limits.append(
-                    (symbol, visit(start, environment, depth), visit(stop, environment, depth))
-                )
-            result = node.func(visit(node.function, bound, depth + 1), *limits)
-        else:
-            result = node.func(*(visit(arg, environment, depth) for arg in node.args))
-        cache[key] = result
-        return result
-
-    return visit(expression, {}, 0)
-
-
 def normalize_coordinates(expression, shape):
     """用已知 shape 与求和上下限，把精确整数坐标适配到统一的索引规范形式。
 
     该函数服务读取实例化：把自由轴符号、求和绑定变量以及常量上的 floor/mod
-    运算翻译成 algebra_indices 的标量索引，再回写到 Indexed 读取上。这样
+    运算翻译成 algebra.indices 的标量索引，再回写到 Indexed 读取上。这样
     slice/reshape/广播得到的坐标与展开后的求和坐标可以比较；无法解释的坐标
     保持原样，不为了匹配而猜测改写。
     """
-    from .algebra_indices import Index, add, divide, integer, scale
+    from .indices import Index, add, divide, integer, scale
 
     symbols = {
         symbol: Index("free", axis) for axis, symbol in enumerate(coordinates(shape)) if symbol != 0
@@ -196,37 +122,6 @@ def normalize_coordinates(expression, shape):
             # 只替换能完整解释的读取；其余保留原始坐标，避免丢失映射。
             continue
     return expression.xreplace(replacements)
-
-
-@dataclass(frozen=True)
-class SymbolicTensor:
-    """一个输出端口的元素公式及附加事实。
-
-    expression 在自由坐标上取值；defined 是原始定义条件，表示该元素何时有实数
-    解释，不是化简后的域；finite 表示在保留条件下可作有限实数解释，与
-    source.finite 的“无需附加条件的有限”事实分开使用。source 保存源图节点，
-    供有限性分析和查询键使用。
-    """
-
-    shape: tuple
-    dtype: object
-    expression: sp.Basic
-    defined: sp.Basic = sp.true
-    finite: bool = True
-    source: object = None
-
-    def read(self, indices):
-        """用具体或符号坐标实例化元素公式，返回 (expression, defined)。
-
-        实例化前先给内部 Sum/Product 绑定换新 Dummy，避免调用方已有绑定与读取
-        写入的坐标相互捕获；单位轴坐标是常量 0，不出现在替换表中。
-        """
-        replacements = dict(zip(coordinates(self.shape), map(sp.sympify, indices), strict=True))
-        replacements.pop(sp.S.Zero, None)
-        return (
-            rename_bounds(self.expression, fresh=True).xreplace(replacements),
-            rename_bounds(self.defined, fresh=True).xreplace(replacements),
-        )
 
 
 # 已核对语义的逐点原语到 SymPy 函数的映射；这里只建立数学表达式。
@@ -417,12 +312,11 @@ class SymbolicBuilder:
         程序误判为等价；因此这些条件必须并入每个输出。若整张图没有输出却存在
         部分计算，没有任何输出能承载该条件，只能明确拒绝。
         """
-        from .algebra_trusted import _domain
 
         condition = sp.And(*(value.defined for value in unused))
         if condition != sp.true:
             self.budget.spend(path="algebra.dead.conditions")
-            condition = _domain(condition, self.budget)
+            condition = domain_condition(condition, self.budget)
         if not outputs and condition != sp.true:
             raise UnsupportedJaxprError(
                 "algebra.dead", "unused partial computation with no outputs"
@@ -438,8 +332,6 @@ class SymbolicBuilder:
         避免把张量容器或循环绑定误当成普通实数参数。
         """
         from sympy.core.function import AppliedUndef
-
-        from .algebra_trusted import _domain, simplify
 
         captured = set()
         for value in values:
@@ -497,7 +389,9 @@ class SymbolicBuilder:
                     value.shape,
                     str(value.dtype),
                     canonical,
-                    rename_bounds(_domain(value.defined, self.budget)).xreplace(replacements),
+                    rename_bounds(domain_condition(value.defined, self.budget)).xreplace(
+                        replacements
+                    ),
                 )
             )
         key = (
@@ -615,14 +509,14 @@ class SymbolicBuilder:
         """转换一条方程：先建立来源与有限性，再选择逐点映射或不透明同余。
 
         Source 沿用源图的有限性分析（如 guarded softmax），作为“在保留条件下可
-        作有限实数解释”的依据。区域原语交给 algebra_symbolic_regions 绑定；非有限
+        作有限实数解释”的依据。区域原语交给 algebra.regions 绑定；非有限
         输入、离散原语和窄化 cast 没有完整实数模型，改走 opaque() 只保留整个运算
         的身份与条件，禁止套用实数代数。返回值必须与方程输出端口一一对应。
         """
         from sympy.core.function import AppliedUndef
 
         name = eq.primitive.name
-        # 区域原语由 algebra_symbolic_regions 统一绑定，这里不对内部逐点展开。
+        # 区域原语由 algebra.regions 统一绑定，这里不对内部逐点展开。
         region = name in (
             "jit",
             "pjit",
@@ -680,8 +574,6 @@ class SymbolicBuilder:
             and bool(values[0].expression.free_symbols)
         )
         if narrowing:
-            from .algebra_trusted import simplify
-
             # 浮点窄化 cast 可能把有限输入变成 inf；不能用实数恒等式表示，
             # 改为逐元素不透明函数，并把“该点转换有定义”作为条件保留。
             value = values[0]
@@ -775,7 +667,7 @@ class SymbolicBuilder:
         而相同运算加相同输入条件仍可安全判等。该表示只能支持同余的正结论，
         泛化问题的 False 不能当作源程序反例。
         """
-        from .algebra_semantics import encode
+        from .adapter.semantics import encode
 
         name = eq.primitive.name
         self.rules.add(name)
@@ -838,8 +730,6 @@ class SymbolicBuilder:
                 return result
             return self.graph(params["jaxpr"], values)
         if name in ("cond", "scan", "while"):
-            from .algebra_symbolic_regions import region
-
             # 区域内部用同一个构造器绑定实参、carry 和返回口。
             return region(self, eq, values, path)
         if len(eq.outvars) != 1 and name != "split":

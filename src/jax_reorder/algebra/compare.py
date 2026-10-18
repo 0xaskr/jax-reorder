@@ -9,19 +9,19 @@
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from .algebra_budget import Budget
-from .algebra_calls import CommonCalls
-from .canonical import Issue, Status, canonicalize, compare_jaxprs
-from .correspondence import GraphCorrespondence, build_correspondence
-from .errors import (
+from ..core.canonical import Issue, Status, canonicalize, compare_jaxprs
+from ..core.correspondence import GraphCorrespondence, build_correspondence
+from ..errors import (
     ComparisonContractError,
     ComparisonError,
     ComparisonInternalError,
     UnsupportedJaxprError,
 )
+from .adapter.calls import CommonCalls
+from .budget import Budget, validate_timeout
 
 if TYPE_CHECKING:
-    from .algebra_trusted import SympyResult
+    from .trusted import SympyResult
 
 # 每条代数结论都随结果一起报告这些前提；它们限定结论成立的范围，
 # 也说明结构快路径为何可以替换成不带浮点警告的结构等价。
@@ -99,16 +99,6 @@ def _prepare(graph):
     return normalized.jaxpr, correspondence
 
 
-def validate_timeout(value):
-    """要求正整数或浮点数的有限正超时；布尔值被显式排除。
-
-    用 type 精确比较而不是 isinstance，避免 True/False 被当成 int；
-    无穷与 NaN 也不能表达 worker 的墙钟上限。
-    """
-    if type(value) not in (int, float) or not 0 < value < float("inf"):
-        raise ValueError("algebra_timeout must be a positive finite number")
-
-
 def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeout=10.0):
     """以可信 SymPy 比较两份完整前向 jaxpr 的数学输出。
 
@@ -118,8 +108,8 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeo
     唯一数学结论，失败以异常报告。algebra_timeout 只覆盖 worker 内的转换
     与查询，不包含 JAX tracing 和父进程结构比较。
     """
-    from .algebra_transport import freeze
-    from .algebra_trusted import isolated_compare
+    from .adapter.transport import freeze
+    from .trusted import isolated_compare
 
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
@@ -136,7 +126,7 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeo
         # 先完成两侧区域适配，再按适配后的端口构造符号输入。
         prepared = tuple(_prepare(graph) for graph in (left, right))
         a, b = (entry[0] for entry in prepared)
-        from .algebra_semantics import encode
+        from .adapter.semantics import encode
 
         # 数学阶段只能在同一输入/输出抽象契约上比较；否则差值没有同一含义。
         if tuple(encode(v.aval) for v in a.invars + a.outvars) != tuple(

@@ -26,8 +26,8 @@ from jax_reorder import (
     UnsupportedJaxprError,
     compare_algebraic_jaxprs,
 )
-from jax_reorder.algebra_symbolic import SymbolicBuilder
-from jax_reorder.algebra_transport import freeze
+from jax_reorder.algebra.adapter.transport import freeze
+from jax_reorder.algebra.symbolic import SymbolicBuilder
 
 
 @pytest.fixture(autouse=True)

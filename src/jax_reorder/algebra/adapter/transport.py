@@ -14,8 +14,9 @@ from types import SimpleNamespace
 import numpy as np
 from jax._src import core
 
-from .derivatives import CUSTOM_PRIMITIVES, semantic_parameters
-from .errors import UnsupportedJaxprError
+from ...core.derivatives import CUSTOM_PRIMITIVES
+from ...core.params import parameter_view, semantic_parameters
+from ...errors import UnsupportedJaxprError
 
 
 @dataclass(frozen=True)
@@ -91,13 +92,12 @@ def freeze(graph, common_calls=None, common_ids=None):
             # 属于 JAX 接口元数据，不是数学函数的一部分。
             params = {"call_jaxpr": params["call_jaxpr"]}
         if eq.primitive.name == "reduce":
-            from .canonical import canonicalize
-            from .correspondence import _parameter_view
+            from ...core.canonical import canonicalize
 
             # reduce 的 computation 可能是 callable 或 jaxpr。用完整参数编码
             # 加规范化后的子图组成稳定身份，并让两侧同一 reducer 共享编号；
             # 不能按函数名或对象 id 判等。
-            encoded, children = _parameter_view(
+            encoded, children = parameter_view(
                 eq, lambda _: None, derivative_scope="primal", parent=graph
             )
             key = (
@@ -112,7 +112,7 @@ def freeze(graph, common_calls=None, common_ids=None):
                 common_ids[key] = len(common_ids)
             params = {"opaque_semantic": common_ids[key]}
         if eq.primitive.name == "convert_element_type" and params.get("sharding") is not None:
-            from .algebra_semantics import encode
+            from .semantics import encode
 
             # 默认分片不改变布局语义，可以丢弃；非默认分片必须拒绝。
             aval = eq.outvars[0].aval
@@ -133,13 +133,13 @@ def freeze(graph, common_calls=None, common_ids=None):
             params = {key: value for key, value in params.items() if key not in ("ft_in", "ft_out")}
             params.update(num_consts=len(scan_constants), num_carry=len(carries))
         if eq.primitive.name in ("jit", "pjit"):
-            from .algebra_jit import default_jit
+            from .jit import default_jit
 
             if not default_jit(eq, params):
                 raise UnsupportedJaxprError("algebra.jit", "non-default JIT execution contract")
             params = {"jaxpr": params["jaxpr"]}
             if common_calls is not None and eq in common_calls.invocations:
-                from .algebra_finiteness import nonfinite_graph
+                from ..finiteness import nonfinite_graph
 
                 key, input_ports, output_ports = common_calls.invocations[eq]
                 # 子图含 -inf 等非有限值时不能写成不透明共同符号，

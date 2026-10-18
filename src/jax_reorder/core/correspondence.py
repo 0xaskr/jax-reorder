@@ -6,15 +6,14 @@
 
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 import jax
 import jaxlib
 from jax import lax
 from jax._src import core, pjit, shard_map
 
-from .derivatives import semantic_parameters
-from .errors import CorrespondenceError
+from ..errors import CorrespondenceError
+from .params import parameter_view
 from .semantics import Encoder, encoded_equal
 from .support import supported_primitive_identities
 
@@ -46,77 +45,6 @@ class GraphCorrespondence:
     equations: tuple[EquationCorrespondence, ...]
     # 保存所有外部返回槽位，包括同一值重复返回的各个位置。
     outputs: tuple[int, ...] = ()
-
-
-def _parameter_view(
-    equation,
-    variable,
-    *,
-    inputs=None,
-    outputs=None,
-    parameters=None,
-    derivative_scope="all",
-    parent=None,
-):
-    """保留参数内容，用子图路径作占位并另行交给图校验器。
-
-    不读取规范图的参数编码。jit 名称和 reduce callable 是锁定版本中
-    已审查的两个例外；其余值一律由完整编码检查。parameters 可传入已物化
-    的语义视图；parent 提供捕获常量所在的原始区域；derivative_scope 控制
-    规则适配器展开到什么范围。
-
-    inputs/outputs 是从左侧槽位到当前右侧槽位的映射，只用于把右侧的逐位置
-    元数据投影到左侧顺序。返回参数编码及“参数路径 → 原始子图”的映射。
-    """
-    regions = {}
-
-    def nested(graph, path):
-        """登记子图及其路径，让参数编码与子图内容校验分开进行。"""
-        # 父参数只记录子图所在位置，内容随后逐区域核对；占位不意味着忽略子图。
-        regions[path] = graph
-        return SimpleNamespace(graph=("region", path))
-
-    encoder = Encoder(nested, variable)
-    values = []
-    params = (
-        semantic_parameters(equation, scope=derivative_scope, parent=parent)
-        if parameters is None
-        else parameters
-    )
-    for key, value in sorted(params.items()):
-        if equation.primitive is pjit.jit_p and key == "name":
-            continue
-        # 逐位置元数据必须随槽位置换同步投影；inputs/outputs 为 None 时不做
-        # 投影，父调用映射由上层另行校验。
-        if equation.primitive is pjit.jit_p:
-            if inputs is not None and key in {"in_shardings", "in_layouts", "donated_invars"}:
-                value = tuple(value[i] for i in inputs)
-            if outputs is not None and key in {"out_shardings", "out_layouts"}:
-                value = tuple(value[i] for i in outputs)
-        if equation.primitive is shard_map.shard_map_p:
-            if inputs is not None and key == "in_specs":
-                value = tuple(value[i] for i in inputs)
-            if outputs is not None and key == "out_specs":
-                value = tuple(value[i] for i in outputs)
-        if equation.primitive is lax.scan_p:
-            if inputs is not None and key == "ft_in":
-                value = value.update(value.vals[i] for i in inputs)
-            if outputs is not None and key == "ft_out":
-                value = value.update(value.vals[i] for i in outputs)
-        if (
-            jax.__version__ == "0.11.2"
-            and equation.primitive is lax.reduce_p
-            and key == "computation"
-            and isinstance(equation.params.get("jaxpr"), core.Jaxpr)
-            and callable(value)
-        ):
-            # 锁定版本中 reduce 的 computation 由已追踪的 reducer 子图表达；
-            # 比较该子图而不是 Python callable 身份，返回方程仍保留原 callable。
-            encoded = ("represented_by_reducer_jaxpr",)
-        else:
-            encoded = encoder.encode(value, f"params.{key}")
-        values.append((key, encoded))
-    return tuple(values), regions
 
 
 def build_correspondence(left, right, left_normalized, right_normalized):
@@ -170,20 +98,18 @@ def build_correspondence(left, right, left_normalized, right_normalized):
         for ia, ib, ae, be in zip(order_a, order_b, an.eqns, bn.eqns, strict=True):
             # 原方程参数给出待证明的区域，重排方程参数给出本次使用的规范区域；
             # 四份视图的路径必须一致，才能把规范化来源还原为原图证据。
-            _, ac = _parameter_view(
+            _, ac = parameter_view(
                 a.eqns[ia],
                 lambda v: v,
                 parameters=left_normalized.semantic_views.get(a.eqns[ia], a.eqns[ia].params),
             )
-            _, bc = _parameter_view(
+            _, bc = parameter_view(
                 b.eqns[ib],
                 lambda v: v,
                 parameters=right_normalized.semantic_views.get(b.eqns[ib], b.eqns[ib].params),
             )
-            _, anc = _parameter_view(ae, lambda v: v, parameters=left_normalized.semantic_views[ae])
-            _, bnc = _parameter_view(
-                be, lambda v: v, parameters=right_normalized.semantic_views[be]
-            )
+            _, anc = parameter_view(ae, lambda v: v, parameters=left_normalized.semantic_views[ae])
+            _, bnc = parameter_view(be, lambda v: v, parameters=right_normalized.semantic_views[be])
             if ac.keys() != bc.keys() or ac.keys() != anc.keys() or ac.keys() != bnc.keys():
                 raise CorrespondenceError("correspondence", "nested region paths do not match")
             output_ports = ports(a.eqns[ia].outvars, b.eqns[ib].outvars, ae.outvars, be.outvars)
@@ -484,10 +410,10 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
             # 与规范化时使用的 derivative_scope 保持一致。
             scope = "primal" if ".params.rules[" in where else derivative_scope
             # 此处重新读取原参数并物化求导规则，不接受规范化器提供的相等结论。
-            ap, ac = _parameter_view(
+            ap, ac = parameter_view(
                 equation, lambda v, values=values: values[v], derivative_scope=scope, parent=a
             )
-            bp, bc = _parameter_view(
+            bp, bc = parameter_view(
                 other,
                 lambda v: v,
                 inputs=input_order,

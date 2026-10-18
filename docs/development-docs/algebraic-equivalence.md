@@ -53,12 +53,12 @@ worker 用独立失败消息传输异常分类、诊断与远端 traceback；超
 
 | 模块 | 当前职责 |
 | --- | --- |
-| [algebra.py](../../src/jax_reorder/algebra.py) | 结构快路径、函数契约、共享调用的端口对应和新结果汇总 |
-| [algebra_explicit.py](../../src/jax_reorder/algebra_explicit.py) | 完整数组映射与逐元素转换参考接口，保留尚未用于生产的转换代码 |
-| [algebra_transport.py](../../src/jax_reorder/algebra_transport.py) | 校验后的图、常量、参数与区域接口冻结为独立进程输入 |
-| [algebra_symbolic.py](../../src/jax_reorder/algebra_symbolic.py) | SSA 遍历、精确常量、直接标量映射、Indexed/Sum、原始条件与词法作用域 |
-| [algebra_symbolic_regions.py](../../src/jax_reorder/algebra_symbolic_regions.py) | cond、独立 scan 累加、受限符号展开和 while 绑定 |
-| [algebra_trusted.py](../../src/jax_reorder/algebra_trusted.py) | SymPy ArrayExpr/逻辑/恒等查询、完整输出汇总与可终止 worker |
+| [algebra/compare.py](../../src/jax_reorder/algebra/compare.py) | 结构快路径、函数契约、共享调用的端口对应和新结果汇总 |
+| [algebra/explicit.py](../../src/jax_reorder/algebra/explicit.py) | 完整数组映射与逐元素转换参考接口，保留尚未用于生产的转换代码 |
+| [algebra/adapter/transport.py](../../src/jax_reorder/algebra/adapter/transport.py) | 校验后的图、常量、参数与区域接口冻结为独立进程输入 |
+| [algebra/symbolic.py](../../src/jax_reorder/algebra/symbolic.py) | SSA 遍历、精确常量、直接标量映射、Indexed/Sum、原始条件与词法作用域 |
+| [algebra/regions.py](../../src/jax_reorder/algebra/regions.py) | cond、独立 scan 累加、受限符号展开和 while 绑定 |
+| [algebra/trusted.py](../../src/jax_reorder/algebra/trusted.py) | SymPy ArrayExpr/逻辑/恒等查询、完整输出汇总与可终止 worker |
 
 `compare_functions`、`compare_function_traces` 和 `compare_algebraic_jaxprs` 接受
 `algebra_timeout`（默认 10 秒，正有限数），原 `algebra_budget` 默认仍为 10,000。
@@ -80,10 +80,10 @@ worker 用独立失败消息传输异常分类、诊断与远端 traceback；超
 
 共享辅助代码按实际用途拆分：
 
-- [algebra_budget.py](../../src/jax_reorder/algebra_budget.py)：确定性工作量预算。
-- [algebra_semantics.py](../../src/jax_reorder/algebra_semantics.py)：完整元数据编码与默认执行属性检查。
-- [algebra_indices.py](../../src/jax_reorder/algebra_indices.py)：精确整数坐标适配，不含旧 Factor/Term 作用域与证据规则。
-- [algebra_finiteness.py](../../src/jax_reorder/algebra_finiteness.py)：源值有限性与共同调用的非有限常量检查，独立于旧 Lowerer。
+- [algebra/budget.py](../../src/jax_reorder/algebra/budget.py)：确定性工作量预算。
+- [algebra/adapter/semantics.py](../../src/jax_reorder/algebra/adapter/semantics.py)：完整元数据编码与默认执行属性检查。
+- [algebra/indices.py](../../src/jax_reorder/algebra/indices.py)：精确整数坐标适配，不含旧 Factor/Term 作用域与证据规则。
+- [algebra/finiteness.py](../../src/jax_reorder/algebra/finiteness.py)：源值有限性与共同调用的非有限常量检查，独立于旧 Lowerer。
 
 重构范围、测试迁移与验收记录见[清理计划](../exec-plans/completed/remove-legacy-prover.md)。
 
@@ -192,7 +192,7 @@ Python 3.12、JAX 0.11.2、SymPy 1.14.0 下，对 `sum(x*x)` 的一次实测如�
 
 | 实现 | 职责 |
 | --- | --- |
-| [algebra.py](../../src/jax_reorder/algebra.py) | 结构证据直通、代数比较和结果分类 |
+| [algebra/compare.py](../../src/jax_reorder/algebra/compare.py) | 结构证据直通、代数比较和结果分类 |
 | [algebra_ir.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_ir.py) | 不可变 DAG、项表、精确系数和预算 |
 | [algebra_lower.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_lower.py) | 原语语义、索引映射与固定区域转换 |
 | [algebra_normalize.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_normalize.py) | 展开、项收集和绑定索引规范化搜索 |
@@ -267,7 +267,7 @@ SymPy 只生成受限数学变换候选；接受结果必须附独立可重放�
 实现与验收：[CAS 候选](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_sympy.py)、
 [标量证据复核](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_scalar_proof.py)、
 [数学不等价证据](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_inequivalence.py)、
-[有限性规则](../../src/jax_reorder/algebra_finiteness.py)。
+[有限性规则](../../src/jax_reorder/algebra/finiteness.py)。
 对应回归为 [CAS](../../tests/test_algebra_sympy.py)、
 [负证据](../../tests/test_algebra_inequivalence.py) 与
 [guarded softmax](../../tests/test_algebra_finiteness.py)。

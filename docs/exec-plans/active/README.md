@@ -1,5 +1,7 @@
 # 进行中的计划
 
+[代码架构分层重构](../completed/architecture-refactor.md)已完成并归档：`jax_reorder` 从 20 个平铺模块拆为 `core/`、`algebra/`（含 `adapter/`）与 `functions.py` 三层，拆解 symbolic/regions/trusted 导入环并新增分层守卫测试。顶层公共 API 不变，子模块路径按 0.2.0 破坏性调整；核心分组 465 passed，详见归档记录。
+
 [三种比较结论与分类异常迁移](../completed/comparison-exceptions.md)已完成并归档：删除 UNKNOWN，统一结构、SymPy worker、函数模式和批处理的异常通道；首轮全量发现的 34 项迁移失败均已修复，最终 110 项复测通过。后续用户已授权提交并推送 `origin/main`。
 
 [将 jax2sympy 转换代码并入项目](../completed/inline-symbolic-converter.md)已完成并归档：生产逻辑直接并入构造器，完整 60 个 primitive 映射与逐元素转换入口迁入普通模块，删除 vendor 包，许可证保留在文件头。相关回归 **741 passed**，另有 46 项转换/后端检查通过；尚未提交或推送。

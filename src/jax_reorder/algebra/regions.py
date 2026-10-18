@@ -8,8 +8,8 @@ UnsupportedJaxprError，不猜测循环行为。
 
 import sympy as sp
 
-from .algebra_symbolic import SymbolicTensor, coordinates
-from .errors import UnsupportedJaxprError
+from ..errors import UnsupportedJaxprError
+from .expression import SymbolicTensor, coordinates
 
 
 def independent_scan(builder, eq, values):

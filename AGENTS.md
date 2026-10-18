@@ -12,12 +12,12 @@
 
 ## 当前形态与目录
 
-项目通过 jaxpr 结构规范化比较 AI 生成的 JAX 代码与原始代码。已实现完整图比较、函数契约与一阶求导检查；支持状态和边界见架构与开发记录。
+项目通过 jaxpr 结构规范化比较 AI 生成的 JAX 代码与原始代码。已实现完整图比较、函数契约与一阶求导检查；支持状态和边界见架构与开发记录。实现按 `core`（结构规范化与比较）→ `algebra`（SymPy 代数后端）→ `functions`（函数契约编排）分层，新代码不得反向依赖。
 
 | 路径 | 用途 |
 | --- | --- |
 | [examples/inspect_jaxpr.py](examples/inspect_jaxpr.py) | 当前 tracing 入口；可运行示例放在 examples |
-| [src/jax_reorder](src/jax_reorder/) | 实现代码目录，BFS、语义编码及比较实现 |
+| [src/jax_reorder](src/jax_reorder/) | 实现代码：`core/` 结构层、`algebra/` 数学层、`functions.py` 契约编排 |
 | [tests](tests/) | 算法、CPU 原语与 AI 固定用例测试 |
 | [docs/development-docs](docs/development-docs/index.md) | 算法、工具设计与实验记录 |
 | [docs/design-docs](docs/design-docs/index.md) | 跨功能设计决定 |

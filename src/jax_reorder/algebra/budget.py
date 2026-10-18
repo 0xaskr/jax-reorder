@@ -6,7 +6,7 @@
 预算不衡量墙钟、内存或线程数；墙钟上限由 worker 超时单独负责。
 """
 
-from .errors import ComparisonBudgetError
+from ..errors import ComparisonBudgetError
 
 
 class Budget:
@@ -45,3 +45,13 @@ class Budget:
                 limit=self.limit,
             )
         self.used += amount
+
+
+def validate_timeout(value):
+    """要求正整数或浮点数的有限正超时；布尔值被显式排除。
+
+    用 type 精确比较而不是 isinstance，避免 True/False 被当成 int；
+    无穷与 NaN 也不能表达 worker 的墙钟上限。
+    """
+    if type(value) not in (int, float) or not 0 < value < float("inf"):
+        raise ValueError("algebra_timeout must be a positive finite number")

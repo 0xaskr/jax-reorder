@@ -18,8 +18,8 @@ import sympy as sp
 from jax import lax
 
 from jax_reorder import Status, compare_functions
-from jax_reorder.algebra_symbolic import SymbolicBuilder
-from jax_reorder.algebra_transport import freeze
+from jax_reorder.algebra.adapter.transport import freeze
+from jax_reorder.algebra.symbolic import SymbolicBuilder
 
 
 @pytest.mark.parametrize("cut", [0, 1, 2, 5])
