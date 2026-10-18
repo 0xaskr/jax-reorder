@@ -12,16 +12,25 @@
 
 可使用 `compare_functions` 一并记录输入输出 pytree、静态参数、可微叶子和追踪环境，或在自行核对这些条件后向 `canonicalize` / `compare_jaxprs` 提供包含常量绑定的 jaxpr。底层 jaxpr 已展平接口，不能自行恢复函数契约。函数入口要求调用方提供纯函数；追踪外的 Python 行为仍不在结论范围内。
 
-| 模块 | 职责 |
+| 路径 | 职责 |
 | --- | --- |
-| [canonical.py](src/jax_reorder/canonical.py) | SSA 检查、输出 BFS、依赖深度、嵌套重排、完整结构比较及诊断 |
-| [semantics.py](src/jax_reorder/semantics.py) | 参数、抽象值与常量的精确编码，已知描述符适配 |
-| [support.py](src/jax_reorder/support.py) | 公开 lax 原语及包装函数辅助原语的身份发现 |
+| [core/canonical.py](src/jax_reorder/core/canonical.py) | SSA 检查、输出 BFS、依赖深度、嵌套重排、完整结构比较及诊断 |
+| [core/semantics.py](src/jax_reorder/core/semantics.py) | 参数、抽象值与常量的精确编码，已知描述符适配 |
+| [core/support.py](src/jax_reorder/core/support.py) | 公开 lax 原语及包装函数辅助原语的身份发现 |
+| [core/unrooted.py](src/jax_reorder/core/unrooted.py) | 完整图细化、歧义搜索及明确资源预算 |
+| [core/correspondence.py](src/jax_reorder/core/correspondence.py) | 构造原图双射并独立复核全部节点与绑定 |
+| [core/derivatives.py](src/jax_reorder/core/derivatives.py) | 自定义一阶规则物化、残差及 symbolic zeros 模式 |
+| [core/params.py](src/jax_reorder/core/params.py) | 比较与代数适配共享的参数视图及规则物化入口 |
+| [algebra/compare.py](src/jax_reorder/algebra/compare.py) | 结构快路径、代数比较编排与结果汇总 |
+| [algebra/adapter/](src/jax_reorder/algebra/adapter/) | 图到数学层的桥接：元数据、默认 JIT、共同调用、进程冻结 |
+| [algebra/symbolic.py](src/jax_reorder/algebra/symbolic.py) | 已校验图的 SymPy 表达式构造 |
+| [algebra/expression.py](src/jax_reorder/algebra/expression.py) | 符号值模型：坐标、常量、绑定重命名 |
+| [algebra/sympy_ops.py](src/jax_reorder/algebra/sympy_ops.py) | 预算受控的化简、定义条件与恒等查询 |
+| [algebra/trusted.py](src/jax_reorder/algebra/trusted.py) | 可信 SymPy 结果协议与可终止 worker |
 | [errors.py](src/jax_reorder/errors.py) | 非法图与不支持语义的显式错误 |
 | [functions.py](src/jax_reorder/functions.py) | 函数契约、追踪上下文、分别报告前向/JVP/VJP |
-| [correspondence.py](src/jax_reorder/correspondence.py) | 构造原图双射并独立复核全部节点与绑定 |
-| [derivatives.py](src/jax_reorder/derivatives.py) | 自定义一阶规则物化、残差及 symbolic zeros 模式 |
-| [unrooted.py](src/jax_reorder/unrooted.py) | 完整图细化、歧义搜索及明确资源预算 |
+
+实现按 `errors → core → algebra → functions` 单向分层：`core` 不导入 `algebra` 或 `functions`，`algebra` 不导入 `functions`；`algebra.expression` 与 `algebra.sympy_ops` 是两个符号共享底层，`algebra.adapter` 只负责桥接。子模块路径属于实现细节，不构成稳定公共 API；对外接口以 [src/jax_reorder/__init__.py](src/jax_reorder/__init__.py) 的 `__all__` 为准。
 
 比较使用完整结构，既不依赖变量名、打印文本，也不以摘要代替精确比较。`canonicalize` 返回新 jaxpr、规范结构、BFS/最终方程索引、原方程深度、变量引用映射及部分完成原因。原图不被修改；不含嵌套子图的方程复用原对象。
 

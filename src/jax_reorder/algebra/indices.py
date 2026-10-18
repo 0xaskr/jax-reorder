@@ -8,7 +8,7 @@ Index 是不可变的整数表达式 DAG，只表示常量、自由/求和坐标
 
 from dataclasses import dataclass
 
-from .unrooted import order_key
+from ..core.unrooted import order_key
 
 
 @dataclass(frozen=True)

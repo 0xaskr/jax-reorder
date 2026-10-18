@@ -10,8 +10,8 @@
 from jax._src import core
 from jax._src.layout import AutoLayout
 
-from .errors import UnsupportedJaxprError
-from .semantics import Encoder
+from ...core.semantics import Encoder
+from ...errors import UnsupportedJaxprError
 
 
 def _reject_graph(_, path):

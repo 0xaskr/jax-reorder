@@ -25,10 +25,10 @@ import sympy as sp
 from jax._src import compiler, dispatch
 
 from jax_reorder import Status, compare_functions
-from jax_reorder.algebra_budget import Budget
-from jax_reorder.algebra_symbolic import SymbolicBuilder
-from jax_reorder.algebra_transport import freeze
-from jax_reorder.algebra_trusted import equal
+from jax_reorder.algebra.adapter.transport import freeze
+from jax_reorder.algebra.budget import Budget
+from jax_reorder.algebra.symbolic import SymbolicBuilder
+from jax_reorder.algebra.sympy_ops import equal
 
 
 @pytest.fixture(scope="module")

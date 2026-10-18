@@ -12,7 +12,7 @@
 import jax
 from jax._src import compiler, dispatch
 
-from jax_reorder.algebra_explicit import jaxpr_to_sympy_expressions, primitive_to_sympy_op
+from jax_reorder.algebra.explicit import jaxpr_to_sympy_expressions, primitive_to_sympy_op
 from tools.experiments.equivalence_backends.architecture_reuse_probe import jax2sympy_probe
 
 

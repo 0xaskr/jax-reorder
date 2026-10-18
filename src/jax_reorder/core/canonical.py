@@ -22,15 +22,15 @@ from jax import lax
 from jax._src import config, core, flattree, pjit, shard_map
 from jax._src.lax.lax import NoDCEEffect
 
-from .correspondence import GraphCorrespondence, build_correspondence, verify_correspondence
-from .derivatives import semantic_parameters
-from .errors import (
+from ..errors import (
     ComparisonBudgetError,
     ComparisonError,
     ComparisonInternalError,
     InvalidJaxprError,
     UnsupportedJaxprError,
 )
+from .correspondence import GraphCorrespondence, build_correspondence, verify_correspondence
+from .params import semantic_parameters
 from .semantics import Encoder, Frozen, replace_nested
 from .support import supported_primitive_identities
 from .unrooted import DEFAULT_SEARCH_BUDGET, canonical_order, order_key, reorder_form
@@ -70,7 +70,7 @@ class _UsePath:
         return result
 
 
-def _ordered_equation(equation):
+def ordered_equation(equation):
     """判断方程及其嵌套子图是否包含需要保留相对顺序的操作。
 
     例如 jit 内部调用 rng_uniform，外层 jit 的 effects 仍可能为空。
@@ -712,7 +712,7 @@ class _Normalizer:
             check_effects(eq.effects, f"{path}.eqns[{i}].effects")
             # rng_uniform、dce_sink 及包含它们的嵌套调用不能视作可任意换序的纯节点。
             # 给相邻的有序节点增加前驱边，同时作为额外根，避免输出回溯漏掉它们。
-            if _ordered_equation(eq):
+            if ordered_equation(eq):
                 effect_roots.append(i)
                 if previous_ordered is not None:
                     extra_predecessors[i] = [previous_ordered]
@@ -1068,7 +1068,7 @@ def canonicalize(
         ) from exc
 
 
-def _difference(left: Any, right: Any) -> str | None:
+def difference(left: Any, right: Any) -> str | None:
     """迭代比较完整编码结构，返回首个差异路径；相同则返回 None。
 
     不比较哈希或打印摘要。栈中倒序加入字段/元素，使取出时按声明顺序检查，
@@ -1139,9 +1139,9 @@ def compare_jaxprs(
             ) from exc
     a, b = normalized
     try:
-        difference = _difference(a.graph, b.graph)
+        found = difference(a.graph, b.graph)
         correspondence = None
-        if difference is None:
+        if found is None:
             correspondence = build_correspondence(left, right, a, b)
             verify_correspondence(left, right, correspondence, derivative_scope=derivative_scope)
     except ComparisonError:
@@ -1152,8 +1152,8 @@ def compare_jaxprs(
             "jaxpr.compare", f"{type(exc).__name__}: {exc}", stage="structural"
         ) from exc
     return Comparison(
-        Status.DIFFERENT if difference else Status.EQUIVALENT,
-        difference=difference,
+        Status.DIFFERENT if found else Status.EQUIVALENT,
+        difference=found,
         left=a,
         right=b,
         correspondence=correspondence,

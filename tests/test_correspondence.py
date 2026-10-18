@@ -26,7 +26,7 @@ from jax_reorder import (
     compare_jaxprs,
     verify_correspondence,
 )
-from jax_reorder import canonical as implementation
+from jax_reorder.core import canonical as implementation
 
 
 def original(x, y):
@@ -107,7 +107,7 @@ def test_equivalent_claim_is_blocked_when_normalized_parameter_difference_is_los
     a = jax.make_jaxpr(lambda x: lax.integer_pow(x, 2))(jnp.float32(2))
     b = jax.make_jaxpr(lambda x: lax.integer_pow(x, 3))(jnp.float32(2))
     # 模拟规范图比较漏掉参数差异，独立原图校验必须阻止假阳性。
-    monkeypatch.setattr(implementation, "_difference", lambda *args: None)
+    monkeypatch.setattr(implementation, "difference", lambda *args: None)
     with pytest.raises(CorrespondenceError) as error:
         compare_jaxprs(a, b)
     result = error.value

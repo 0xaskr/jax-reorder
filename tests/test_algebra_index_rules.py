@@ -14,7 +14,7 @@
 from itertools import product
 from random import Random
 
-from jax_reorder.algebra_indices import Index, add, divide, integer, scale
+from jax_reorder.algebra.indices import Index, add, divide, integer, scale
 
 
 def evaluate_index(index, free=()):

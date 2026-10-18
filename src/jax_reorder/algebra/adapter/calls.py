@@ -6,19 +6,18 @@
 和端口双射，不使用函数名、repr 或哈希摘要。
 不变量：只有两侧共有（键出现在各自根图成员集合中）的调用才共享符号；
 有序/effectful 图与非默认 JIT 契约不参与共享，含非有限常量的调用由
-冻结阶段（algebra_transport）拒绝共享并保留完整展开边界。
+冻结阶段（algebra.adapter.transport）拒绝共享并保留完整展开边界。
 """
 
 from types import SimpleNamespace
 
 from jax._src import core, pjit
 
-from .algebra_jit import default_jit
-from .canonical import _ordered_equation
-from .correspondence import _parameter_view
-from .derivatives import semantic_parameters
-from .errors import UnsupportedJaxprError
-from .semantics import Encoder
+from ...core.canonical import ordered_equation
+from ...core.params import parameter_view, semantic_parameters
+from ...core.semantics import Encoder
+from ...errors import UnsupportedJaxprError
+from .jit import default_jit
 
 
 class CommonCalls:
@@ -62,10 +61,10 @@ class CommonCalls:
                             eqmap.outputs,
                         )
                 if children:
-                    _, left_children = _parameter_view(
+                    _, left_children = parameter_view(
                         eq, lambda _: None, derivative_scope="primal", parent=original
                     )
-                    _, right_children = _parameter_view(
+                    _, right_children = parameter_view(
                         other, lambda _: None, derivative_scope="primal", parent=adapted
                     )
                     pending.extend(
@@ -84,7 +83,7 @@ class CommonCalls:
         """
         if graph in self.cache:
             return self.cache[graph]
-        if graph.effects or any(eq.effects or _ordered_equation(eq) for eq in graph.eqns):
+        if graph.effects or any(eq.effects or ordered_equation(eq) for eq in graph.eqns):
             raise UnsupportedJaxprError("algebra.effects", "ordered or effectful common call")
         variables = {v: ("constant", i) for i, v in enumerate(graph.constvars)}
         variables.update((v, ("input", i)) for i, v in enumerate(graph.invars))

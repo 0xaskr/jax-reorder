@@ -28,10 +28,11 @@ from jax_reorder import (
     UnsupportedJaxprError,
     compare_functions,
 )
-from jax_reorder.algebra_budget import Budget
-from jax_reorder.algebra_symbolic import SymbolicBuilder
-from jax_reorder.algebra_transport import freeze
-from jax_reorder.algebra_trusted import _finite_expansion, compare_symbolic, equal
+from jax_reorder.algebra.adapter.transport import freeze
+from jax_reorder.algebra.budget import Budget
+from jax_reorder.algebra.symbolic import SymbolicBuilder
+from jax_reorder.algebra.sympy_ops import equal, finite_expansion
+from jax_reorder.algebra.trusted import compare_symbolic
 
 
 def signature(shape=()):
@@ -237,7 +238,7 @@ def test_nested_sum_expansion_accounts_for_multiplicative_work():
     i, j = sp.symbols("i j", integer=True)
     x = sp.IndexedBase("x", shape=(128, 128), real=True)
     expression = sp.Sum(sp.Sum(x[i, j], (j, 0, 127)) + x[i, 0], (i, 0, 127))
-    assert not _finite_expansion(expression, Budget(10000))
+    assert not finite_expansion(expression, Budget(10000))
 
 
 def test_worker_engine_itself_never_executes_jax():

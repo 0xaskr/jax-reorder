@@ -335,7 +335,7 @@ def nonfinite_graph(graph, budget, cache=None):
         cache = {}
     if graph in cache:
         return cache[graph]
-    from .correspondence import _parameter_view
+    from ..core.params import parameter_view
 
     def nonfinite(value, aval):
         """按抽象值 dtype 转换后检查常量是否含非有限值；整数/布尔恒为有限。"""
@@ -356,7 +356,7 @@ def nonfinite_graph(graph, budget, cache=None):
         found |= any(
             nonfinite(var.val, var.aval) for var in eq.invars if isinstance(var, core.Literal)
         )
-        _, children = _parameter_view(eq, lambda _: None, derivative_scope="primal", parent=graph)
+        _, children = parameter_view(eq, lambda _: None, derivative_scope="primal", parent=graph)
         for child in children.values():
             found |= nonfinite_graph(child, budget, cache)
     found |= any(

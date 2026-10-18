@@ -20,11 +20,15 @@ verify_correspondence 可独立复核这份证据，不重新执行规范化。
 代数结论使用带明确浮点警告的理想实数解释，不代表一般 Python 或逐位浮点等价。
 inequivalent 表示有完整输出的数学不等价证据；different 仅是显式结构模式的图差异诊断；
 检查未完成、契约不兼容或运行失败均抛出分类异常。
+
+实现按 core（结构规范化与比较）→ algebra（SymPy 代数后端）→ functions（函数契约编排）
+分层，errors 是跨层共享的异常分类。子模块路径属于实现细节，不承诺稳定导入路径；
+对外只以本模块的 __all__ 为准。
 """
 
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs
-from .canonical import Canonicalized, Comparison, Status, canonicalize, compare_jaxprs
-from .correspondence import EquationCorrespondence, GraphCorrespondence, verify_correspondence
+from .core.canonical import Canonicalized, Comparison, Status, canonicalize, compare_jaxprs
+from .core.correspondence import EquationCorrespondence, GraphCorrespondence, verify_correspondence
 from .errors import (
     ComparisonBudgetError,
     ComparisonContractError,
@@ -83,4 +87,4 @@ __all__ = [
 ]
 
 # 包自身版本；JAX/jaxlib 的受审查版本由规范化和对应校验入口另行检查。
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -60,7 +60,7 @@ JAX 的延迟 VJP thunk 缓存图而不恢复 `out_trees` 的辅助状态。不�
 
 ## 实现与测试
 
-- [函数入口](../../src/jax_reorder/functions.py)、[规则适配](../../src/jax_reorder/derivatives.py)。
+- [函数入口](../../src/jax_reorder/functions.py)、[规则适配](../../src/jax_reorder/core/derivatives.py)。
 - [AI 固定规则](../../examples/custom_derivative_cases.py)、[求导测试](../../tests/test_custom_derivatives.py)。
 - [函数契约测试](../../tests/test_functions.py)：tuple/list、字典键、静态参数、动态余切向量、环境变更、追踪与编译失败。
 - [原图对应校验](original-correspondence.md)：重新物化规则并复核原始绑定，语义适配本身仍属于共同信任基础。

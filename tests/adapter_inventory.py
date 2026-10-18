@@ -24,7 +24,7 @@ from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
 from jax_reorder import Status, UnsupportedJaxprError, compare_jaxprs
-from jax_reorder.support import public_primitives
+from jax_reorder.core.support import public_primitives
 
 SNAPSHOT = Path(__file__).with_name("fixtures") / "jax-adapter-0.11.2.json"
 

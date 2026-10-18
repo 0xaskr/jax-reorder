@@ -20,7 +20,7 @@ from jax._src import core
 from jax._src.lax.lax import NoDCEEffect
 
 from jax_reorder import UnsupportedJaxprError, compare_jaxprs
-from jax_reorder.semantics import Encoder, encoded_equal
+from jax_reorder.core.semantics import Encoder, encoded_equal
 
 
 @pytest.mark.parametrize("module", [jax, jaxlib])

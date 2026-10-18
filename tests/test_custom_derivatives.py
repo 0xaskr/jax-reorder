@@ -32,7 +32,7 @@ from jax_reorder import (
     canonicalize,
     compare_jaxprs,
 )
-from jax_reorder.derivatives import semantic_parameters
+from jax_reorder.core.params import semantic_parameters
 from jax_reorder.functions import compare_functions
 
 

@@ -229,7 +229,7 @@ def test_partially_unused_multi_result_keeps_all_result_types():
 def test_opaque_pytree_auxiliary_data_is_not_silently_compared():
     """自定义 pytree 的 aux 数据不透明时必须拒绝，不能按对象地址或忽略处理。"""
     from jax_reorder import UnsupportedJaxprError
-    from jax_reorder.semantics import Encoder
+    from jax_reorder.core.semantics import Encoder
 
     # tree_flatten 返回 object() 作为 aux，比较层无法解释它的内容。
     @jax.tree_util.register_pytree_node_class

@@ -17,8 +17,8 @@ from jax import lax
 from jax._src import core
 
 from jax_reorder import Status, compare_jaxprs
-from jax_reorder.canonical import _difference
-from jax_reorder.semantics import Encoder, replace_nested
+from jax_reorder.core.canonical import difference
+from jax_reorder.core.semantics import Encoder, replace_nested
 
 
 def first(x):
@@ -69,6 +69,6 @@ def test_deep_parameter_encoding_comparison_and_replacement_are_iterative():
         value, changed = (value,), (changed,)
     left = encoder.encode(value, "parameter")
     right = encoder.encode(changed, "parameter")
-    assert _difference(left, right) is not None
-    assert _difference(left, encoder.encode(value, "parameter")) is None
+    assert difference(left, right) is not None
+    assert difference(left, encoder.encode(value, "parameter")) is None
     assert replace_nested(value, lambda x: x) is value

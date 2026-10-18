@@ -26,7 +26,7 @@ from jax_reorder import (
     canonicalize,
     compare_jaxprs,
 )
-from jax_reorder.correspondence import verify_correspondence
+from jax_reorder.core.correspondence import verify_correspondence
 from jax_reorder.functions import compare_functions
 
 

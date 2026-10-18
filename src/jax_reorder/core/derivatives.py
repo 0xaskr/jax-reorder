@@ -15,7 +15,11 @@ from jax._src import ad_util, core
 from jax._src import custom_derivatives as cd
 from jax._src.interpreters import partial_eval as pe
 
-from .errors import ComparisonBudgetError, ComparisonError, InvalidJaxprError, UnsupportedJaxprError
+from ..errors import (
+    ComparisonBudgetError,
+    InvalidJaxprError,
+    UnsupportedJaxprError,
+)
 
 # 只接纳锁定版本中的这两个原语身份，同名用户原语不会进入规则适配。
 CUSTOM_PRIMITIVES = frozenset((cd.custom_jvp_call_p, cd.custom_vjp_call_p))
@@ -353,55 +357,3 @@ def _vjp_rules(params, equation, parent):
             connected_graph = jax.make_jaxpr(connected)(*inputs)
             result.append((active, ct_active, out_tree, residual_tree, connected_graph))
     return tuple(result)
-
-
-def semantic_parameters(equation, *, scope="all", parent=None):
-    """已知 callable 展开为语义图；其余原语参数原样交给通用编码器。
-
-    返回值仅供比较使用，原方程仍保留 callable 以支持执行和 JAX 变换。
-    parent 提供捕获常量的原始绑定；scope 由调用入口约束为 all 或 primal。
-    custom 调用的返回视图固定包含 call_jaxpr、num_consts、symbolic_zeros，
-    scope="all" 时再附加物化的一阶 rules；参数模式变化时明确拒绝。
-    """
-    if equation.primitive not in CUSTOM_PRIMITIVES:
-        return equation.params
-    if jax.__version__ != "0.11.2":
-        raise UnsupportedJaxprError("derivative", "custom derivative adapter requires JAX 0.11.2")
-    p = equation.params
-    keys = {"call_jaxpr", "num_consts", "symbolic_zeros"}
-    keys |= (
-        {"jvp_jaxpr_fun"}
-        if equation.primitive is cd.custom_jvp_call_p
-        else {"fwd_jaxpr_thunk", "bwd", "out_trees"}
-    )
-    # 参数增减都表示适配假设变化，不能忽略新字段后继续声称理解了完整规则。
-    if p.keys() != keys:
-        raise UnsupportedJaxprError("derivative", "custom derivative parameter schema changed")
-    if (
-        not isinstance(p["call_jaxpr"], core.Jaxpr)
-        or type(p["num_consts"]) is not int
-        or not 0 <= p["num_consts"] <= len(equation.invars)
-        or type(p["symbolic_zeros"]) is not bool
-        or len(p["call_jaxpr"].invars) != len(equation.invars)
-        or len(p["call_jaxpr"].outvars) != len(equation.outvars)
-    ):
-        raise InvalidJaxprError("derivative", "invalid custom derivative interface")
-    # 返回的是比较视图，不改 equation.params。all 展开注册的一阶规则；primal
-    # 只比较当前调用的前向语义，供已经显式展开 JVP/VJP 的函数模式等路径使用。
-    result = {name: p[name] for name in ("call_jaxpr", "num_consts", "symbolic_zeros")}
-    if scope == "all":
-        try:
-            result["rules"] = (
-                _jvp_rules(p, equation, parent)
-                if equation.primitive is cd.custom_jvp_call_p
-                else _vjp_rules(p, equation, parent)
-            )
-            _check_rule_order(result["rules"])
-        # 已分类的错误保留原路径；JAX 或用户规则的其他失败统一包装成不支持。
-        except ComparisonError:
-            raise
-        except Exception as exc:
-            raise UnsupportedJaxprError(
-                "derivative", f"rule tracing rejected: {type(exc).__name__}: {exc}"
-            ) from exc
-    return result

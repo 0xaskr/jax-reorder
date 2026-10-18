@@ -20,7 +20,7 @@ from jax._src.lax.lax import NoDCEEffect
 from jax._src.numpy.scalar_types import _ScalarMeta
 from jax._src.random.prng import KeyTy, PRNGKeyArray
 
-from .errors import UnsupportedJaxprError
+from ..errors import UnsupportedJaxprError
 
 # 编码结果主要由带标签的元组、frozenset、字节串以及已适配的描述符组成。
 # Any 避免为不同参数类型建立庞大的联合类型，不表示允许任意未知对象原样透传。

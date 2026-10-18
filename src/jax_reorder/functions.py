@@ -16,9 +16,10 @@ from jax._src import core
 from jax._src.interpreters import ad
 from jax._src.layout import AutoLayout, Format
 
-from .algebra import AlgebraComparison, compare_algebraic_jaxprs, validate_timeout
-from .algebra_budget import Budget
-from .canonical import Comparison, Issue, Status, _difference, compare_jaxprs
+from .algebra import AlgebraComparison, compare_algebraic_jaxprs
+from .algebra.budget import Budget, validate_timeout
+from .core.canonical import Comparison, Issue, Status, compare_jaxprs, difference
+from .core.semantics import Encoder, Frozen, encoded_equal
 from .errors import (
     ComparisonContractError,
     ComparisonError,
@@ -26,7 +27,6 @@ from .errors import (
     TraceError,
     UnsupportedJaxprError,
 )
-from .semantics import Encoder, Frozen, encoded_equal
 
 # 固定模式顺序也用于报告 unverified_modes，避免遗漏项随集合遍历顺序变化。
 MODES = ("forward", "jvp", "vjp")
@@ -395,10 +395,10 @@ def compare_function_traces(
             "trace contexts or comparison modes differ",
             failure_kind="context_mismatch",
         )
-    difference = _difference(left.signature, right.signature)
-    if difference:
+    difference_path = difference(left.signature, right.signature)
+    if difference_path:
         raise ComparisonContractError(
-            f"{left.mode}.{difference.replace('graph', 'signature', 1)}",
+            f"{left.mode}.{difference_path.replace('graph', 'signature', 1)}",
             "function contracts differ",
         )
     # 求导模式已经通过公开变换展开为实际一阶程序；内部普通调用只比较其
@@ -406,7 +406,7 @@ def compare_function_traces(
     try:
         result = compare_jaxprs(left.jaxpr, right.jaxpr, derivative_scope="primal")
         algebra = None
-        status, issues, difference = result.status, result.issues, result.difference
+        status, issues, difference_path = result.status, result.issues, result.difference
         kind = "structural" if status == Status.EQUIVALENT else None
         if equivalence == "auto" and status == Status.DIFFERENT:
             algebra = compare_algebraic_jaxprs(
@@ -418,9 +418,9 @@ def compare_function_traces(
             status, issues = algebra.status, algebra.issues
             kind = algebra.equivalence_kind
             if status == Status.EQUIVALENT:
-                difference = None
+                difference_path = None
             elif status == Status.INEQUIVALENT:
-                difference = f"algebra.outputs[{algebra.output}]"
+                difference_path = f"algebra.outputs[{algebra.output}]"
     except ComparisonError as exc:
         raise exc.at(left.mode) from exc
     return ModeComparison(
@@ -428,7 +428,7 @@ def compare_function_traces(
         status,
         comparison=result,
         issues=issues,
-        difference=difference,
+        difference=difference_path,
         left=left,
         right=right,
         algebra=algebra,
