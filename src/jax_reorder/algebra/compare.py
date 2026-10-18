@@ -6,15 +6,21 @@
 结果对象只表示已完成的结构等价、数学等价或数学不等价；未完成与失败以异常报告。
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from jax._src import core
 
 from ..core.canonical import Issue, Status, canonicalize, compare_jaxprs
 from ..core.correspondence import GraphCorrespondence, build_correspondence
 from ..errors import (
     ComparisonContractError,
     ComparisonError,
+    ComparisonFailureKind,
     ComparisonInternalError,
+    ComparisonStage,
     UnsupportedJaxprError,
 )
 from .adapter.calls import CommonCalls
@@ -57,30 +63,30 @@ class AlgebraComparison:
     warnings: tuple[str, ...] = (FLOAT_WARNING,)
     correspondence: GraphCorrespondence | None = field(default=None, repr=False)
     work: int = 0
-    backend_result: "SympyResult | None" = field(default=None, repr=False)
+    backend_result: SympyResult | None = field(default=None, repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """拒绝未完成状态：失败只能经异常通道报告，不能伪装成结果。"""
         # 未完成或失败必须走异常通道，不能退化成第四种结果状态被调用方忽略。
         if self.status not in (Status.EQUIVALENT, Status.INEQUIVALENT):
             raise ValueError(f"invalid complete comparison status: {self.status}")
 
     @property
-    def equivalence_kind(self):
+    def equivalence_kind(self) -> Literal["structural", "algebraic"] | None:
         """区分结构证据与可信 SymPy 数学结论。"""
         if self.status != Status.EQUIVALENT:
             return None
         return "structural" if self.correspondence is not None else "algebraic"
 
     @property
-    def output(self):
+    def output(self) -> int | None:
         """数学路径判定所用的完整输出坐标；结构路径没有单一输出，返回 None。"""
         if self.backend_result is not None:
             return self.backend_result.output
         return None
 
 
-def _prepare(graph):
+def _prepare(graph: core.Jaxpr) -> tuple[core.Jaxpr, GraphCorrespondence]:
     """完成全图语义检查，并生成原图到区域适配图的结构对应证据。
 
     第一次规范化确认没有未知语义或未完成部分，并得到可执行图；
@@ -99,7 +105,13 @@ def _prepare(graph):
     return normalized.jaxpr, correspondence
 
 
-def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeout=10.0):
+def compare_algebraic_jaxprs(
+    left: core.Jaxpr,
+    right: core.Jaxpr,
+    *,
+    algebra_budget: int = 10000,
+    algebra_timeout: float = 10.0,
+) -> AlgebraComparison:
     """以可信 SymPy 比较两份完整前向 jaxpr 的数学输出。
 
     先做结构比较：结构等价直接返回结构证据，不消耗代数预算，也不进入实数
@@ -162,13 +174,13 @@ def compare_algebraic_jaxprs(left, right, *, algebra_budget=10000, algebra_timeo
         raise UnsupportedJaxprError(
             exc.path,
             exc.reason,
-            stage="algebra",
-            failure_kind="unsupported_conversion",
+            stage=ComparisonStage.ALGEBRA,
+            failure_kind=ComparisonFailureKind.UNSUPPORTED_CONVERSION,
             **exc.diagnostics,
         ) from exc
     except ComparisonError:
         raise
     except Exception as exc:
         raise ComparisonInternalError(
-            "algebra.convert", f"{type(exc).__name__}: {exc}", stage="algebra"
+            "algebra.convert", f"{type(exc).__name__}: {exc}", stage=ComparisonStage.ALGEBRA
         ) from exc

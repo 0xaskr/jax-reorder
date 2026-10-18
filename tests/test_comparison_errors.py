@@ -11,6 +11,7 @@
 - 这些是异常契约回归，不评估数学判定的完备性。
 """
 
+import json
 import pickle
 from types import SimpleNamespace
 
@@ -22,7 +23,9 @@ from jax_reorder import (
     ComparisonBudgetError,
     ComparisonContractError,
     ComparisonError,
+    ComparisonFailureKind,
     ComparisonInternalError,
+    ComparisonStage,
     MathematicalUndecidedError,
     Status,
     UnsupportedJaxprError,
@@ -199,3 +202,41 @@ def test_structural_implementation_failure_is_not_an_unsupported_input(monkeypat
         compare_jaxprs(graph, graph)
     assert error.value.stage == "structural"
     assert isinstance(error.value.__cause__, RuntimeError)
+
+
+def test_exception_enums_preserve_string_and_transport_compatibility():
+    error = ComparisonError(
+        "eqns[0]", "reason", stage="algebra", failure_kind="condition_undecided", query_count=2
+    )
+    assert error.stage is ComparisonStage.ALGEBRA
+    assert error.failure_kind is ComparisonFailureKind.CONDITION_UNDECIDED
+    assert str(error) == "algebra:eqns[0] [condition_undecided]: reason"
+    fields = {"stage": error.stage, "failure_kind": error.failure_kind}
+    assert json.loads(json.dumps(fields)) == {
+        "stage": "algebra",
+        "failure_kind": "condition_undecided",
+    }
+    assert pickle.loads(pickle.dumps(fields)) == fields
+    assert pickle.loads(pickle.dumps(error.stage)) is ComparisonStage.ALGEBRA
+
+
+def test_exception_relocation_keeps_subclass_defaults_and_diagnostics():
+    class CustomError(ComparisonError):
+        default_stage = ComparisonStage.TRACE
+        default_kind = ComparisonFailureKind.TRACE_REJECTED
+
+    payload = {"queries": [1, 2]}
+    original = CustomError("jaxpr", "reason", payload=payload)
+    relocated = original.at("left").at("forward")
+    assert type(relocated) is CustomError
+    assert relocated.path == "forward.left.jaxpr"
+    assert original.path == "jaxpr"
+    assert relocated.stage is ComparisonStage.TRACE
+    assert relocated.failure_kind is ComparisonFailureKind.TRACE_REJECTED
+    assert relocated.diagnostics["payload"] is payload
+
+
+@pytest.mark.parametrize("field", ["stage", "failure_kind"])
+def test_exception_rejects_unknown_classification(field):
+    with pytest.raises(ValueError, match="not a valid"):
+        ComparisonError("jaxpr", "reason", **{field: "misspelled"})

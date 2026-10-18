@@ -33,7 +33,9 @@ from .errors import (
     ComparisonBudgetError,
     ComparisonContractError,
     ComparisonError,
+    ComparisonFailureKind,
     ComparisonInternalError,
+    ComparisonStage,
     ComparisonTimeoutError,
     CompilationError,
     CorrespondenceError,
@@ -66,6 +68,8 @@ __all__ = [
     "ModeComparison",  # 单个 forward/JVP/VJP 模式的报告，保留图比较与追踪结果。
     "Status",  # equivalent、inequivalent；different 只用于显式结构诊断。
     "ComparisonError",
+    "ComparisonStage",
+    "ComparisonFailureKind",
     "ComparisonContractError",
     "ComparisonBudgetError",
     "ComparisonTimeoutError",

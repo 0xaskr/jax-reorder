@@ -4,8 +4,12 @@
 参数、常量的精确编码与比较器共享，属于需要单独测试的语义信任基础。
 """
 
+from __future__ import annotations
+
 from collections import defaultdict, deque
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Never, cast
 
 import jax
 import jaxlib
@@ -17,6 +21,12 @@ from .params import parameter_view
 from .semantics import Encoder, encoded_equal
 from .support import supported_primitive_identities
 
+if TYPE_CHECKING:
+    from .canonical import Canonicalized
+
+
+type RegionPair = tuple[core.Jaxpr, core.Jaxpr, core.Jaxpr, core.Jaxpr, tuple[int, ...] | None]
+
 
 @dataclass(frozen=True)
 class EquationCorrespondence:
@@ -26,7 +36,7 @@ class EquationCorrespondence:
     right: int
     # 子图以参数路径定位，例如 params.branches[0]；元组排列顺序不参与语义
     # 比较，真正的区域顺序由参数容器结构和所对应的方程表达。
-    children: tuple[tuple[str, "GraphCorrespondence"], ...] = ()
+    children: tuple[tuple[str, GraphCorrespondence], ...] = ()
     # outputs[p] = q 表示左侧结果端口 p 对应右侧端口 q，与方程在列表中的位置无关。
     outputs: tuple[int, ...] = ()
 
@@ -47,7 +57,12 @@ class GraphCorrespondence:
     outputs: tuple[int, ...] = ()
 
 
-def build_correspondence(left, right, left_normalized, right_normalized):
+def build_correspondence(
+    left: core.Jaxpr,
+    right: core.Jaxpr,
+    left_normalized: Canonicalized,
+    right_normalized: Canonicalized,
+) -> GraphCorrespondence:
     """利用规范化来源构造左右原始图的对应证据；构造成功本身不表示正确。
 
     left/right 是原始区域 jaxpr，left_normalized/right_normalized 是
@@ -57,7 +72,12 @@ def build_correspondence(left, right, left_normalized, right_normalized):
     绑定不一致时抛出 CorrespondenceError，不返回部分证据。
     """
 
-    def ports(a, b, an, bn):
+    def ports(
+        a: Sequence[core.Atom],
+        b: Sequence[core.Atom],
+        an: Sequence[core.Atom],
+        bn: Sequence[core.Atom],
+    ) -> tuple[int, ...]:
         """通过规范化后配对的值，恢复两份原始接口之间的端口映射。"""
         # 同一变量可作为多个返回值；逐个消费原端口，保留重复出现次数。
         ai, bi = defaultdict(deque), defaultdict(deque)
@@ -65,12 +85,18 @@ def build_correspondence(left, right, left_normalized, right_normalized):
             ai[id(value)].append(i)
         for i, value in enumerate(b):
             bi[id(value)].append(i)
-        result = [None] * len(a)
+        result: list[int | None] = [None] * len(a)
         for av, bv in zip(an, bn, strict=True):
             result[ai[id(av)].popleft()] = bi[id(bv)].popleft()
-        return tuple(result)
+        return cast(tuple[int, ...], tuple(result))
 
-    def build(a, b, an, bn, required_outputs=None):
+    def build(
+        a: core.Jaxpr,
+        b: core.Jaxpr,
+        an: core.Jaxpr,
+        bn: core.Jaxpr,
+        required_outputs: tuple[int, ...] | None = None,
+    ) -> Generator[RegionPair, GraphCorrespondence | None, GraphCorrespondence]:
         """为一个区域构造对应表，遇到子区域时交由外部生成器栈处理。
 
         required_outputs 由父调用已核对的结果端口提供，只用于重复返回同一
@@ -86,7 +112,7 @@ def build_correspondence(left, right, left_normalized, right_normalized):
             )
         ai = {v: i for i, v in enumerate(a.invars)}
         bi = {v: i for i, v in enumerate(b.invars)}
-        inputs = [None] * len(a.invars)
+        inputs: list[int | None] = [None] * len(a.invars)
         for av, bv in zip(an.invars, bn.invars, strict=True):
             inputs[ai[av]] = bi[bv]
         # 常量在可执行图中不换序，用首次引用编号恢复两侧原始绑定的对应。
@@ -94,7 +120,7 @@ def build_correspondence(left, right, left_normalized, right_normalized):
         br = right_normalized.regions[bn].value_references
         bc = {br[v]: i for i, v in enumerate(b.constvars)}
         constants = tuple(bc[ar[v]] for v in a.constvars)
-        equations = [None] * len(a.eqns)
+        equations: list[EquationCorrespondence | None] = [None] * len(a.eqns)
         for ia, ib, ae, be in zip(order_a, order_b, an.eqns, bn.eqns, strict=True):
             # 原方程参数给出待证明的区域，重排方程参数给出本次使用的规范区域；
             # 四份视图的路径必须一致，才能把规范化来源还原为原图证据。
@@ -133,16 +159,16 @@ def build_correspondence(left, right, left_normalized, right_normalized):
                     bnc[key],
                     output_ports if coupled else None,
                 )
-                children.append((key, child))
+                children.append((key, cast(GraphCorrespondence, child)))
             equations[ia] = EquationCorrespondence(
                 ib,
                 tuple(children),
                 output_ports,
             )
         return GraphCorrespondence(
-            tuple(inputs),
+            cast(tuple[int, ...], tuple(inputs)),
             constants,
-            tuple(equations),
+            cast(tuple[EquationCorrespondence, ...], tuple(equations)),
             ports(a.outvars, b.outvars, an.outvars, bn.outvars)
             if required_outputs is None
             else required_outputs,
@@ -150,8 +176,12 @@ def build_correspondence(left, right, left_normalized, right_normalized):
 
     try:
         # 生成器只描述一个区域的工作，嵌套深度由列表承载，不递归调用 build。
-        root = (left, right, left_normalized.jaxpr, right_normalized.jaxpr, None)
-        stack = [(root, build(*root))]
+        root: RegionPair = (left, right, left_normalized.jaxpr, right_normalized.jaxpr, None)
+        stack: list[
+            tuple[
+                RegionPair, Generator[RegionPair, GraphCorrespondence | None, GraphCorrespondence]
+            ]
+        ] = [(root, build(*root))]
         completed = {}
         value = None
         while stack:
@@ -166,7 +196,7 @@ def build_correspondence(left, right, left_normalized, right_normalized):
                 value = completed.get(children)
                 if value is None:
                     stack.append((children, build(*children)))
-        return value
+        return cast(GraphCorrespondence, value)
     except (KeyError, ValueError, TypeError, IndexError) as exc:
         # CorrespondenceError 是 ValueError 子类；已带路径的证据错误直接
         # 重抛，其他来源或绑定错误统一补上构造阶段的上下文。
@@ -177,7 +207,13 @@ def build_correspondence(left, right, left_normalized, right_normalized):
         ) from exc
 
 
-def verify_correspondence(left, right, correspondence, *, derivative_scope="all"):
+def verify_correspondence(
+    left: core.Jaxpr,
+    right: core.Jaxpr,
+    correspondence: GraphCorrespondence,
+    *,
+    derivative_scope: str = "all",
+) -> None:
     """逐区域复核原始图的双射与绑定；成功返回 None，否则抛出明确错误。
 
     本函数不接受规范化器对象，也不调用 canonicalize/compare_jaxprs。
@@ -187,12 +223,12 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
     一律收窄为 primal，避免递归展开未请求的高阶规则。
     """
 
-    def require(condition, path, reason):
+    def require(condition: bool, path: str, reason: str) -> None:
         """将校验失败统一转成带路径的证据错误，避免泄漏无定位信息的断言。"""
         if not condition:
             raise CorrespondenceError(path, reason)
 
-    def permutation(indices, left_size, right_size, path):
+    def permutation(indices: Sequence[int], left_size: int, right_size: int, path: str) -> None:
         """检查完整双射：数量相等、索引为整数，且每个目标位置恰好出现一次。"""
         # 必须覆盖双方每个位置一次；只验证已匹配子集会漏掉多余节点或共享变化。
         require(
@@ -204,7 +240,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
             "mapping is not a complete bijection",
         )
 
-    def reject_nested(_, path):
+    def reject_nested(_: core.Jaxpr, path: str) -> Never:
         """值描述符中不允许隐藏子图；合法区域必须经参数视图单独登记和校验。"""
         raise CorrespondenceError(path, "unexpected graph in a value descriptor")
 
@@ -216,7 +252,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
     require(derivative_scope in ("all", "primal"), "scope", "invalid derivative scope")
     supported = supported_primitive_identities()
 
-    def check_domain(graph, path):
+    def check_domain(graph: core.Jaxpr, path: str) -> None:
         """证据不能给未定义值、重复定义或未解释的原语授予等价结论。"""
         require(isinstance(graph, core.Jaxpr), path, "expected a bound jaxpr")
         available = set()
@@ -243,7 +279,7 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
             "unsupported primitive in correspondence",
         )
 
-    def ordered_positions(graph):
+    def ordered_positions(graph: core.Jaxpr) -> list[int]:
         """从原始区域识别隐式顺序约束，不能相信规范图已保存了这些边。
 
         返回需要保持相对顺序的方程索引；调用方经方程映射后与右侧逐项比较，
@@ -337,7 +373,14 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
         ae = Encoder(reject_nested, lambda v, values=values: values[v])
         be = Encoder(reject_nested, lambda v: v)
 
-        def same_value(av, bv, where, ae=ae, be=be, values=values):
+        def same_value(
+            av: core.Atom,
+            bv: core.Atom,
+            where: str,
+            ae: Encoder = ae,
+            be: Encoder = be,
+            values: Mapping[core.Var, core.Var] = values,
+        ) -> None:
             """字面量比较类型和精确内容，变量则要求遵守已建立的唯一绑定。"""
             if isinstance(av, core.Literal):
                 require(isinstance(bv, core.Literal), where, "literal and variable differ")
@@ -348,7 +391,8 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
                 )
                 require(
                     encoded_equal(
-                        ae.literal(av.val, av.aval, where), be.literal(bv.val, bv.aval, where)
+                        ae.literal(av.val, av.aval, where),
+                        be.literal(cast(core.Literal, bv).val, bv.aval, where),
                     ),
                     where,
                     "literal content differs",
@@ -429,17 +473,17 @@ def verify_correspondence(left, right, correspondence, *, derivative_scope="all"
             )
 
             def bound_child(
-                key,
-                a_slots,
-                b_slots,
-                flexible,
-                output_order=None,
-                children=children,
-                where=where,
-                equation=equation,
-                other=other,
-                same_value=same_value,
-            ):
+                key: str,
+                a_slots: Sequence[int],
+                b_slots: Sequence[int],
+                flexible: int,
+                output_order: tuple[int, ...] | None = None,
+                children: Mapping[str, GraphCorrespondence] = children,
+                where: str = where,
+                equation: core.JaxprEqn = equation,
+                other: core.JaxprEqn = other,
+                same_value: Callable[[core.Atom, core.Atom, str], None] = same_value,
+            ) -> None:
                 """结合子图形参映射复核父节点实际绑定，不使用规范化后的实参。
 
                 flexible 之前的槽位可在该组内置换，其余位置必须固定。

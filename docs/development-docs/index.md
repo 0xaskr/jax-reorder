@@ -4,6 +4,7 @@
 
 | 主题 | 文档 |
 | --- | --- |
+| 核心库类型边界、异常枚举与持续类型检查 | [type-annotations.md](type-annotations.md) |
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
 | 可信 SymPy 数学判等、定义条件与结果接口 | [algebraic-equivalence.md](algebraic-equivalence.md) |
 | 开源数学等价后端的并行评估与符号探针 | [open-source-equivalence-backends.md](open-source-equivalence-backends.md) |

@@ -32,30 +32,40 @@ algebra.trusted 交给可信 SymPy。未适配的原语、区域或 dtype 必须
 不能为了得到结论而丢弃语义。
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from functools import reduce
 from itertools import product
 from math import prod
 from operator import add, mul, neg, sub, truediv
+from typing import Any, cast
 
 import numpy as np
 import sympy as sp
 from jax import dtypes, lax
+from jax.typing import DTypeLike
+from numpy.typing import ArrayLike
 
 from ..errors import UnsupportedJaxprError
+from ._typing import ArrayAtom, ArrayAval, ArrayLiteral, Equation, Shape, SymbolicGraph
 from .budget import Budget
 from .expression import SymbolicTensor, _exact_array, coordinates, rename_bounds
 from .finiteness import Finiteness, Source
+from .indices import Index
 from .regions import region
 from .sympy_ops import domain_condition, simplify
 
+type Limit = tuple[sp.Symbol, int, int]
 
-def dtype_kind(dtype):
+
+def dtype_kind(dtype: DTypeLike) -> str:
     """把 dtype 归并成 "f"/"b"/"i"/"u" 等类别；所有浮点格式共用 "f"。"""
     return "f" if dtypes.issubdtype(dtype, np.floating) else np.dtype(dtype).kind
 
 
-def normalize_coordinates(expression, shape):
+def normalize_coordinates(expression: sp.Basic, shape: Shape) -> sp.Basic:
     """用已知 shape 与求和上下限，把精确整数坐标适配到统一的索引规范形式。
 
     该函数服务读取实例化：把自由轴符号、求和绑定变量以及常量上的 floor/mod
@@ -78,7 +88,7 @@ def normalize_coordinates(expression, shape):
                 domains[index] = (int(start), int(stop) + 1)
     reverse = {value: key for key, value in symbols.items()}
 
-    def parse(value):
+    def parse(value: sp.Expr) -> Index:
         """把 SymPy 表达式转成标量索引；无法表达时抛 ValueError。"""
         if value in symbols:
             return symbols[value]
@@ -98,7 +108,7 @@ def normalize_coordinates(expression, shape):
                 return divide(parse(numerator), int(denominator), domains)
         raise ValueError("not a supported coordinate expression")
 
-    def emit(index):
+    def emit(index: Index) -> sp.Expr:
         """把标量索引还原成 SymPy 表达式；优先复用原符号，其余按索引种类展开。"""
         if index in reverse:
             return reverse[index]
@@ -126,7 +136,7 @@ def normalize_coordinates(expression, shape):
 
 # 已核对语义的逐点原语到 SymPy 函数的映射；这里只建立数学表达式。
 # 部分函数（除法、log、sqrt、反三角函数等）的定义条件由 _operation 另行补充。
-SCALAR = {
+SCALAR: dict[str, Callable[..., sp.Basic]] = {
     "add": add,
     "sub": sub,
     "mul": mul,
@@ -174,22 +184,22 @@ class SymbolicBuilder:
     UnsupportedJaxprError，不用近似或丢弃条件换取转换成功。
     """
 
-    def __init__(self, budget=10000):
+    def __init__(self, budget: Budget | int = 10000) -> None:
         """budget 可以是 Budget 或正整数上限；同一构造器内共享扣减。"""
         self.budget = budget if isinstance(budget, Budget) else Budget(budget)
         # rules 记录实际使用的适配/规则名，作为后端审计信息，不参与判定。
-        self.rules = set()
+        self.rules: set[str] = set()
         # 预留的常量缓存槽位；当前构造流程直接返回 SymbolicTensor，不读取该列表。
-        self.constants = []
+        self.constants: list[SymbolicTensor] = []
         # 归约绑定变量按次递增命名，保证同一表达式内互不冲突。
         self.next_bound = 0
         self.finiteness = Finiteness()
         # 不透明运算的稳定身份表；只有完整内容相同才共享同一个函数编号。
-        self.definitions = {}
+        self.definitions: dict[tuple[Any, ...], int] = {}
         # 规范化表达式缓存；键含 shape，只影响构造成本，不改变运算身份。
-        self.canonical_values = {}
+        self.canonical_values: dict[tuple[sp.Basic, Shape], sp.Basic] = {}
 
-    def input(self, aval, position):
+    def input(self, aval: ArrayAval, position: int) -> SymbolicTensor:
         """为第 position 个函数输入建立符号值。
 
         浮点输入取实数假设，整数输入取整数假设，布尔输入用 Eq(x, 1) 表示真值；
@@ -212,7 +222,7 @@ class SymbolicBuilder:
             shape, aval.dtype, expression, source=Source(None, shape, aval.dtype, finite=True)
         )
 
-    def constant(self, value, aval):
+    def constant(self, value: ArrayLike, aval: ArrayAval) -> SymbolicTensor:
         """把一个字面量或捕获常量编码成精确表达式，并记录有限性。
 
         +Inf 与 NaN 没有当前实数表示，直接拒绝；-Inf 保留为 SymPy 的 -oo。
@@ -263,7 +273,9 @@ class SymbolicBuilder:
             tuple(aval.shape), aval.dtype, expression, finite=finite, source=source
         )
 
-    def graph(self, graph, inputs=None):
+    def graph(
+        self, graph: SymbolicGraph, inputs: Sequence[SymbolicTensor] | None = None
+    ) -> list[SymbolicTensor]:
         """按 SSA 顺序转换一张（子）图并返回有序输出。
 
         未提供实参的 invar 变成位置符号输入，constvar 绑定常量；inputs 用于区域
@@ -277,10 +289,10 @@ class SymbolicBuilder:
         for var, value in zip(graph.constvars, graph.consts, strict=True):
             environment[var] = self.constant(value, var.aval)
 
-        def read(var):
+        def read(var: ArrayAtom) -> SymbolicTensor:
             """把操作数解析成 SymbolicTensor；字面量直接编码，变量查 SSA 环境。"""
             if hasattr(var, "val"):
-                return self.constant(var.val, var.aval)
+                return self.constant(cast(ArrayLiteral, var).val, var.aval)
             return environment[var]
 
         for position, equation in enumerate(graph.eqns):
@@ -305,7 +317,9 @@ class SymbolicBuilder:
         unused.extend(environment[var] for var in graph.invars if var not in used)
         return self.finish([read(var) for var in graph.outvars], unused)
 
-    def finish(self, outputs, unused):
+    def finish(
+        self, outputs: Sequence[SymbolicTensor], unused: Iterable[SymbolicTensor]
+    ) -> list[SymbolicTensor]:
         """把未使用计算的定义条件合取到所有输出上，返回最终值。
 
         删除未使用计算会放宽原程序的定义域，从而可能把只在部分输入上有定义的
@@ -323,7 +337,12 @@ class SymbolicBuilder:
             )
         return [replace(value, defined=sp.And(value.defined, condition)) for value in outputs]
 
-    def definition(self, operation, values, outputs):
+    def definition(
+        self,
+        operation: tuple[Any, ...],
+        values: Sequence[SymbolicTensor],
+        outputs: Sequence[ArrayAtom],
+    ) -> tuple[int, tuple[sp.Symbol, ...]]:
         """为一次不透明运算登记稳定身份，并返回需要捕获的输入符号。
 
         身份由原语名、编码后的参数、各输入的 shape/dtype/规范化表达式/条件以及
@@ -403,7 +422,7 @@ class SymbolicBuilder:
             self.definitions[key] = len(self.definitions)
         return self.definitions[key], captured
 
-    def bound(self, extent):
+    def bound(self, extent: int) -> Limit:
         """生成一次归约的绑定变量，返回 (symbol, 0, extent - 1)。
 
         使用 Dummy 保证同一表达式中多次归约不会共用绑定名；名字只用于打印，
@@ -413,7 +432,7 @@ class SymbolicBuilder:
         self.next_bound += 1
         return symbol, 0, extent - 1
 
-    def broadcast(self, value, shape):
+    def broadcast(self, value: SymbolicTensor, shape: Shape) -> tuple[sp.Basic, sp.Basic]:
         """把值按 JAX 广播规则读取到 shape，返回 (expression, defined)。
 
         广播只允许在左侧补轴或扩展长度为 1 的轴；扩展轴读 0 号元素。
@@ -425,7 +444,7 @@ class SymbolicBuilder:
             )
         )
 
-    def universal(self, condition, limits):
+    def universal(self, condition: sp.Basic, limits: Sequence[Limit]) -> sp.Basic:
         """把逐点定义条件提升为“对整个归约域都成立”的条件。
 
         小域直接逐点合取；大域用 Product(Piecewise) == 1 的惰性等式表达同一
@@ -449,7 +468,9 @@ class SymbolicBuilder:
             )
         return sp.Eq(sp.Product(sp.Piecewise((1, condition), (0, True)), *limits), 1)
 
-    def summation(self, expression, limits, defined=sp.true):
+    def summation(
+        self, expression: sp.Basic, limits: Sequence[Limit], defined: sp.Basic = sp.true
+    ) -> sp.Basic:
         """构造有限求和，并在可证明安全时改写为零基前缀差分形式。
 
         只改写保持同一覆盖的矩形域：单点轴先代入，所有读取都带同一非负偏移时
@@ -505,7 +526,9 @@ class SymbolicBuilder:
             )
         )
 
-    def operation(self, eq, values, position):
+    def operation(
+        self, eq: Equation, values: Sequence[SymbolicTensor], position: int
+    ) -> Sequence[SymbolicTensor]:
         """转换一条方程：先建立来源与有限性，再选择逐点映射或不透明同余。
 
         Source 沿用源图的有限性分析（如 guarded softmax），作为“在保留条件下可
@@ -659,7 +682,9 @@ class SymbolicBuilder:
             for value, source in zip(outputs, sources, strict=True)
         ]
 
-    def opaque(self, eq, values, sources):
+    def opaque(
+        self, eq: Equation, values: Sequence[SymbolicTensor], sources: Sequence[Source]
+    ) -> list[SymbolicTensor]:
         """把整个运算表示成一个未解释函数调用，只保留完整同余。
 
         参数是捕获变量和输出坐标，另设 defined_ 函数保存“该输出端口有定义”的
@@ -687,7 +712,9 @@ class SymbolicBuilder:
             )
         return result
 
-    def _operation(self, eq, values, position):
+    def _operation(
+        self, eq: Equation, values: Sequence[SymbolicTensor], position: int
+    ) -> Sequence[SymbolicTensor]:
         """把一条已核对原语映射成逐点/索引表达式，返回按端口排列的 SymbolicTensor。
 
         每个分支都必须保留完整的操作数、坐标和参数语义；没有适配的分支在末尾
@@ -715,7 +742,7 @@ class SymbolicBuilder:
                 )
                 # 定义条件覆盖整个调用，所有输出端口共用同一份条件。
                 domain = sp.Eq(sp.Function(f"defined_call_{identity}")(*captured), 1)
-                result = [None] * len(outputs)
+                call_outputs: list[SymbolicTensor | None] = [None] * len(outputs)
                 for port, mapped in enumerate(outputs):
                     aval = eq.outvars[mapped].aval
                     if dtype_kind(aval.dtype) != "f":
@@ -723,11 +750,11 @@ class SymbolicBuilder:
                     expression = sp.Function(f"call_{identity}_{port}", real=True)(
                         *captured, *coordinates(aval.shape)
                     )
-                    result[mapped] = SymbolicTensor(
+                    call_outputs[mapped] = SymbolicTensor(
                         tuple(aval.shape), aval.dtype, expression, domain
                     )
                 self.rules.add("common_jit")
-                return result
+                return cast(list[SymbolicTensor], call_outputs)
             return self.graph(params["jaxpr"], values)
         if name in ("cond", "scan", "while"):
             # 区域内部用同一个构造器绑定实参、carry 和返回口。
@@ -737,7 +764,7 @@ class SymbolicBuilder:
         aval = eq.outvars[0].aval
         shape, axes = tuple(aval.shape), coordinates(aval.shape)
 
-        def result(expression, defined=sp.true):
+        def result(expression: sp.Basic, defined: sp.Basic = sp.true) -> list[SymbolicTensor]:
             """包装单输出：统一坐标规范化，并按表达式是否含非有限值标记 finite。"""
             return [
                 SymbolicTensor(
@@ -827,12 +854,12 @@ class SymbolicBuilder:
                 0 if size == 1 else axes[axis]
                 for size, axis in zip(values[0].shape, params["broadcast_dimensions"], strict=True)
             )
-            return result(*values[0].read(indices))
+            return result(*values[0].read(cast(Sequence[sp.Expr | int], indices)))
         if name == "transpose":
             indices = [None] * len(axes)
             for axis, source in enumerate(params["permutation"]):
                 indices[source] = axes[axis]
-            return result(*values[0].read(indices))
+            return result(*values[0].read(cast(Sequence[sp.Expr | int], indices)))
         if name == "squeeze":
             iterator = iter(axes)
             return result(
@@ -852,11 +879,13 @@ class SymbolicBuilder:
             old_shape = tuple(original.shape[i] for i in order)
             # 把新坐标压成行主序线性下标，再按旧 shape 的步长还原每个轴。
             flat = sum(i * prod(shape[axis + 1 :]) for axis, i in enumerate(axes))
-            indices = [None] * len(old_shape)
+            reshape_indices: list[sp.Expr | int | None] = [None] * len(old_shape)
             for axis, source in enumerate(order):
                 extent, stride = old_shape[axis], prod(old_shape[axis + 1 :])
-                indices[source] = 0 if extent <= 1 else sp.Mod(sp.floor(flat / stride), extent)
-            return result(*original.read(indices))
+                reshape_indices[source] = (
+                    0 if extent <= 1 else sp.Mod(sp.floor(flat / stride), extent)
+                )
+            return result(*original.read(reshape_indices))
         if name == "slice":
             strides = params.get("strides") or (1,) * len(axes)
             return result(
@@ -1029,7 +1058,7 @@ class SymbolicBuilder:
             )
             return result(expression, domain)
         if name in ("concatenate", "stack"):
-            axis = params.get("dimension", params.get("axis"))
+            axis = cast(int, params.get("dimension", params.get("axis")))
             branches, domains, offset = [], [], 0
             # 沿拼接轴给每个输入加半开区间守卫，再合成 Piecewise。
             for value in values:

@@ -6,7 +6,9 @@
 预算不衡量墙钟、内存或线程数；墙钟上限由 worker 超时单独负责。
 """
 
-from ..errors import ComparisonBudgetError
+from __future__ import annotations
+
+from ..errors import ComparisonBudgetError, ComparisonStage
 
 
 class Budget:
@@ -17,7 +19,7 @@ class Budget:
     未完成的转换当作数学结论。
     """
 
-    def __init__(self, limit):
+    def __init__(self, limit: int) -> None:
         """只接受正整数，布尔值不作为预算。
 
         type 精确比较而非 isinstance：True 是 int 的子类，不能被当作 1。
@@ -28,7 +30,7 @@ class Budget:
         self.limit = limit
         self.used = 0
 
-    def spend(self, amount=1, path="algebra"):
+    def spend(self, amount: int = 1, path: str = "algebra") -> None:
         """超限立即中止，不把未完成的转换或查询当作结论。
 
         amount 必须非负；负扣减会凭空增加剩余预算。检查 amount 是否超过
@@ -39,7 +41,7 @@ class Budget:
             raise ComparisonBudgetError(
                 path,
                 f"algebra budget exceeded: used {self.used}, need {amount}, limit {self.limit}",
-                stage="algebra",
+                stage=ComparisonStage.ALGEBRA,
                 used=self.used,
                 requested=amount,
                 limit=self.limit,
@@ -47,7 +49,7 @@ class Budget:
         self.used += amount
 
 
-def validate_timeout(value):
+def validate_timeout(value: float) -> None:
     """要求正整数或浮点数的有限正超时；布尔值被显式排除。
 
     用 type 精确比较而不是 isinstance，避免 True/False 被当成 int；

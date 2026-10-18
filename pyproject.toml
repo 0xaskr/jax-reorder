@@ -20,6 +20,7 @@ Issues = "https://github.com/0xaskr/jax-reorder/issues"
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.40.2",
     "flax>=0.12.10",
     "pytest>=8",
     "ruff>=0.11",
@@ -33,7 +34,27 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "ANN"]
+
+[tool.ruff.lint.per-file-ignores]
+# Any 仅用于异构 primitive 参数、编码载荷及任意 Python pytree。
+"src/jax_reorder/**/*.py" = ["ANN401"]
+"tests/**/*.py" = ["ANN"]
+"examples/**/*.py" = ["ANN"]
+"tools/**/*.py" = ["ANN"]
+
+[tool.basedpyright]
+include = ["src/jax_reorder", "tests/typing"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+# SymPy 没有发布类型契约；不从其动态构造器源码猜测返回类型。
+useLibraryCodeForTypes = false
+# 本项目有意适配锁定版本的 JAX 私有接口，范围由运行时守卫和回归测试维护。
+reportPrivateImportUsage = false
+reportMissingTypeArgument = "error"
+reportMissingParameterType = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

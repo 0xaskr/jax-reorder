@@ -5,14 +5,17 @@
 本模块只做契约判断，不改写图，也不把非默认属性近似成默认值。
 """
 
-from jax._src import pjit
+from __future__ import annotations
+
+from jax._src import core, pjit
 from jax._src.api import Inline
 from jax._src.sharding_impls import UNSPECIFIED
 
+from ...core._typing import Parameters
 from .semantics import plain_equation
 
 
-def default_jit(eq, params):
+def default_jit(eq: core.JaxprEqn, params: Parameters) -> bool:
     """完整核对已审核默认 JIT 的执行属性。
 
     返回 True 当且仅当方程是 pjit.jit_p、参数集合恰好是锁定版本审查过的

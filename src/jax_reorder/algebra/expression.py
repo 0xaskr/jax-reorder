@@ -4,13 +4,24 @@
 regions、trusted 共用这些基础类型，避免三者互相导入形成环。
 """
 
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import sympy as sp
+from jax.typing import DTypeLike
+from numpy.typing import ArrayLike
+
+from ._typing import ObjectArray, Shape
+
+if TYPE_CHECKING:
+    from .finiteness import Source
 
 
-def coordinates(shape):
+def coordinates(shape: Sequence[int]) -> tuple[sp.Expr, ...]:
     """按输出 shape 生成自由坐标符号；单位轴固定为 0。
 
     同名整数符号全图共享身份，广播和单位轴读取直接写 0，不额外引入绑定。
@@ -21,14 +32,14 @@ def coordinates(shape):
     )
 
 
-def _exact_array(value):
+def _exact_array(value: ArrayLike) -> ObjectArray:
     """把常量数组逐元素转成精确 SymPy 值，保留 shape 与完整内容。
 
     浮点字面量按其 Python 二进制值转成有理数，不做十进制“取整”解释；
     NaN/±Inf 不在这里处理，由调用方显式拒绝或按特殊值保留。
     """
 
-    def exact_scalar(x):
+    def exact_scalar(x: object) -> sp.Basic:
         """按 Python 标量类型分派；布尔必须先于整数判断（bool 是 int 子类）。"""
         x = np.asarray(x).item()
         if isinstance(x, (bool, np.bool_)):
@@ -43,7 +54,7 @@ def _exact_array(value):
     return np.vectorize(exact_scalar, otypes=[object])(np.asarray(value))
 
 
-def rename_bounds(expression, *, fresh=False):
+def rename_bounds(expression: sp.Basic, *, fresh: bool = False) -> sp.Basic:
     """按词法作用域重命名 Sum/Product 的绑定变量，防止嵌套求和捕获外层读取。
 
     SymPy 1.14 的 as_dummy 在嵌套求和里会复用 `_0` 这类名字，把外层引用误绑到
@@ -53,7 +64,7 @@ def rename_bounds(expression, *, fresh=False):
     """
     cache = {}
 
-    def visit(node, environment, depth):
+    def visit(node: sp.Basic, environment: Mapping[sp.Basic, sp.Basic], depth: int) -> sp.Basic:
         """在给定绑定环境下递归改写；环境只解释被绑定的符号，不改变其他节点。"""
         if node in environment:
             return environment[node]
@@ -97,14 +108,14 @@ class SymbolicTensor:
     供有限性分析和查询键使用。
     """
 
-    shape: tuple
-    dtype: object
+    shape: Shape
+    dtype: DTypeLike
     expression: sp.Basic
     defined: sp.Basic = sp.true
     finite: bool = True
-    source: object = None
+    source: Source | None = None
 
-    def read(self, indices):
+    def read(self, indices: Sequence[sp.Expr | int]) -> tuple[sp.Basic, sp.Basic]:
         """用具体或符号坐标实例化元素公式，返回 (expression, defined)。
 
         实例化前先给内部 Sum/Product 绑定换新 Dummy，避免调用方已有绑定与读取

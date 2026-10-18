@@ -21,6 +21,8 @@ EXPECTED_PUBLIC = {
     "ComparisonBudgetError",
     "ComparisonContractError",
     "ComparisonError",
+    "ComparisonStage",
+    "ComparisonFailureKind",
     "ComparisonInternalError",
     "ComparisonTimeoutError",
     "CompilationError",
@@ -64,12 +66,23 @@ def module_name(path):
     return "jax_reorder" + ("." + ".".join(parts) if parts else "")
 
 
-def imported_modules(path):
-    """解析文件中的相对/绝对 jax_reorder 导入，返回绝对模块名集合。"""
+def imported_modules(path, *, include_type_checking=True):
+    """解析包内导入；循环检查只看运行时依赖，分层检查也包含类型依赖。"""
     module = module_name(path)
     tree = ast.parse(path.read_text(encoding="utf-8"))
     result = set()
-    for node in ast.walk(tree):
+    pending = [tree]
+    while pending:
+        node = pending.pop()
+        if (
+            not include_type_checking
+            and isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "TYPE_CHECKING"
+        ):
+            pending.extend(node.orelse)
+            continue
+        pending.extend(ast.iter_child_nodes(node))
         if isinstance(node, ast.ImportFrom):
             if node.level:
                 base = module.split(".") if path.name == "__init__.py" else module.split(".")[:-1]
@@ -87,12 +100,16 @@ def imported_modules(path):
     return result
 
 
-def internal_graph():
+def internal_graph(*, include_type_checking=True):
     """返回仅包含包内模块的导入图。"""
     paths = {module_name(path): path for path in module_paths()}
     graph = {}
     for module, path in paths.items():
-        deps = {dep for dep in imported_modules(path) if dep in paths and dep != module}
+        deps = {
+            dep
+            for dep in imported_modules(path, include_type_checking=include_type_checking)
+            if dep in paths and dep != module
+        }
         graph[module] = deps
     return graph
 
@@ -105,7 +122,7 @@ def test_all_modules_importable():
 
 
 def test_import_graph_has_no_cycles():
-    graph = internal_graph()
+    graph = internal_graph(include_type_checking=False)
     state = {}
 
     def visit(node):

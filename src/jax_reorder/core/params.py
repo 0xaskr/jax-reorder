@@ -5,7 +5,11 @@
 functions，避免上层直接导入其他模块的私有辅助函数。
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
 from types import SimpleNamespace
+from typing import Any, cast
 
 import jax
 from jax import lax
@@ -13,20 +17,21 @@ from jax._src import core, pjit, shard_map
 from jax._src import custom_derivatives as cd
 
 from ..errors import ComparisonError, InvalidJaxprError, UnsupportedJaxprError
+from ._typing import EncodedRegion, Parameters
 from .derivatives import CUSTOM_PRIMITIVES, _check_rule_order, _jvp_rules, _vjp_rules
-from .semantics import Encoder
+from .semantics import Encoder, Frozen
 
 
 def parameter_view(
-    equation,
-    variable,
+    equation: core.JaxprEqn,
+    variable: Callable[[core.Var], Frozen],
     *,
-    inputs=None,
-    outputs=None,
-    parameters=None,
-    derivative_scope="all",
-    parent=None,
-):
+    inputs: Sequence[int] | None = None,
+    outputs: Sequence[int] | None = None,
+    parameters: Mapping[str, Any] | None = None,
+    derivative_scope: str = "all",
+    parent: core.Jaxpr | None = None,
+) -> tuple[tuple[tuple[str, Frozen], ...], dict[str, core.Jaxpr]]:
     """保留参数内容，用子图路径作占位并另行交给图校验器。
 
     不读取规范图的参数编码。jit 名称和 reduce callable 是锁定版本中
@@ -39,11 +44,11 @@ def parameter_view(
     """
     regions = {}
 
-    def nested(graph, path):
+    def nested(graph: core.Jaxpr, path: str) -> EncodedRegion:
         """登记子图及其路径，让参数编码与子图内容校验分开进行。"""
         # 父参数只记录子图所在位置，内容随后逐区域核对；占位不意味着忽略子图。
         regions[path] = graph
-        return SimpleNamespace(graph=("region", path))
+        return cast(EncodedRegion, SimpleNamespace(graph=("region", path)))
 
     encoder = Encoder(nested, variable)
     values = []
@@ -52,6 +57,7 @@ def parameter_view(
         if parameters is None
         else parameters
     )
+    value: Any
     for key, value in sorted(params.items()):
         if equation.primitive is pjit.jit_p and key == "name":
             continue
@@ -88,7 +94,9 @@ def parameter_view(
     return tuple(values), regions
 
 
-def semantic_parameters(equation, *, scope="all", parent=None):
+def semantic_parameters(
+    equation: core.JaxprEqn, *, scope: str = "all", parent: core.Jaxpr | None = None
+) -> Parameters:
     """已知 callable 展开为语义图；其余原语参数原样交给通用编码器。
 
     返回值仅供比较使用，原方程仍保留 callable 以支持执行和 JAX 变换。

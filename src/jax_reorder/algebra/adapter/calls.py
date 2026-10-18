@@ -9,14 +9,21 @@
 冻结阶段（algebra.adapter.transport）拒绝共享并保留完整展开边界。
 """
 
+from __future__ import annotations
+
+from collections.abc import Sequence
 from types import SimpleNamespace
+from typing import cast
 
 from jax._src import core, pjit
 
+from ...core._typing import EncodedRegion
 from ...core.canonical import ordered_equation
+from ...core.correspondence import GraphCorrespondence
 from ...core.params import parameter_view, semantic_parameters
-from ...core.semantics import Encoder
+from ...core.semantics import Encoder, Frozen
 from ...errors import UnsupportedJaxprError
+from ..budget import Budget
 from .jit import default_jit
 
 
@@ -30,16 +37,18 @@ class CommonCalls:
     是否写成共同调用符号。cache 保证同一子图只编码一次。
     """
 
-    def __init__(self, pairs, budget):
+    def __init__(
+        self, pairs: Sequence[tuple[core.Jaxpr, core.Jaxpr, GraphCorrespondence]], budget: Budget
+    ) -> None:
         """登记两侧根图，计算共有调用集合，并沿区域证据收集可替换的调用点。"""
         self.budget = budget
-        self.cache = {}
-        self.members = {}
+        self.cache: dict[core.Jaxpr, Frozen] = {}
+        self.members: dict[core.Jaxpr, set[Frozen]] = {}
         # 先为两侧根图计算成员集合，才能求交集识别“两侧共有”的调用。
         for original, _, _ in pairs:
             self.key(original)
         self.shared = self.members[pairs[0][0]] & self.members[pairs[1][0]]
-        self.invocations = {}
+        self.invocations: dict[core.JaxprEqn, tuple[Frozen, tuple[int, ...], tuple[int, ...]]] = {}
         # 用显式栈沿区域证据遍历嵌套子图；三元组去重防止共享子图重复展开。
         pending, seen = list(pairs), set()
         while pending:
@@ -72,7 +81,7 @@ class CommonCalls:
                         for path, witness in children.items()
                     )
 
-    def key(self, graph):
+    def key(self, graph: core.Jaxpr) -> Frozen:
         """按当前图的有序端口与实际定义位置编码全部节点及无根计算。
 
         编码包含常量内容、输入抽象值、每个方程（primitive、操作数引用、
@@ -85,21 +94,23 @@ class CommonCalls:
             return self.cache[graph]
         if graph.effects or any(eq.effects or ordered_equation(eq) for eq in graph.eqns):
             raise UnsupportedJaxprError("algebra.effects", "ordered or effectful common call")
-        variables = {v: ("constant", i) for i, v in enumerate(graph.constvars)}
+        variables: dict[core.Var, Frozen] = {
+            v: ("constant", i) for i, v in enumerate(graph.constvars)
+        }
         variables.update((v, ("input", i)) for i, v in enumerate(graph.invars))
         calls = set()
 
-        def nested(child, path):
+        def nested(child: core.Jaxpr, path: str) -> EncodedRegion:
             """把嵌套子图编成自身键，并把它的调用成员并入当前图的成员集合。"""
             # Encoder 约定嵌套子图返回带 .graph 属性的对象；这里用子图键代替
             # 规范化结果，使编码只看数学内容，不复制源图。
             key = self.key(child)
             calls.update(self.members[child])
-            return SimpleNamespace(graph=key)
+            return cast(EncodedRegion, SimpleNamespace(graph=key))
 
         encoder = Encoder(nested, variables.__getitem__)
 
-        def reference(var):
+        def reference(var: core.Atom) -> Frozen:
             """把操作数编码成（字面量或已登记变量的）位置引用。"""
             # 字面量不占输入/常量槽位，按声明抽象值和内容单独编码；
             # 其余变量必须已在当前图的输入、常量或前面方程的输出中登记。
@@ -111,7 +122,7 @@ class CommonCalls:
                 )
             return variables[var]
 
-        def encoded(value):
+        def encoded(value: object) -> Frozen:
             """用当前图的变量解析规则编码任意参数或抽象值。"""
             return encoder.encode(value, "algebra.call")
 

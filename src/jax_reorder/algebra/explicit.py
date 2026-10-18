@@ -32,69 +32,96 @@
 未验证的映射在下方逐项标注；新增 primitive 前需要补数值回归。
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, cast
+
 # 保留上游快照的 lambda 赋值和宽松循环写法，以最小差异固定来源版本。
 # ruff: noqa: E731, B007, B905, E741
 import jax
 import numpy as np
 import sympy as sy
+from jax import lax
+from jax._src import core
 from jax.extend.core import Literal
 
+from ._typing import ObjectArray, Shape
 from .expression import _exact_array as exact_array
+
+type SymbolicArray = ObjectArray | sy.Basic
+
 
 # 逐点映射：对象数组上的二元运算可直接用 Python 运算符完成；
 # 一元超越函数用 np.vectorize 包装，otypes=[object] 阻止 NumPy 推断浮点 dtype。
-_sym_add = lambda a, b: a + b
-_sym_sub = lambda a, b: a - b
-_sym_mul = lambda a, b: a * b
-_sym_div = lambda a, b: a / b
-_sym_pow = lambda a, b: a**b
-_sym_integer_pow = lambda a, exp: a**exp
-_sym_neg = lambda a: -a
-_sym_exp = lambda a: np.vectorize(sy.exp, otypes=[object])(a)
-_sym_log = lambda a: np.vectorize(sy.log)(a)
-_sym_sin = lambda a: np.vectorize(sy.sin)(a)
-_sym_cos = lambda a: np.vectorize(sy.cos)(a)
-_sym_tan = lambda a: np.vectorize(sy.tan)(a)
-_sym_asin = lambda a: np.vectorize(sy.asin)(a)
-_sym_acos = lambda a: np.vectorize(sy.acos)(a)
-_sym_atan = lambda a: np.vectorize(sy.atan)(a)
-_sym_atan2 = lambda a, b: np.vectorize(sy.atan2)(
+_sym_add: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: a + b
+_sym_sub: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: a - b
+_sym_mul: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: a * b
+_sym_div: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: a / b
+_sym_pow: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: a**b
+_sym_integer_pow: Callable[[ObjectArray, int], ObjectArray] = lambda a, exp: a**exp
+_sym_neg: Callable[[ObjectArray], ObjectArray] = lambda a: -a
+_sym_exp: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.exp, otypes=[object])(a)
+_sym_log: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.log)(a)
+_sym_sin: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.sin)(a)
+_sym_cos: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.cos)(a)
+_sym_tan: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.tan)(a)
+_sym_asin: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.asin)(a)
+_sym_acos: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.acos)(a)
+_sym_atan: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.atan)(a)
+_sym_atan2: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.atan2)(
     a, b
 )  # 未验证（2026-07-14 加入，尚无数值回归覆盖）
-_sym_sinh = lambda a: np.vectorize(sy.sinh)(a)
-_sym_cosh = lambda a: np.vectorize(sy.cosh)(a)
-_sym_tanh = lambda a: np.vectorize(sy.tanh)(a)
-_sym_sqrt = lambda a: np.vectorize(sy.sqrt)(a)
-_sym_sign = lambda a: np.vectorize(sy.sign)(a)
-_sym_square = lambda a: a**2
-_sym_abs = lambda a: np.vectorize(sy.Abs)(a)
+_sym_sinh: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.sinh)(a)
+_sym_cosh: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.cosh)(a)
+_sym_tanh: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.tanh)(a)
+_sym_sqrt: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.sqrt)(a)
+_sym_sign: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.sign)(a)
+_sym_square: Callable[[ObjectArray], ObjectArray] = lambda a: a**2
+_sym_abs: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.Abs)(a)
 # 比较与逻辑关系必须用 Eq/Ne/And 等构造：Python 的 == 和 < 会返回 bool，
 # 而不是可参与符号运算的关系表达式。sy.And/Or/Not 是函数，需逐元素调用。
-_sym_eq = lambda a, b: np.vectorize(sy.Eq)(a, b)
-_sym_ne = lambda a, b: np.vectorize(sy.Ne)(a, b)
-_sym_lt = lambda a, b: np.vectorize(sy.StrictLessThan)(a, b)
-_sym_le = lambda a, b: np.vectorize(sy.LessThan)(a, b)
-_sym_gt = lambda a, b: np.vectorize(sy.StrictGreaterThan)(a, b)
-_sym_ge = lambda a, b: np.vectorize(sy.GreaterThan)(a, b)
-_sym_and = lambda a, b: np.vectorize(sy.And)(a, b)
-_sym_or = lambda a, b: np.vectorize(sy.Or)(a, b)
-_sym_not = lambda a: np.vectorize(sy.Not)(a)
-_sym_max = lambda a, b: np.vectorize(sy.Max)(a, b)
-_sym_min = lambda a, b: np.vectorize(sy.Min)(a, b)
-_sym_logaddexp = lambda a, b: np.vectorize(lambda x, y: sy.log(sy.exp(x) + sy.exp(y)))(a, b)
+_sym_eq: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.Eq)(a, b)
+_sym_ne: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.Ne)(a, b)
+_sym_lt: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(
+    sy.StrictLessThan
+)(a, b)
+_sym_le: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.LessThan)(
+    a, b
+)
+_sym_gt: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(
+    sy.StrictGreaterThan
+)(a, b)
+_sym_ge: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(
+    sy.GreaterThan
+)(a, b)
+_sym_and: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.And)(
+    a, b
+)
+_sym_or: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.Or)(a, b)
+_sym_not: Callable[[ObjectArray], ObjectArray] = lambda a: np.vectorize(sy.Not)(a)
+_sym_max: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.Max)(
+    a, b
+)
+_sym_min: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(sy.Min)(
+    a, b
+)
+_sym_logaddexp: Callable[[ObjectArray, ObjectArray], ObjectArray] = lambda a, b: np.vectorize(
+    lambda x, y: sy.log(sy.exp(x) + sy.exp(y))
+)(a, b)
 # logaddexp 按定义展开成 log(exp(a)+exp(b))，不引入新的不透明函数符号。
 # 该公式在极端输入下与稳定的 JAX 实现数值不同，但作为公式基线足够。
 
 
 # 数组级映射：下面的映射直接作用在 NumPy 对象数组上，不构造逐元素循环；
 # 依赖 JAX 静态参数（axes、dimension_numbers 等）确定轴映射。
-def _sym_reduce_sum(a, eqn):
+def _sym_reduce_sum(a: Sequence[ObjectArray], eqn: core.JaxprEqn) -> SymbolicArray:
     """沿静态 axes 对单个操作数求和；多操作数输入由断言拒绝。"""
     assert len(a) == 1
     return np.sum(a[0], axis=eqn.params["axes"])
 
 
-def _sym_reduce_or(a, eqn):
+def _sym_reduce_or(a: Sequence[ObjectArray], eqn: core.JaxprEqn) -> SymbolicArray:
     """布尔归约：axes 为空时把所有元素合成一个 Or，否则只沿 axes[0] 应用。"""
     assert len(a) == 1
     arr = a[0]
@@ -108,7 +135,7 @@ def _sym_reduce_or(a, eqn):
         return np.apply_along_axis(lambda x: sy.Or(*x), axes[0], arr)
 
 
-def _sym_transpose(a, eqn):
+def _sym_transpose(a: ObjectArray, eqn: core.JaxprEqn) -> ObjectArray:
     """按置换转置数组；置换参数的三种键名来自不同接口的命名约定。"""
     # 未验证的上游路径；生产转换不依赖此映射。
     perm = (
@@ -123,7 +150,7 @@ def _sym_transpose(a, eqn):
 
 
 # add_any 只表示“把第二个操作数加到第一个”的纯运算，可直接用加法。
-def _sym_add_any(inexprs):
+def _sym_add_any(inexprs: Sequence[ObjectArray]) -> SymbolicArray:
     """把多个操作数依次相加；利用 NumPy 广播对齐槽位形状。"""
     # 依赖广播按顺序累加，不假设各操作数形状完全相同。
     result = inexprs[0]
@@ -132,7 +159,7 @@ def _sym_add_any(inexprs):
     return result
 
 
-def _sym_select_n(inexprs):
+def _sym_select_n(inexprs: Sequence[ObjectArray]) -> ObjectArray:
     """逐元素选择：布尔谓词走 np.where，符号谓词构造 Piecewise。
 
     JAX 的 select_n_p 操作数顺序是（谓词，假分支，真分支）；符号谓词无法
@@ -152,7 +179,7 @@ def _sym_select_n(inexprs):
     return piecewise_fn(pred, true_val, false_val)
 
 
-def _sym_pad(inexprs, eqn):
+def _sym_pad(inexprs: Sequence[ObjectArray], eqn: core.JaxprEqn) -> ObjectArray:
     """按 padding_config 填充常量数组；interior 是相邻元素之间的填充数。"""
     assert len(inexprs) == 2
 
@@ -181,10 +208,10 @@ def _sym_pad(inexprs, eqn):
 
 
 # 类型转换在逐元素公式里视为恒等；dtype 舍入/溢出语义由生产构造器处理。
-_sym_convert_element_type = lambda a: a
+_sym_convert_element_type: Callable[[ObjectArray], ObjectArray] = lambda a: a
 
 
-def _sym_reshape(a, new_sizes, dimensions):
+def _sym_reshape(a: ObjectArray, new_sizes: Shape, dimensions: Sequence[int] | None) -> ObjectArray:
     """按 new_sizes 重排数组；只支持无轴置换的 C 顺序 reshape。
 
     dimensions 为 None 或含 0 时直接 reshape；其余置换未实现，抛
@@ -198,13 +225,13 @@ def _sym_reshape(a, new_sizes, dimensions):
     return a
 
 
-def _sym_squeeze(a, dimensions):
+def _sym_squeeze(a: ObjectArray, dimensions: Sequence[int]) -> ObjectArray:
     """删除 dimensions 指定的单位轴，其余轴保留。"""
     slices = [0 if i in dimensions else slice(None) for i in range(a.ndim)]
     return a[tuple(slices)]
 
 
-def _sym_iota(eqn):
+def _sym_iota(eqn: core.JaxprEqn) -> ObjectArray:
     """构造 iota 常量数组：只有指定轴递增，其余轴广播同一序列。"""
     shape = eqn.params["shape"]
     dimension = eqn.params["dimension"]
@@ -216,7 +243,7 @@ def _sym_iota(eqn):
     )
 
 
-def _sym_split(inexprs, eqn):
+def _sym_split(inexprs: Sequence[ObjectArray], eqn: core.JaxprEqn) -> list[ObjectArray]:
     """沿静态 axis 把单个操作数切成多段，输出顺序与 sizes 一致。"""
     sizes = eqn.params["sizes"]
     axis = eqn.params["axis"]
@@ -227,7 +254,12 @@ def _sym_split(inexprs, eqn):
     return np.split(operand, indices, axis=axis)
 
 
-def _sym_slice(a, start_indices, limit_indices, strides):
+def _sym_slice(
+    a: ObjectArray,
+    start_indices: Sequence[int],
+    limit_indices: Sequence[int],
+    strides: Sequence[int] | None,
+) -> ObjectArray:
     """按静态起止与步长取切片；strides 缺省时按 1 处理。"""
     axis_slice = []
     if strides is not None:
@@ -239,7 +271,7 @@ def _sym_slice(a, start_indices, limit_indices, strides):
     return a[tuple([slice(s[0], s[1], s[2]) for s in axis_slice])]
 
 
-def _sym_dynamic_slice(inexprs, eqn):
+def _sym_dynamic_slice(inexprs: Sequence[ObjectArray], eqn: core.JaxprEqn) -> ObjectArray:
     """按运行时起始下标与静态 slice_sizes 取切片。"""
     # inexprs[0] 是被切数组，inexprs[1:] 是各轴起始下标（标量或单元素数组）。
     a = inexprs[0]
@@ -256,7 +288,7 @@ def _sym_dynamic_slice(inexprs, eqn):
     return a[slices]
 
 
-def _sym_dot_general(a, b, eqn):
+def _sym_dot_general(a: ObjectArray, b: ObjectArray, eqn: core.JaxprEqn) -> SymbolicArray:
     """把 dot_general 的批次/收缩/自由轴映射成 einsum 轴序列。"""
     (ca, cb), (ba, bb) = eqn.params["dimension_numbers"]
     # la/lb 是两侧操作数在 einsum 中的占位轴号，右操作数接在左操作数之后。
@@ -271,7 +303,9 @@ def _sym_dot_general(a, b, eqn):
     return np.einsum(a, la, b, lb, output)
 
 
-def _sym_reduce_extreme(a, eqn, function):
+def _sym_reduce_extreme(
+    a: Sequence[ObjectArray], eqn: core.JaxprEqn, function: Callable[..., sy.Basic]
+) -> SymbolicArray:
     """沿 axes 依次求最大值或最小值；从大到小归约避免轴号偏移。"""
     result = a[0]
     for axis in sorted(eqn.params["axes"], reverse=True):
@@ -279,7 +313,13 @@ def _sym_reduce_extreme(a, eqn, function):
     return result
 
 
-def _sym_gather(operand, start_indices, dimension_numbers, slice_sizes, mode):
+def _sym_gather(
+    operand: ObjectArray,
+    start_indices: ObjectArray,
+    dimension_numbers: lax.GatherDimensionNumbers,
+    slice_sizes: Sequence[int],
+    mode: lax.GatherScatterMode,
+) -> ObjectArray:
     """按 gather 的窗口/批次维描述逐元素取数；仅支持一维 operand。
 
     该参考实现断言 offset_dims 与 operand_rank 均为一维，其他布局直接
@@ -319,13 +359,13 @@ def _sym_gather(operand, start_indices, dimension_numbers, slice_sizes, mode):
         G = [out_index[d] for d in range(len(batch_dims))]
 
         # 步骤 2：用 start_indices 计算起始下标 S。
-        S = [0] * len(start_index_map)
+        S: list[int | ObjectArray] = [0] * len(start_index_map)
         for i, map_dim in enumerate(start_index_map):
             combined_index = tuple(G[:index_vector_dim] + [i] + G[index_vector_dim:])
             S[i] = start_indices[combined_index]
 
         # 步骤 3：把 S 投影回 operand 轴得到 Sin。
-        Sin = [0] * operand_rank
+        Sin: list[int | ObjectArray] = [0] * operand_rank
         for i, map_dim in enumerate(start_index_map):
             Sin[map_dim] = S[i]
 
@@ -353,7 +393,14 @@ def _sym_gather(operand, start_indices, dimension_numbers, slice_sizes, mode):
     return output
 
 
-def _sym_scatter(operand, scatter_indices, updates, dimension_numbers, mode, combine=None):
+def _sym_scatter(
+    operand: ObjectArray,
+    scatter_indices: ObjectArray,
+    updates: ObjectArray,
+    dimension_numbers: lax.ScatterDimensionNumbers,
+    mode: lax.GatherScatterMode,
+    combine: Callable[[Any, Any], Any] | None = None,
+) -> ObjectArray:
     """按 scatter 描述把 updates 写入 operand 副本，返回新数组。
 
     该参考实现按上游快照处理窗口/插入维映射，没有额外数值回归。
@@ -371,7 +418,9 @@ def _sym_scatter(operand, scatter_indices, updates, dimension_numbers, mode, com
     # update_scatter_dims 是 updates 中不参与窗口的轴，用于取批次下标。
     update_scatter_dims = [i for i in range(updates.ndim) if i not in update_window_dims]
 
-    def build_window_dims_to_operand_dims(update_window_dims, inserted_window_dims, operand_rank):
+    def build_window_dims_to_operand_dims(
+        update_window_dims: Sequence[int], inserted_window_dims: Sequence[int], operand_rank: int
+    ) -> dict[int, int]:
         """建立 update_window_dims 到 operand 维的映射，跳过插入维。"""
         # 先取 operand 中所有未被插入的轴，再按顺序对应窗口维。
         available_dims = [i for i in range(operand_rank) if i not in inserted_window_dims]
@@ -384,14 +433,14 @@ def _sym_scatter(operand, scatter_indices, updates, dimension_numbers, mode, com
         G = [update_index[dim] for dim in update_scatter_dims]
 
         # 步骤 2：用 scatter_indices 计算目标起始下标 S。
-        S = [0] * len(scatter_dims_to_operand_dims)
+        S: list[int | ObjectArray] = [0] * len(scatter_dims_to_operand_dims)
         for i, scatter_dim in enumerate(scatter_dims_to_operand_dims):
             # 把 G 与当前维度序号组合成读取 scatter_indices 的下标。
             combined = tuple(G[:scatter_dim] + [i] + G[scatter_dim:])
             S[i] = scatter_indices[combined]
 
         # 步骤 3：把 S 投影回 operand 轴得到 Sin。
-        Sin = [0] * operand.ndim
+        Sin: list[int | ObjectArray] = [0] * operand.ndim
         for i, scatter_dim in enumerate(scatter_dims_to_operand_dims):
             Sin[scatter_dim] = S[i]
 
@@ -427,31 +476,33 @@ def _sym_scatter(operand, scatter_indices, updates, dimension_numbers, mode, com
     return output
 
 
-def _sym_broadcast_in_dim(a, shape, broadcast_dimensions):
+def _sym_broadcast_in_dim(
+    a: Sequence[ObjectArray], shape: Shape, broadcast_dimensions: Sequence[int]
+) -> ObjectArray:
     """把单操作数按 broadcast_dimensions 广播到目标 shape。"""
     assert len(a) == 1
-    a = a[0]
+    operand = a[0]
     # 先按 broadcast_dimensions 插入单位轴，再交给 NumPy 广播到完整形状。
     reshaped_shape = [1] * len(shape)
     for i, dim in enumerate(broadcast_dimensions):
-        reshaped_shape[dim] = a.shape[i]
-    a_reshaped = np.reshape(a, reshaped_shape)
+        reshaped_shape[dim] = operand.shape[i]
+    a_reshaped = np.reshape(operand, reshaped_shape)
     return np.broadcast_to(a_reshaped, shape)
 
 
-def _sym_concatenate(arr_list, dimension=0):
+def _sym_concatenate(arr_list: Sequence[ObjectArray], dimension: int = 0) -> ObjectArray:
     """沿静态 dimension 拼接多个数组，不插入新轴。"""
     return np.concat(arr_list, axis=dimension)
 
 
-def _sym_stack(arr_list, axis=0):
+def _sym_stack(arr_list: Sequence[ObjectArray], axis: int = 0) -> ObjectArray:
     """沿新轴 axis 堆叠数组。"""
     # jax >= 0.9 引入一等的 stack 原语（jnp.stack 不再降为 concatenate+reshape）。
     # 上游注释提到的 test_jax_upgrade_surface.py 不在本仓库，生产转换不走此映射。
     return np.stack(arr_list, axis=axis)
 
 
-def _sym_cumsum(a, eqn):
+def _sym_cumsum(a: Sequence[ObjectArray], eqn: core.JaxprEqn) -> ObjectArray:
     """前缀和；reverse=True 时先翻转再累加，最后翻回原顺序。"""
     # 未验证（2026-07-14 加入，尚无数值回归覆盖）。
     assert len(a) == 1
@@ -467,7 +518,9 @@ def _sym_cumsum(a, eqn):
 # primitive 名称 → 逐元素公式。值接收 (inexprs, eqn)，返回单个数组或按
 # outvars 顺序排列的 list（多输出原语）。未列出的原语由 get_sym_outvar
 # 抛 NotImplementedError，绝不返回占位表达式。
-primitive_to_sympy_op = {
+primitive_to_sympy_op: dict[
+    str, Callable[[Sequence[ObjectArray], core.JaxprEqn], SymbolicArray | list[ObjectArray]]
+] = {
     "add": lambda inexprs, eqn: _sym_add(*inexprs),
     "sub": lambda inexprs, eqn: _sym_sub(*inexprs),
     "mul": lambda inexprs, eqn: _sym_mul(*inexprs),
@@ -510,26 +563,28 @@ primitive_to_sympy_op = {
     "concatenate": lambda inexprs, eqn: _sym_concatenate(inexprs, eqn.params["dimension"]),
     "stack": lambda inexprs, eqn: _sym_stack(inexprs, eqn.params["axis"]),
     "dynamic_slice": lambda inexprs, eqn: _sym_dynamic_slice(inexprs, eqn),
-    "slice": lambda inexprs, eqn: _sym_slice(
+    "slice": lambda inexprs, eqn: cast(Callable[..., ObjectArray], _sym_slice)(
         *inexprs,
         eqn.params["start_indices"],
         eqn.params["limit_indices"],
         eqn.params.get("strides", None),
     ),
-    "squeeze": lambda inexprs, eqn: _sym_squeeze(*inexprs, eqn.params["dimensions"]),
-    "scatter": lambda inexprs, eqn: _sym_scatter(
+    "squeeze": lambda inexprs, eqn: cast(Callable[..., ObjectArray], _sym_squeeze)(
+        *inexprs, eqn.params["dimensions"]
+    ),
+    "scatter": lambda inexprs, eqn: cast(Callable[..., ObjectArray], _sym_scatter)(
         *inexprs,
         dimension_numbers=eqn.params["dimension_numbers"],
         mode=eqn.params["mode"],
     ),
     # 未验证（2026-07-14 加入，尚无数值回归覆盖）
-    "scatter-add": lambda inexprs, eqn: _sym_scatter(
+    "scatter-add": lambda inexprs, eqn: cast(Callable[..., ObjectArray], _sym_scatter)(
         *inexprs,
         dimension_numbers=eqn.params["dimension_numbers"],
         mode=eqn.params["mode"],
         combine=lambda old, new: old + new,
     ),
-    "gather": lambda inexprs, eqn: _sym_gather(
+    "gather": lambda inexprs, eqn: cast(Callable[..., ObjectArray], _sym_gather)(
         *inexprs,
         dimension_numbers=eqn.params["dimension_numbers"],
         slice_sizes=eqn.params["slice_sizes"],
@@ -554,7 +609,7 @@ primitive_to_sympy_op = {
     "dot_general": lambda inexprs, eqn: _sym_dot_general(inexprs[0], inexprs[1], eqn),
     "transpose": lambda inexprs, eqn: _sym_transpose(inexprs[0], eqn),
     "tile": lambda inexprs, eqn: np.tile(inexprs[0], eqn.params["reps"]),
-    "reshape": lambda inexprs, eqn: _sym_reshape(
+    "reshape": lambda inexprs, eqn: cast(Callable[..., ObjectArray], _sym_reshape)(
         *inexprs,  # 被 reshape 的表达式数组
         eqn.params["new_sizes"],
         eqn.params["dimensions"],
@@ -562,7 +617,9 @@ primitive_to_sympy_op = {
 }
 
 
-def get_sym_invar(invars, var2sym):
+def get_sym_invar(
+    invars: Sequence[core.Atom], var2sym: Mapping[core.Var, ObjectArray]
+) -> list[ObjectArray]:
     """把方程输入转换成公式数组，不做隐式广播或常量折叠。
 
     字面量用 exact_array 精确转成 SymPy 常量数组；其余变量必须已在
@@ -577,7 +634,7 @@ def get_sym_invar(invars, var2sym):
     return inexprs
 
 
-def get_sym_outvar(inexprs, eqn):
+def get_sym_outvar(inexprs: Sequence[ObjectArray], eqn: core.JaxprEqn) -> list[SymbolicArray]:
     """按 primitive 名称查表得到输出公式；多输出原语返回 list。
 
     未支持的原语抛 NotImplementedError，不返回占位表达式；单输出结果统一
@@ -593,7 +650,12 @@ def get_sym_outvar(inexprs, eqn):
         return out_expr
 
 
-def jaxpr_to_sympy_expressions(jaxpr, var2sym=None, x_cnt=0, c_cnt=0):
+def jaxpr_to_sympy_expressions(
+    jaxpr: core.Jaxpr,
+    var2sym: dict[core.Var, ObjectArray] | None = None,
+    x_cnt: int = 0,
+    c_cnt: int = 0,
+) -> tuple[list[ObjectArray], dict[core.Var, ObjectArray], int, int]:
     """把 ClosedJaxpr 逐方程转换成 SymPy 表达式。
 
     先为函数输入分配带类型假设的符号数组、为捕获常量写入精确值，然后按
@@ -605,13 +667,16 @@ def jaxpr_to_sympy_expressions(jaxpr, var2sym=None, x_cnt=0, c_cnt=0):
     if var2sym is None:
         var2sym = {}
 
-    def append_vars(vars, var2sym, sym_name, cnt):
+    def append_vars(
+        vars: Sequence[core.Var], var2sym: dict[core.Var, ObjectArray], sym_name: str, cnt: int
+    ) -> tuple[dict[core.Var, ObjectArray], int]:
         """为一组输入分配符号数组并登记到 var2sym，返回递增后的计数器。"""
         for i, var in enumerate(vars):  # 遍历 jaxpr 的全部输入
             assert var not in var2sym  # 确认没有覆盖已有绑定
-            shape = var.aval.shape  # 输入的抽象形状
+            aval = cast(core.ShapedArray, var.aval)
+            shape = aval.shape  # 输入的抽象形状
             num_elements = int(np.prod(shape))
-            kind = np.dtype(var.aval.dtype).kind
+            kind = np.dtype(aval.dtype).kind
             # 浮点输入取实数假设，整数输入取整数假设，布尔不加额外假设。
             assumptions = (
                 {"real": True} if kind == "f" else {"integer": True} if kind in "iu" else {}
@@ -623,7 +688,7 @@ def jaxpr_to_sympy_expressions(jaxpr, var2sym=None, x_cnt=0, c_cnt=0):
             var2sym[var] = symbolic_array
         return var2sym, cnt + len(vars)
 
-    def substitute_symbol(symbol, sym_map):
+    def substitute_symbol(symbol: sy.Basic, sym_map: Mapping[sy.Basic, sy.Basic]) -> sy.Basic:
         """把子图符号替换成当前图输入对应的表达式。"""
         return symbol.subs(sym_map)
 
@@ -636,7 +701,7 @@ def jaxpr_to_sympy_expressions(jaxpr, var2sym=None, x_cnt=0, c_cnt=0):
     for i, eqn in enumerate(jaxpr.eqns):
         if eqn.primitive.name in ("pjit", "jit"):
             # 递归转换子图，再用符号映射把子图输入替换成当前图的表达式。
-            _jaxpr = eqn.params.get("jaxpr", None)
+            _jaxpr = cast(core.Jaxpr, eqn.params.get("jaxpr", None))
             sub_syms_out, sub_var2sym, x_cnt, c_cnt = jaxpr_to_sympy_expressions(
                 _jaxpr, var2sym={}, x_cnt=x_cnt, c_cnt=c_cnt
             )

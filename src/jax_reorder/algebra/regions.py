@@ -6,13 +6,24 @@
 UnsupportedJaxprError，不猜测循环行为。
 """
 
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
 import sympy as sp
 
 from ..errors import UnsupportedJaxprError
+from ._typing import Equation
 from .expression import SymbolicTensor, coordinates
 
+if TYPE_CHECKING:
+    from .symbolic import SymbolicBuilder
 
-def independent_scan(builder, eq, values):
+
+def independent_scan(
+    builder: SymbolicBuilder, eq: Equation, values: Sequence[SymbolicTensor]
+) -> list[SymbolicTensor] | None:
     """把“独立加法累加”的 scan 表示成初值加有限和。
 
     满足以下条件时返回替代输出：每个变化的 carry 都只更新为
@@ -62,7 +73,7 @@ def independent_scan(builder, eq, values):
         if state.expression == updated.expression
     }
 
-    def substitute(expression):
+    def substitute(expression: sp.Basic) -> sp.Basic:
         """用初值替换未变化 carry 的读取，使增量只依赖常量、输入和序列切片。"""
         replacements = {
             base: initial.expression for base, initial in fixed.items() if not initial.shape
@@ -102,7 +113,9 @@ def independent_scan(builder, eq, values):
     return outputs
 
 
-def region(builder, eq, values, path):
+def region(
+    builder: SymbolicBuilder, eq: Equation, values: Sequence[SymbolicTensor], path: str
+) -> Sequence[SymbolicTensor]:
     """分派 cond/scan/while，并返回与区域输出端口对应的 SymbolicTensor。
 
     cond 把各分支结果合成带选择条件的 Piecewise；一般 scan 在长度上限内逐步

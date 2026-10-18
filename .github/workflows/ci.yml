@@ -26,6 +26,7 @@ jobs:
         run: |
           uv run ruff check .
           uv run ruff format --check .
+          uv run basedpyright
           uv run python tools/check_docs.py
           uv run pytest -m 'not business and not stress'
           uv run python tests/adapter_inventory.py --report /tmp/adapter-inventory.json

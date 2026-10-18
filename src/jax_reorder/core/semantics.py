@@ -6,11 +6,13 @@
 未知类型必须明确拒绝，不能为了得到相等结果而丢弃字段。
 """
 
+from __future__ import annotations
+
 import dataclasses
 import enum
 import struct
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import jax
 import numpy as np
@@ -21,13 +23,14 @@ from jax._src.numpy.scalar_types import _ScalarMeta
 from jax._src.random.prng import KeyTy, PRNGKeyArray
 
 from ..errors import UnsupportedJaxprError
+from ._typing import Device, EncodedRegion, TreeDef
 
 # 编码结果主要由带标签的元组、frozenset、字节串以及已适配的描述符组成。
 # Any 避免为不同参数类型建立庞大的联合类型，不表示允许任意未知对象原样透传。
 type Frozen = Any
 
 
-def encoded_equal(left, right):
+def encoded_equal(left: Frozen, right: Frozen) -> bool:
     """原图校验使用的值相等检查，深层容器不依赖 Python 递归比较。
 
     常规浅描述符使用内建精确比较；深容器回退到联合内容编号。哈希仅用于
@@ -41,7 +44,7 @@ def encoded_equal(left, right):
     # cache 仅避免重复展开共享对象；跨两侧的相等依据仍是完整内容，而非对象 id。
     interned, cache = {}, {}
 
-    def number(root):
+    def number(root: Frozen) -> int:
         """后序遍历一个编码值，以类型和子项内容编号构造可复用的结构编号。"""
         pending = [(False, root)]
         while pending:
@@ -89,7 +92,11 @@ class Encoder:
     规范值引用。通过回调把图遍历与值编码分开，不让本模块自行分配节点编号。
     """
 
-    def __init__(self, nested: Callable, variable: Callable):
+    def __init__(
+        self,
+        nested: Callable[[core.Jaxpr, str], EncodedRegion],
+        variable: Callable[[core.Var], Frozen],
+    ) -> None:
         """注入区域和变量解析器，每个编码器独立维护当前容器路径。"""
         self.nested = nested
         self.variable = variable
@@ -117,7 +124,7 @@ class Encoder:
         if self.scheduling:
             # _encode/fields 中的递归调用只登记子任务，由外层工作栈统一展开。
             return _EncodeRequest(value, path)
-        pending = [("encode", value, path)]
+        pending: list[tuple[str, Any, str | None]] = [("encode", value, path)]
         # values 是后序结果栈；join 只消费属于当前容器的末尾若干项。
         values = []
         try:
@@ -127,11 +134,13 @@ class Encoder:
                 action, item, location = pending.pop()
                 if action == "encode":
                     if id(item) in self.active:
-                        raise UnsupportedJaxprError(location, "cyclic parameter container")
+                        raise UnsupportedJaxprError(
+                            cast(str, location), "cyclic parameter container"
+                        )
                     self.active.add(id(item))
                     self.scheduling = True
                     try:
-                        template = self._encode(item, location)
+                        template = self._encode(item, cast(str, location))
                     finally:
                         self.scheduling = False
                     pending.append(("leave", item, None))
@@ -245,7 +254,8 @@ class Encoder:
         if isinstance(value, jax.tree_util.PyTreeDef):
             # 自定义 pytree 的辅助数据可能是不透明对象，不能直接信任其 __eq__。
             # 分别保存节点类型、辅助数据和有序子树；未知辅助数据会走显式拒绝路径。
-            node = value.node_data()
+            tree = cast(TreeDef, value)
+            node = tree.node_data()
             if node is None:
                 return ("pytree_leaf",)
             node_type, metadata = node
@@ -254,7 +264,7 @@ class Encoder:
                 node_type,
                 self.encode(metadata, f"{path}.metadata"),
                 tuple(
-                    self.encode(c, f"{path}.children[{i}]") for i, c in enumerate(value.children())
+                    self.encode(c, f"{path}.children[{i}]") for i, c in enumerate(tree.children())
                 ),
             )
         # JAX 0.11.2 的 scan 等参数使用 FlatTree；各变体的语义字段并不相同。
@@ -309,9 +319,10 @@ class Encoder:
                 self.encode(value.axis_types, path),
             )
         if isinstance(value, jax.Device):
-            if value.platform != "cpu":
+            device = cast(Device, value)
+            if device.platform != "cpu":
                 raise UnsupportedJaxprError(path, "only CPU device placement is supported")
-            return ("device", value.platform, value.process_index, value.id, value.device_kind)
+            return ("device", device.platform, device.process_index, device.id, device.device_kind)
         if isinstance(value, jax.sharding.NamedSharding):
             # mesh、分区规则、内存种类和逻辑设备顺序共同决定分片描述。
             return self.fields(value, ("mesh", "spec", "memory_kind", "_logical_device_ids"), path)
@@ -350,7 +361,10 @@ class Encoder:
             )
         if type(value) in (set, frozenset):
             # 无序容器保持无序语义，并区分 set 与 frozenset 的类型。
-            return (type(value), frozenset(self.encode(v, path) for v in value))
+            return (
+                type(value),
+                frozenset(self.encode(v, path) for v in cast(set[Any] | frozenset[Any], value)),
+            )
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
             # JAX 描述符逐字段编码；不据此接纳任意用户 dataclass 或隐藏的回调语义。
             if type(value).__module__.startswith(("jax.", "jaxlib.")):
@@ -363,7 +377,7 @@ class Encoder:
         )
 
 
-def replace_nested(value: Any, replace: Callable) -> Any:
+def replace_nested(value: Any, replace: Callable[[core.Jaxpr], core.Jaxpr]) -> Any:
     """替换参数容器里的子 jaxpr，保留容器类型及其余对象。
 
     迭代处理 tuple/namedtuple、list 和 dict 中的值，其他描述符原样保留。

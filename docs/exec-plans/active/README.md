@@ -1,5 +1,7 @@
 # 进行中的计划
 
+[核心库类型信息补全](../completed/type-annotations.md)已完成并归档：异常阶段与分类改用 `StrEnum`，补全核心库签名、回调与容器类型，接入持续检查。分阶段 1957 项通过，1 项既有超时在修改前源码也可复现；详见验证记录。
+
 [代码架构分层重构](../completed/architecture-refactor.md)已完成并归档：`jax_reorder` 从 20 个平铺模块拆为 `core/`、`algebra/`（含 `adapter/`）与 `functions.py` 三层，拆解 symbolic/regions/trusted 导入环并新增分层守卫测试。顶层公共 API 不变，子模块路径按 0.2.0 破坏性调整；核心分组 465 passed，详见归档记录。
 
 [三种比较结论与分类异常迁移](../completed/comparison-exceptions.md)已完成并归档：删除 UNKNOWN，统一结构、SymPy worker、函数模式和批处理的异常通道；首轮全量发现的 34 项迁移失败均已修复，最终 110 项复测通过。后续用户已授权提交并推送 `origin/main`。

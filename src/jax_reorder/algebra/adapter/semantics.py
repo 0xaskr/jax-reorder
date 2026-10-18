@@ -7,14 +7,18 @@
 这里不执行数组，也不解释嵌套子图；子图需要由区域适配器显式登记。
 """
 
+from __future__ import annotations
+
+from typing import Never
+
 from jax._src import core
 from jax._src.layout import AutoLayout
 
-from ...core.semantics import Encoder
+from ...core.semantics import Encoder, Frozen
 from ...errors import UnsupportedJaxprError
 
 
-def _reject_graph(_, path):
+def _reject_graph(_: core.Jaxpr, path: str) -> Never:
     """只有区域适配器可以解释子图，普通描述符不允许隐藏图。
 
     传入该回调后，任何未显式处理的嵌套 jaxpr 都会在编码时抛出带路径的
@@ -23,7 +27,7 @@ def _reject_graph(_, path):
     raise UnsupportedJaxprError(path, "nested graph requires an algebra region adapter")
 
 
-def encode(value):
+def encode(value: object) -> Frozen:
     """复用完整语义编码，不用 repr 或哈希摘要作为数学身份。
 
     变量解析回调返回 None：单独编码的参数/抽象值不引用当前图的变量。
@@ -32,7 +36,7 @@ def encode(value):
     return Encoder(_reject_graph, lambda _: None).encode(value, "algebra.metadata")
 
 
-def plain_equation(eq):
+def plain_equation(eq: core.JaxprEqn) -> bool:
     """仅允许默认执行属性；不能在数学适配中丢失布局或放置约束。
 
     方程级：无 effects、无指定计算结果类型、空 mesh、无 XLA 元数据且布局

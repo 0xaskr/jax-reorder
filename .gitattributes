@@ -1,0 +1,3 @@
+# Keep text files consistent across Windows and Linux.
+# Fixed upstream snapshots require LF bytes for checksum verification.
+* text=auto eol=lf

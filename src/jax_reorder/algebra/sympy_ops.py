@@ -5,14 +5,18 @@ ArrayExpr 兼容性判断、恒等比较、定义条件规范化与坐标级反�
 trusted 的 worker 协议和 symbolic 的构造器共用本模块，避免二者互相导入。
 """
 
+from __future__ import annotations
+
+from collections.abc import Sequence
 from math import comb, prod
 
 import sympy as sp
 
+from .budget import Budget
 from .expression import rename_bounds
 
 
-def finite_expansion(expression, budget):
+def finite_expansion(expression: sp.Basic, budget: Budget) -> bool:
     """在调用会隐式展开的 SymPy 之前，预估显式 Sum/Product 的展开成本。
 
     只接受上下限为精确非负整数的显式有限和；估算超过 256 项时返回 False，
@@ -21,7 +25,7 @@ def finite_expansion(expression, budget):
     """
     costs = {}
 
-    def cost(node):
+    def cost(node: sp.Basic) -> int:
         """递归估算节点的展开项数；缓存避免共享子图重复计算。"""
         if node in costs:
             return costs[node]
@@ -55,7 +59,9 @@ def finite_expansion(expression, budget):
     return True
 
 
-def simplify(expression, budget, *, assumptions=sp.true, expand=True):
+def simplify(
+    expression: sp.Basic, budget: Budget, *, assumptions: sp.Basic = sp.true, expand: bool = True
+) -> sp.Basic:
     """预算受控的 SymPy 化简入口，供转换和查询共用。
 
     顺序固定：先按组合上界预扣预算，再决定是否 expand；随后只对预算内的显式
@@ -104,7 +110,7 @@ def simplify(expression, budget, *, assumptions=sp.true, expand=True):
     return sp.simplify(expression, doit=False)
 
 
-def array_compatible(expression, indices):
+def array_compatible(expression: sp.Basic, indices: Sequence[sp.Expr]) -> bool:
     """判断表达式能否安全走 SymPy ArrayExpr 的索引到数组转换。
 
     convert_indexed_to_array 把 x[i+1]、x[2*i] 的坐标整体当作轴标签，只有纯
@@ -125,7 +131,7 @@ def array_compatible(expression, indices):
     if {index for read in reads for index in read.indices} != labels:
         return False
 
-    def supported(node):
+    def supported(node: sp.Basic) -> bool:
         """只允许标签读取、完整求和和加减乘组合；其他结构一律保留 Indexed。"""
         if isinstance(node, sp.Indexed):
             return all(
@@ -143,7 +149,15 @@ def array_compatible(expression, indices):
     return supported(expression)
 
 
-def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=None):
+def equal(
+    left: sp.Basic,
+    right: sp.Basic,
+    budget: Budget,
+    *,
+    indices: Sequence[sp.Expr] | None = None,
+    assumptions: sp.Basic = sp.true,
+    methods: list[str] | None = None,
+) -> bool | None:
     """判断两个表达式在给定假设下是否恒等，返回 True/False/None。
 
     依次尝试：字面相同、布尔 Piecewise→ITE、ArrayExpr 数组比较、布尔逻辑、
@@ -161,7 +175,7 @@ def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=Non
         steps.append("identity")
         return True
 
-    def boolean_piecewise(expression):
+    def boolean_piecewise(expression: sp.Basic) -> sp.Basic:
         """把全部分支都是逻辑值的 Piecewise 转成 ITE，交给布尔比较。"""
         # SymPy 的 simplify 可把定义条件变成 Piecewise；它继承 Expr，
         # 但布尔分支不能相减。只把全部分支均为逻辑值的情况交给 ITE。
@@ -235,7 +249,7 @@ def equal(left, right, budget, *, indices=None, assumptions=sp.true, methods=Non
     return residual.equals(0)
 
 
-def domain_condition(condition, budget):
+def domain_condition(condition: sp.Basic, budget: Budget) -> sp.Basic:
     """规范化定义条件；true/false 直接返回，其余尽量减少可比较的形式差异。
 
     含不透明函数时没有实数不等式模型，只做浅层逻辑化简；节点过多时仅重命名
@@ -252,7 +266,7 @@ def domain_condition(condition, budget):
     return simplify(condition, budget)
 
 
-def explicit_symbols(left, right):
+def explicit_symbols(left: sp.Basic, right: sp.Basic) -> tuple[sp.Basic, sp.Basic] | None:
     """把具体下标读取替换成两侧共享的独立入口符号，用于构造坐标级反例。
 
     抽象坐标下的 False 不构成合法输出反例；这里只接受常量下标且不越界的读取，

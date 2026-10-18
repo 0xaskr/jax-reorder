@@ -7,12 +7,23 @@ softmax 内部的全遮蔽路径仍未被证明定义，这里只证明最后选
 列出的规则能给出 True，其余保守视为未知，不做一般 IEEE 浮点推理。
 """
 
+from __future__ import annotations
+
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any, Literal, cast
 
 import jax
 import numpy as np
 from jax import lax
 from jax._src import core
+from jax.typing import DTypeLike
+
+from ..core._typing import Parameters
+from ._typing import Shape
+from .budget import Budget
+
+type ReadCoordinate = int | tuple[Literal["axis"], int]
 
 
 @dataclass(eq=False)
@@ -25,16 +36,16 @@ class Source:
     两个结构相同的值在这里仍是不同定义，避免把不同读取误认为同一来源。
     """
 
-    primitive: object
-    shape: tuple
-    dtype: object
-    inputs: tuple = ()
-    params: object = None
+    primitive: core.Primitive | str | None
+    shape: Shape
+    dtype: DTypeLike
+    inputs: tuple[Source, ...] = ()
+    params: Parameters | None = None
     finite: bool = False
     constant: object = None
 
 
-def _coordinates(shape):
+def _coordinates(shape: Sequence[int]) -> tuple[ReadCoordinate, ...]:
     """返回 shape 各轴的坐标符号；单位轴固定为 0。
 
     单位轴没有可区分取值，用 0 表示后，广播读取只需比较其余轴，避免因
@@ -43,7 +54,7 @@ def _coordinates(shape):
     return tuple(0 if size == 1 else ("axis", i) for i, size in enumerate(shape))
 
 
-def _read(source, shape):
+def _read(source: Source, shape: Shape) -> tuple[Source, tuple[ReadCoordinate, ...]] | None:
     """将逐点广播读取还原到原值及有序坐标，保留每一个非单位轴。
 
     shape 是更大（或相同）的读取坐标域；source 必须能按末轴后缀广播到
@@ -69,7 +80,9 @@ def _read(source, shape):
             indices = tuple(
                 0 if size == 1 else indices[axis]
                 for size, axis in zip(
-                    child.shape, source.params["broadcast_dimensions"], strict=True
+                    child.shape,
+                    cast(Parameters, source.params)["broadcast_dimensions"],
+                    strict=True,
                 )
             )
         elif source.primitive is lax.stop_gradient_p:
@@ -85,7 +98,7 @@ def _read(source, shape):
     return source, indices
 
 
-def _scalar(source, value):
+def _scalar(source: Source, value: float) -> bool:
     """只认经过视图/转换的实际标量常量，不从打印文本猜测常量。
 
     依次剥离 broadcast_in_dim、convert_element_type 和 stop_gradient；遇到
@@ -116,7 +129,7 @@ def _scalar(source, value):
     return source.primitive == "constant" and source.shape == () and source.constant == value
 
 
-def _same_read(left, right, shape):
+def _same_read(left: Source, right: Source, shape: Shape) -> bool:
     """判断两个值在同一 shape 上是否为同一次读取。
 
     Source 按对象身份比较，因此这要求两侧是同一个 SSA 定义，而不只是
@@ -126,7 +139,9 @@ def _same_read(left, right, shape):
     return a is not None and a == b
 
 
-def _reduction(source, operand, primitive):
+def _reduction(
+    source: Source, operand: Source, primitive: core.Primitive
+) -> tuple[int, ...] | None:
     """识别对 operand 的完整归约读取，返回其轴元组或 None。
 
     要求 source 经视图/广播后读到 operand 的全部非归约坐标（没有置换或
@@ -139,14 +154,14 @@ def _reduction(source, operand, primitive):
     node, coordinates = access
     if node.primitive is not primitive or node.inputs[0] is not operand:
         return None
-    axes = tuple(node.params["axes"])
+    axes = tuple(cast(Parameters, node.params)["axes"])
     if not axes or any(operand.shape[axis] == 0 for axis in axes):
         return None
     expected = tuple(c for i, c in enumerate(_coordinates(operand.shape)) if i not in axes)
     return axes if coordinates == expected else None
 
 
-def _guarded_softmax(source):
+def _guarded_softmax(source: Source) -> bool:
     """识别 where(mask, softmax(where(mask, logits, -inf)), 0) 的有限性规则。
 
     必须同时核对：选择分支为浮点、假分支是标量 0、真分支是 exp(x-max)/sum
@@ -214,7 +229,7 @@ def _guarded_softmax(source):
         )
         if reduced.primitive is not lax.reduce_max_p or reduced.inputs[0] is not masked:
             return False
-        axes = tuple(reduced.params["axes"])
+        axes = tuple(cast(Parameters, reduced.params)["axes"])
         expected = tuple(c for i, c in enumerate(_coordinates(masked.shape)) if i not in axes)
         if not axes or any(masked.shape[axis] == 0 for axis in axes) or composed != expected:
             return False
@@ -233,18 +248,18 @@ class Finiteness:
     rules 记录实际触发的规则名，随转换结果一起报告，便于审计结论来源。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """创建一个空的规则记录器；同一 builder 内复用可累计已触发的规则。"""
-        self.rules = set()
+        self.rules: set[str] = set()
 
-    def is_finite(self, source):
+    def is_finite(self, source: Source) -> bool:
         """对一条已构造的 Source 应用白名单规则；未命中即保守返回 False。
 
         规则按特异性排列：先尝试 guarded-softmax 的完整模式，再处理逐点选择、
         归约极值、gather、动态切片、类型转换和实值初等函数。输出为整数或
         布尔时由调用方另行标记有限，不属于这里的实数有限性判断。
         """
-        op, args, params = source.primitive, source.inputs, source.params
+        op, args, params = source.primitive, source.inputs, cast(Parameters, source.params)
         if _guarded_softmax(source):
             self.rules.add("guarded_softmax_finite")
             return True
@@ -305,7 +320,7 @@ class Finiteness:
         return op in safe and all(a.finite for a in args)
 
 
-def nonfinite_parameters(value):
+def nonfinite_parameters(value: object) -> bool:
     """gather fill_value 等参数也能产生非有限值，不能只检查 SSA 常量。
 
     递归遍历 tuple/list/dict，只对 Python/NumPy 的浮点与复数容器检查；
@@ -321,7 +336,9 @@ def nonfinite_parameters(value):
     return False
 
 
-def nonfinite_graph(graph, budget, cache=None):
+def nonfinite_graph(
+    graph: core.Jaxpr, budget: Budget, cache: dict[core.Jaxpr, bool] | None = None
+) -> bool:
     """检查共同调用中的非有限常量与复数极点，任一处发现即保守返回。
 
     进入独立 worker 前调用：共同调用只有在整张子图不含非有限值时才允许
@@ -337,8 +354,9 @@ def nonfinite_graph(graph, budget, cache=None):
         return cache[graph]
     from ..core.params import parameter_view
 
-    def nonfinite(value, aval):
+    def nonfinite(value: Any, aval: core.AbstractValue) -> bool:
         """按抽象值 dtype 转换后检查常量是否含非有限值；整数/布尔恒为有限。"""
+        aval = cast(core.ShapedArray, aval)
         return jax.dtypes.issubdtype(aval.dtype, np.inexact) and not np.all(
             np.isfinite(np.asarray(value, dtype=aval.dtype))
         )
@@ -350,7 +368,8 @@ def nonfinite_graph(graph, budget, cache=None):
         budget.spend(path="algebra.nonfinite_graph")
         # 复数 tanh 有极点；实数 tanh 是全定义的，不在此列。
         found |= eq.primitive is lax.tanh_p and any(
-            jax.dtypes.issubdtype(var.aval.dtype, np.complexfloating) for var in eq.invars
+            jax.dtypes.issubdtype(cast(core.ShapedArray, var.aval).dtype, np.complexfloating)
+            for var in eq.invars
         )
         found |= nonfinite_parameters(eq.params)
         found |= any(

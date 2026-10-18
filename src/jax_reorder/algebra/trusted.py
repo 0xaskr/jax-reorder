@@ -7,26 +7,33 @@ algebra.symbolic 负责把两份图构造成完整公式和原始定义条件；
 并回收；查询记录只用于审计，不是独立证明证书。
 """
 
+from __future__ import annotations
+
 import os
 import pickle
 import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from itertools import islice, product
 from math import prod
+from typing import cast
 
 import sympy as sp
 
 from ..errors import (
     ComparisonContractError,
     ComparisonError,
+    ComparisonFailureKind,
     ComparisonInternalError,
+    ComparisonStage,
     ComparisonTimeoutError,
     MathematicalUndecidedError,
     UnsupportedJaxprError,
 )
+from ._typing import SymbolicGraph
 from .budget import validate_timeout
 from .expression import coordinates
 from .symbolic import SymbolicBuilder
@@ -69,7 +76,7 @@ class SympyResult:
     rules: tuple[str, ...] = ()
     definitions: tuple[tuple[int, str], ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """构造时校验状态，避免把第三种“未决”状态混进结果对象。"""
         if self.status not in ("equivalent", "inequivalent"):
             raise ValueError(f"invalid mathematical result status: {self.status}")
@@ -86,9 +93,9 @@ class WorkerFailure:
     error_type: type[ComparisonError]
     path: str
     reason: str
-    stage: str
-    failure_kind: str
-    diagnostics: dict
+    stage: ComparisonStage
+    failure_kind: ComparisonFailureKind
+    diagnostics: dict[str, object]
     traceback: str
 
 
@@ -96,7 +103,9 @@ class RemoteWorkerError(RuntimeError):
     """只作为父进程异常的 cause 保存远端原始异常链，不代表比较结论。"""
 
 
-def compare_symbolic(left, right, algebra_budget=10000):
+def compare_symbolic(
+    left: SymbolicGraph, right: SymbolicGraph, algebra_budget: int = 10000
+) -> SympyResult:
     """比较两份已结构校验的 jaxpr 的完整数学输出。
 
     构造两侧输出后逐输出核对抽象契约、定义条件和元素表达式：所有输出及条件
@@ -106,20 +115,42 @@ def compare_symbolic(left, right, algebra_budget=10000):
     """
     started = time.monotonic()
     builder = SymbolicBuilder(algebra_budget)
-    records = []
+    records: list[SympyQuery] = []
 
-    def query(output, scope, x, y, **kwargs):
+    def query(
+        output: int,
+        scope: str,
+        x: sp.Basic,
+        y: sp.Basic,
+        *,
+        indices: Sequence[sp.Expr] | None = None,
+        assumptions: sp.Basic = sp.true,
+    ) -> bool | None:
         """执行一次恒等查询并记录审计信息；None 原样返回给调用方处理。"""
-        methods = []
-        answer = equal(x, y, builder.budget, methods=methods, **kwargs)
+        methods: list[str] = []
+        answer = equal(
+            x, y, builder.budget, methods=methods, indices=indices, assumptions=assumptions
+        )
         records.append(SympyQuery(output, scope, answer, " -> ".join(methods), str(x), str(y)))
         return answer
 
-    def report(*args, **kwargs):
+    def report(
+        status: str,
+        queries: tuple[SympyQuery, ...],
+        *,
+        output: int | None = None,
+        work: int,
+        rules: tuple[str, ...],
+        elapsed_seconds: float,
+    ) -> SympyResult:
         """构造成功结果；不透明定义表用于解释表达式中的函数身份。"""
         return SympyResult(
-            *args,
-            **kwargs,
+            status,
+            queries,
+            output=output,
+            work=work,
+            rules=rules,
+            elapsed_seconds=elapsed_seconds,
             definitions=tuple((index, repr(key)) for key, index in builder.definitions.items()),
         )
 
@@ -236,7 +267,11 @@ def compare_symbolic(left, right, algebra_budget=10000):
             )
         # 优先报告条件问题：条件未建立时，值比较的前提本身就不完整。
         failure = (
-            "condition_undecided" if domain_unknown else "cas_undecided" if undecided else None
+            ComparisonFailureKind.CONDITION_UNDECIDED
+            if domain_unknown
+            else ComparisonFailureKind.CAS_UNDECIDED
+            if undecided
+            else None
         )
         if failure:
             raise MathematicalUndecidedError(
@@ -267,8 +302,8 @@ def compare_symbolic(left, right, algebra_budget=10000):
             raise UnsupportedJaxprError(
                 exc.path,
                 exc.reason,
-                stage="algebra",
-                failure_kind="unsupported_conversion",
+                stage=ComparisonStage.ALGEBRA,
+                failure_kind=ComparisonFailureKind.UNSUPPORTED_CONVERSION,
                 **exc.diagnostics,
             ) from exc
         raise
@@ -277,14 +312,16 @@ def compare_symbolic(left, right, algebra_budget=10000):
         raise ComparisonInternalError(
             "algebra.sympy",
             f"{type(exc).__name__}: {exc}",
-            stage="algebra",
+            stage=ComparisonStage.ALGEBRA,
             queries=tuple(records),
             work=builder.budget.used,
             elapsed_seconds=time.monotonic() - started,
         ) from exc
 
 
-def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
+def isolated_compare(
+    left: SymbolicGraph, right: SymbolicGraph, *, algebra_budget: int = 10000, timeout: float = 10.0
+) -> SympyResult:
     """在独立解释器进程中调用 compare_symbolic，并用墙钟上限兜底无界化简。
 
     输入是已冻结的图数据，不执行 JAX 数组；超时先 kill 并回收 worker，非零退出
@@ -297,7 +334,7 @@ def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
         payload = pickle.dumps((left, right, algebra_budget))
     except Exception as exc:
         raise ComparisonInternalError(
-            "algebra.transport", f"symbolic transport failed: {exc}", stage="algebra"
+            "algebra.transport", f"symbolic transport failed: {exc}", stage=ComparisonStage.ALGEBRA
         ) from exc
     environment = os.environ.copy()
     # 覆盖继承自父进程的 BLAS/OpenMP 线程配置，固定 worker 的数值库线程数。
@@ -312,7 +349,7 @@ def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
         )
     except OSError as exc:
         raise ComparisonInternalError(
-            "algebra.sympy.worker", f"worker could not start: {exc}", stage="algebra"
+            "algebra.sympy.worker", f"worker could not start: {exc}", stage=ComparisonStage.ALGEBRA
         ) from exc
     try:
         stdout, stderr = process.communicate(payload, timeout=timeout)
@@ -328,7 +365,9 @@ def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
         ) from exc
     except Exception as exc:
         raise ComparisonInternalError(
-            "algebra.sympy.worker", f"worker communication failed: {exc}", stage="algebra"
+            "algebra.sympy.worker",
+            f"worker communication failed: {exc}",
+            stage=ComparisonStage.ALGEBRA,
         ) from exc
     finally:
         # 无论正常返回还是异常路径，都不留下仍在运行的 worker。
@@ -340,7 +379,7 @@ def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
         raise ComparisonInternalError(
             "algebra.sympy.worker",
             f"worker exited {process.returncode}: {stderr.decode(errors='replace')[-1000:]}",
-            stage="algebra",
+            stage=ComparisonStage.ALGEBRA,
             elapsed_seconds=time.monotonic() - started,
         )
     try:
@@ -366,16 +405,16 @@ def isolated_compare(left, right, *, algebra_budget=10000, timeout=10.0):
             raise TypeError("invalid symbolic worker result")
     except Exception as exc:
         raise ComparisonInternalError(
-            "algebra.sympy.worker", f"invalid worker response: {exc}", stage="algebra"
+            "algebra.sympy.worker", f"invalid worker response: {exc}", stage=ComparisonStage.ALGEBRA
         ) from exc
     if isinstance(result, WorkerFailure):
         # 用 RemoteWorkerError 作为 cause 保留远端 traceback，同时保持异常类型不变。
-        raise error from RemoteWorkerError(result.traceback)
+        raise cast(ComparisonError, error) from RemoteWorkerError(result.traceback)
     # 父进程墙钟覆盖 worker 内部计时，包含进程启动与传输时间。
     return replace(result, elapsed_seconds=time.monotonic() - started)
 
 
-def _worker_main():
+def _worker_main() -> None:
     """worker 进程入口：读取 pickle 输入，写回结果或失败消息。"""
     # 使用规范模块名序列化类型，父进程无需导入 __main__ 中的类。
     from jax_reorder.algebra.trusted import WorkerFailure, compare_symbolic
@@ -389,7 +428,9 @@ def _worker_main():
             exc
             if isinstance(exc, ComparisonError)
             else ComparisonInternalError(
-                "algebra.sympy.worker", f"{type(exc).__name__}: {exc}", stage="algebra"
+                "algebra.sympy.worker",
+                f"{type(exc).__name__}: {exc}",
+                stage=ComparisonStage.ALGEBRA,
             )
         )
         result = WorkerFailure(

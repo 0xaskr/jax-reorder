@@ -6,7 +6,11 @@ Index 是不可变的整数表达式 DAG，只表示常量、自由/求和坐标
 一起提供，本模块不判断任意符号表达式是否语义等价，也不处理分数坐标。
 """
 
+from __future__ import annotations
+
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
 from ..core.unrooted import order_key
 
@@ -25,10 +29,10 @@ class Index:
 
     kind: str
     number: int = 0
-    args: tuple["Index", ...] = ()
+    args: tuple[Index, ...] = ()
 
 
-def integer(value):
+def integer(value: int) -> Index:
     """零使用唯一身份，其他整数作为常量坐标。
 
     统一 zero 表示可以让 0 的相等判断与哈希不依赖构造来源；非零值保存
@@ -37,7 +41,7 @@ def integer(value):
     return Index("const", value) if value else Index("zero")
 
 
-def scale(index, value):
+def scale(index: Index, value: int) -> Index:
     """对整数线性组合合并系数。
 
     0 与 zero 直接坍缩为 0；系数 1 返回原节点；常量与已有 scale 就地折叠，
@@ -57,7 +61,7 @@ def scale(index, value):
     return Index("scale", value, (index,))
 
 
-def add(*indices):
+def add(*indices: Index) -> Index:
     """规范化精确线性组合，并应用 div/mod 的重组恒等式。
 
     先展平嵌套 add、累加常量并逐个基节点收集整数系数（free/sum/div/mod
@@ -97,7 +101,7 @@ def add(*indices):
     return Index("add", args=tuple(parts))
 
 
-def bounds(index, domains):
+def bounds(index: Index, domains: Mapping[Index, tuple[int, int]]) -> tuple[int, int] | None:
     """保守闭区间推导；未知范围不作猜测。
 
     domains 把坐标叶子映射到半开区间 (start, stop)，这里换算成闭区间
@@ -117,17 +121,25 @@ def bounds(index, domains):
     ranges = [bounds(child, domains) for child in index.args]
     if any(item is None for item in ranges):
         return None
+    # 上面的检查已排除任何未知子区间。
+    known = cast(list[tuple[int, int]], ranges)
     if index.kind == "add":
-        return sum(item[0] for item in ranges), sum(item[1] for item in ranges)
+        return sum(item[0] for item in known), sum(item[1] for item in known)
     if index.kind == "scale":
-        a, b = (n * index.number for n in ranges[0])
+        a, b = (n * index.number for n in known[0])
         return min(a, b), max(a, b)
     if index.kind == "div":
-        return tuple(n // index.number for n in ranges[0])
+        return known[0][0] // index.number, known[0][1] // index.number
     return None
 
 
-def divide(index, divisor, domains=None, *, modulo=False):
+def divide(
+    index: Index,
+    divisor: int,
+    domains: Mapping[Index, tuple[int, int]] | None = None,
+    *,
+    modulo: bool = False,
+) -> Index:
     """整除与取余；仅在已证明余项范围内消去混合进制坐标。
 
     与 Python 的 // 和 % 一致，向下取整，因此负坐标也满足

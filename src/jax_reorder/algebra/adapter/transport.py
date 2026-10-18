@@ -8,15 +8,24 @@
 本模块不执行数组、不做数学判断，也不构造 SymPy 对象。
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from jax._src import core
+from jax.typing import DTypeLike
 
 from ...core.derivatives import CUSTOM_PRIMITIVES
 from ...core.params import parameter_view, semantic_parameters
+from ...core.semantics import Frozen
 from ...errors import UnsupportedJaxprError
+from .._typing import ArrayAtom, ArrayAval, Shape, SymbolicGraph
+
+if TYPE_CHECKING:
+    from .calls import CommonCalls
 
 
 @dataclass(frozen=True)
@@ -29,16 +38,20 @@ class Variable:
     """
 
     number: int
-    shape: tuple
-    dtype: object
+    shape: Shape
+    dtype: DTypeLike
 
     @property
-    def aval(self):
+    def aval(self) -> ArrayAval:
         """只含 shape 与 dtype 的 aval 视图，供按抽象值读取的接口使用。"""
-        return SimpleNamespace(shape=self.shape, dtype=self.dtype)
+        return cast(ArrayAval, SimpleNamespace(shape=self.shape, dtype=self.dtype))
 
 
-def freeze(graph, common_calls=None, common_ids=None):
+def freeze(
+    graph: core.Jaxpr,
+    common_calls: CommonCalls | None = None,
+    common_ids: dict[Frozen, int] | None = None,
+) -> SymbolicGraph:
     """冻结一张图（ClosedJaxpr 或裸 jaxpr）为 worker 可读的普通对象。
 
     common_calls 是父进程构造的 CommonCalls，用于识别两侧完整相同的纯 JIT；
@@ -55,7 +68,7 @@ def freeze(graph, common_calls=None, common_ids=None):
         raise UnsupportedJaxprError("algebra.effects", "effectful graph")
     variables = {}
 
-    def variable(var):
+    def variable(var: core.Atom) -> ArrayAtom:
         """把 Var 或字面量转换成 worker 侧的变量描述或常量值。"""
         # token 等非数组值没有实数解释，worker 也无法按元素坐标读取。
         if not isinstance(var.aval, core.ShapedArray):
@@ -63,12 +76,12 @@ def freeze(graph, common_calls=None, common_ids=None):
                 "algebra.shape", "requires shaped array values; tokens are unsupported"
             )
         if isinstance(var, core.Literal):
-            return SimpleNamespace(val=np.asarray(var.val), aval=var.aval)
+            return cast(ArrayAtom, SimpleNamespace(val=np.asarray(var.val), aval=var.aval))
         if var not in variables:
             variables[var] = Variable(len(variables), tuple(var.aval.shape), var.aval.dtype)
         return variables[var]
 
-    def parameter(value):
+    def parameter(value: Any) -> Any:
         """递归冻结参数里的嵌套图与容器，保持其他值原样。"""
         # 只深入已知容器，其他值原样传递；不在这里猜测未知参数的语义。
         if isinstance(value, (core.Jaxpr, core.ClosedJaxpr)):
@@ -86,7 +99,7 @@ def freeze(graph, common_calls=None, common_ids=None):
         if eq.effects:
             raise UnsupportedJaxprError("algebra.effects", "effectful equation")
         # 取完整语义参数；下面按 primitive 只保留数学层能解释的部分。
-        params = semantic_parameters(eq, scope="primal", parent=graph)
+        params: dict[str, Any] = semantic_parameters(eq, scope="primal", parent=graph)
         if eq.primitive in CUSTOM_PRIMITIVES:
             # 自定义求导只比较实际被调用的程序；残差与 symbolic-zero 参数
             # 属于 JAX 接口元数据，不是数学函数的一部分。
@@ -115,7 +128,7 @@ def freeze(graph, common_calls=None, common_ids=None):
             from .semantics import encode
 
             # 默认分片不改变布局语义，可以丢弃；非默认分片必须拒绝。
-            aval = eq.outvars[0].aval
+            aval = cast(core.ShapedArray, eq.outvars[0].aval)
             default = core.ShapedArray(aval.shape, aval.dtype).sharding
             if encode(params["sharding"]) != encode(default):
                 raise UnsupportedJaxprError("algebra.cast", "non-default cast sharding")
@@ -156,11 +169,14 @@ def freeze(graph, common_calls=None, common_ids=None):
                 outvars=tuple(variable(v) for v in eq.outvars),
             )
         )
-    return SimpleNamespace(
-        invars=inputs,
-        constvars=constants,
-        # 裸 jaxpr 的 constvars 只是外部绑定描述，没有可传递的常量值。
-        consts=tuple(np.asarray(x) for x in graph.consts) if closed else (),
-        eqns=tuple(equations),
-        outvars=tuple(variable(v) for v in inner.outvars),
+    return cast(
+        SymbolicGraph,
+        SimpleNamespace(
+            invars=inputs,
+            constvars=constants,
+            # 裸 jaxpr 的 constvars 只是外部绑定描述，没有可传递的常量值。
+            consts=tuple(np.asarray(x) for x in graph.consts) if closed else (),
+            eqns=tuple(equations),
+            outvars=tuple(variable(v) for v in inner.outvars),
+        ),
     )

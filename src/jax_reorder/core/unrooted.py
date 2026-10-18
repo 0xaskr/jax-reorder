@@ -6,20 +6,30 @@
 canonical 与 correspondence 完成。
 """
 
+from __future__ import annotations
+
 import dataclasses
 from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from jax._src import core
 from jax._src.random.prng import KeyTy
 
-from ..errors import ComparisonBudgetError, UnsupportedJaxprError
+from ..errors import ComparisonBudgetError, ComparisonStage, UnsupportedJaxprError
+from ._typing import ValueReference
+from .semantics import Frozen
+
+if TYPE_CHECKING:
+    from .canonical import Graph
+
 
 # 搜索预算按候选状态计数；达到预算也不能以当前最优候选代替完整结论。
 DEFAULT_SEARCH_BUDGET = 10_000
 
 
-def _variables(value, transform):
+def _variables(value: Frozen, transform: Callable[[ValueReference], Frozen]) -> Frozen:
     """只改当前区域的编码变量引用，子 Graph 保持自身的局部命名空间。
 
     transform 接收 Encoder 生成的规范值引用并返回新引用；普通字符串和数组
@@ -56,7 +66,9 @@ class _KeyRequest:
     value: object
 
 
-def order_key(value, *, cache=None):
+def order_key(
+    value: object, *, cache: dict[int, tuple[object, tuple[Any, ...]]] | None = None
+) -> tuple[Any, ...]:
     """为已编码语义给出可排序键；不代替最终的完整语义比较。
 
     类型/Primitive/PRNG 实现原本按身份区分，最后的身份项仅打破同名对象
@@ -64,7 +76,8 @@ def order_key(value, *, cache=None):
     cache 按对象身份复用已算出的键，并保留原对象以防 id 被回收后重用。
     """
     # 工作栈先处理子键再合成父键；无序集合排序，有序元组维持原元素位置。
-    pending, values = [("key", value)], []
+    pending: list[tuple[str, Any]] = [("key", value)]
+    values: list[Any] = []
     cache = {} if cache is None else cache
     while pending:
         action, item = pending.pop()
@@ -97,7 +110,7 @@ def order_key(value, *, cache=None):
     return values[0]
 
 
-def _key_template(value):
+def _key_template(value: object) -> tuple[Any, ...]:
     """只描述一层，子值由 order_key 的工作栈展开。"""
     # 首项数字区分类型类别，使不同 Python 类型也能稳定比较排序键。
     if value is None:
@@ -137,7 +150,9 @@ def _key_template(value):
     raise UnsupportedJaxprError("graph.search", f"no ordering adapter for encoded {type(value)}")
 
 
-def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEARCH_BUDGET):
+def canonical_order(
+    graph: Graph, rooted_nodes: int, rooted_constants: int, *, budget: int = DEFAULT_SEARCH_BUDGET
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """返回旧节点/常量索引的规范排列；预算耗尽时显式失败。
 
     rooted_nodes/rooted_constants 是已固定前缀的长度。搜索先按语义标签分组，
@@ -151,7 +166,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
     labels, outgoing, incoming = [], [[] for _ in range(n + nc)], [[] for _ in range(n + nc)]
     has_parameter_references = False
 
-    def anonymous(ref):
+    def anonymous(ref: ValueReference) -> tuple[Any, ...]:
         """从初始标签去掉可重编号的目标索引，同时保留引用种类和结果端口。"""
         nonlocal has_parameter_references
         if ref[0] in {"result", "constant"}:
@@ -160,7 +175,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
             return (ref[0], "unbound", *ref[2:])
         return ref
 
-    def edge(source, target, label):
+    def edge(source: int, target: int, label: tuple[int, ...]) -> None:
         """同时登记正反邻接，供细化使用消费者和生产者两侧的信息。"""
         # 此处边从消费者指向生产者，与执行时的数据流方向相反。
         # label 保留操作数位置、生产者结果端口或附加顺序边位置。
@@ -202,7 +217,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
     ranks = {key: rank for rank, key in enumerate(sorted(set(keys)))}
     initial = tuple(ranks[key] for key in keys)
 
-    def refine(colors):
+    def refine(colors: tuple[int, ...]) -> tuple[int, ...]:
         """反复按双向带标签邻接细分颜色，直到当前分组不再变化。"""
         # color 是候选类别编号。用双向邻接不断细分；同色只表示尚无法区分，
         # 不能据此宣称两个节点等价，未拆开的类别还需精确搜索。
@@ -231,7 +246,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
                 "graph.search",
                 f"exact graph search budget exceeded: {n} nodes, {nc} constants, "
                 f"{visited} states, limit {budget}",
-                stage="structural",
+                stage=ComparisonStage.STRUCTURAL,
                 used=visited,
                 limit=budget,
             )
@@ -247,7 +262,9 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
             order = tuple(sorted(range(len(labels)), key=lambda i: colors[i]))
             numbers = {v: i for i, v in enumerate(order)}
 
-            def renamed(ref, numbers=numbers):
+            def renamed(
+                ref: ValueReference, numbers: Mapping[int, int] = numbers
+            ) -> ValueReference:
                 """把参数引用投影到当前候选的统一顶点编号，供完整证书比较。"""
                 if ref[0] == "result":
                     return ("result", numbers[ref[1]], ref[2])
@@ -286,6 +303,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
             ranks = {sig: rank for rank, sig in enumerate(sorted(set(split)))}
             pending.append(tuple(ranks[sig] for sig in split))
     # 返回“新位置 → 旧索引”；可达前缀不变，常量编号从统一顶点编号还原。
+    best_order = cast(tuple[int, ...], best_order)
     nodes = (*range(rooted_nodes), *(i for i in best_order if rooted_nodes <= i < n))
     constants = (
         *range(rooted_constants),
@@ -294,7 +312,7 @@ def canonical_order(graph, rooted_nodes, rooted_constants, *, budget=DEFAULT_SEA
     return nodes, constants
 
 
-def reorder_form(graph, nodes, constants):
+def reorder_form(graph: Graph, nodes: Sequence[int], constants: Sequence[int]) -> Graph:
     """按排列重写完整图中的全部连接，保持结果端口和共享次数。
 
     nodes/constants 是“新位置 → 旧索引”的排列，通常来自 canonical_order。
@@ -304,7 +322,7 @@ def reorder_form(graph, nodes, constants):
     node_ids = {old: new for new, old in enumerate(nodes)}
     constant_ids = {old: new for new, old in enumerate(constants)}
 
-    def reference(ref):
+    def reference(ref: ValueReference) -> ValueReference:
         """按最终排列重写节点或常量引用，外部输入位置和结果端口保持不变。"""
         if ref[0] == "result":
             return ("result", node_ids[ref[1]], ref[2])
