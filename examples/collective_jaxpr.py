@@ -351,8 +351,6 @@ def run_case(case, samples, *, show_jaxpr=False):
     print(f"PASS {case.name}: {comparison.status.value}；{len(samples)} 组样本重排执行通过")
     if comparison.difference:
         print(f"  图差异：{comparison.difference}")
-    for issue in comparison.issues:
-        print(f"  无法判定：{issue.path}: {issue.reason}")
     if witness is not None:
         inputs, a, b = witness
         print(f"  反例输入：{[np.asarray(x).tolist() for x in inputs]}")

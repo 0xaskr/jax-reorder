@@ -1,10 +1,10 @@
-"""把已校验的 jaxpr 冻结成隔离符号 worker 的输入，不执行 JAX。
+"""把已校验的 jaxpr 冻结成独立符号 worker 的输入，不执行 JAX。
 
-冻结结果只保留 SymbolicBuilder 实际消费的字段：带稳定编号的变量描述、
-方程名、已适配参数以及输入/常量/输出端口。JIT 布局、名称和编译元数据
-不参与理想实数解释，default_jit 已核对其为默认值，因此不再跨进程传递。
+冻结结果只保留 SymbolicBuilder 真正会用到的字段：带稳定编号的变量描述、
+方程名、已适配的参数、输入/常量/输出端口。JIT 布局、名称和编译元数据不参与
+“理想实数”解释，而且 default_jit 已核对过它们是默认值，所以不用跨进程传。
 无法解释或无法安全传递的语义（effects、token、非默认 scan/cast 接口、
-非默认 JIT 契约）明确抛 UnsupportedJaxprError，不猜测也不丢弃。
+非默认 JIT 契约）直接抛 UnsupportedJaxprError，不猜也不丢。
 本模块不执行数组、不做数学判断，也不构造 SymPy 对象。
 """
 
@@ -99,7 +99,9 @@ def freeze(
         if eq.effects:
             raise UnsupportedJaxprError("algebra.effects", "effectful equation")
         # 取完整语义参数；下面按 primitive 只保留数学层能解释的部分。
-        params: dict[str, Any] = semantic_parameters(eq, scope="primal", parent=graph)
+        params: dict[str, Any] = semantic_parameters(
+            eq, include_derivative_rules=False, parent=graph
+        )
         if eq.primitive in CUSTOM_PRIMITIVES:
             # 自定义求导只比较实际被调用的程序；残差与 symbolic-zero 参数
             # 属于 JAX 接口元数据，不是数学函数的一部分。
@@ -111,13 +113,13 @@ def freeze(
             # 加规范化后的子图组成稳定身份，并让两侧同一 reducer 共享编号；
             # 不能按函数名或对象 id 判等。
             encoded, children = parameter_view(
-                eq, lambda _: None, derivative_scope="primal", parent=graph
+                eq, lambda _: None, include_derivative_rules=False, parent=graph
             )
             key = (
                 "opaque_reducer",
                 encoded,
                 tuple(
-                    (path, canonicalize(child, derivative_scope="primal").graph)
+                    (path, canonicalize(child, include_derivative_rules=False).graph)
                     for path, child in children.items()
                 ),
             )

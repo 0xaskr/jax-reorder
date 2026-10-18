@@ -33,7 +33,7 @@ base 组合原始 `streamindex_topk_ref(one_token_per_seq=True)` 与 `sparse_mla
 
 使用 `trace_function` 单独记录原层和候选的完整函数契约及 jaxpr，再调用 `compare_function_traces`。比较器检查 pytree、抽象值、所有输入输出绑定、常量与嵌套语义；不使用 `check_cpu`，不调用 `lower`、`compile` 或数值 evaluator。
 
-JSON 分开记录 `expected_relation`、`structural`、实际 `status`、`outcome`、`failure_kind`、具体 `issues`、使用的 `rules` 和浮点警告。`different` 只说明图不同；`unknown` 对正例和反例都计为 `coverage_gap`，不再汇总成“5+5 全通过”。反例必须有完整输出的 `inequivalent` 证据才计为 `proven_inequivalent`；被报告为 equivalent 则是 `false_acceptance`。
+JSON 分开记录 `expected_relation`、`structural`、实际 `status`、`outcome`、`failure_kind`、`difference`、使用的 `rules` 和浮点警告。`different` 只说明图不同；`unknown` 对正例和反例都计为 `coverage_gap`，不再汇总成“5+5 全通过”。反例必须有完整输出的 `inequivalent` 证据才计为 `proven_inequivalent`；被报告为 equivalent 则是 `false_acceptance`。
 
 命令退出码：0 表示所有预期关系已证明；1 表示误接受/预期冲突；2 表示存在 unknown 或只有结构不匹配的能力缺口。pytest 验证测试工具自身、已证明的换序和精确的当前缺口，不把通过的回归数量当作语义证明数量。
 

@@ -673,7 +673,6 @@ def verify_variant(scenario, variant, profile, samples, *, show_jaxpr=False):
     )
     normalized = [canonicalize(graph) for graph in graphs]
     for item in normalized:
-        assert item.complete, item.issues
         core.check_jaxpr(item.jaxpr)
         assert canonicalize(item.jaxpr).graph == item.graph, "规范化不幂等"
 

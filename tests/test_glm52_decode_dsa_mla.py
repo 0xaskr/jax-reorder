@@ -149,7 +149,6 @@ def test_core_rewrites_prove_finite_changes_and_report_remaining_gaps(comparison
         assert record["status"] == "equivalent", record
         assert record["outcome"] == "proven_equivalent"
         assert record["kind"] == "algebraic"
-        assert record["issues"] == []
         assert record["warnings"]
         if case_index == 3:
             assert "guarded_softmax_finite" in record["rules"]

@@ -23,13 +23,13 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-"""逐元素 JAX→SymPy 转换的参考实现，保留给公式基线与后续适配器。
+"""逐元素 JAX→SymPy 转换的参考实现，留给公式基线和新适配器对照。
 
-本文件把完整图展开成 NumPy 对象数组，每个元素对应一个 SymPy 表达式；
-它不跟踪定义条件、有限性或资源预算，因此不参与生产数学判等。
-生产路径使用 SymbolicBuilder：惰性 Indexed/Sum 表示、原始定义条件和预算。
-这里的映射与遍历改自 jax2sympy 的固定 revision（来源与许可见上方文件头），
-未验证的映射在下方逐项标注；新增 primitive 前需要补数值回归。
+它把完整图展开成 NumPy 对象数组，每个元素是一个 SymPy 表达式；不跟踪定义
+条件、有限性或预算，所以不参与生产路径的数学判等。生产路径用 SymbolicBuilder
+（惰性 Indexed/Sum、保留定义条件、带预算）。下面的映射和遍历改自 jax2sympy
+的固定 revision（来源和许可见文件头），未验证的映射逐项标注；新增 primitive
+前要补数值回归。
 """
 
 from __future__ import annotations

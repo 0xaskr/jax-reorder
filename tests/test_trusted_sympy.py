@@ -65,7 +65,7 @@ def compare(left, right, *args, **kwargs):
 )
 def test_complete_scalar_queries(left, right):
     result = compare(left, right, signature((3,)))
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
     assert result.algebra.correspondence is None
     assert result.algebra.backend_result.backend == "sympy"
     assert result.algebra.backend_result.queries
@@ -84,7 +84,7 @@ def test_complete_scalar_queries(left, right):
 )
 def test_negative_is_a_complete_final_output(left, right):
     result = compare(left, right, signature((3,)))
-    assert result.status == Status.INEQUIVALENT, result.issues
+    assert result.status == Status.INEQUIVALENT, result
     assert result.algebra.correspondence is None
     assert result.difference == f"algebra.outputs[{result.algebra.output}]"
     assert any(
@@ -119,7 +119,7 @@ def test_intermediate_difference_can_be_eliminated():
 @pytest.mark.parametrize("shape", [(0, 3), (1, 1), (3, 4), (8, 32)])
 def test_tensor_sum_linearity_and_empty_domains(shape):
     result = compare(lambda x: jnp.sum(2 * x), lambda x: 2 * jnp.sum(x), signature(shape))
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
 
 
 def test_large_sum_scale_remains_lazy_under_an_opaque_operation():
@@ -128,7 +128,7 @@ def test_large_sum_scale_remains_lazy_under_an_opaque_operation():
         lambda x: jax.lax.top_k(jnp.sum(x / 16, axis=1), 2),
         signature((4, 576)),
     )
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
     assert result.algebra.backend_result.work < 1000
     assert any("Sum(" in definition for _, definition in result.algebra.backend_result.definitions)
 
@@ -136,9 +136,9 @@ def test_large_sum_scale_remains_lazy_under_an_opaque_operation():
 def test_matrix_association_and_wrong_axis():
     args = [signature(shape) for shape in ((2, 3), (3, 4), (4, 5))]
     result = compare(lambda a, b, c: (a @ b) @ c, lambda a, b, c: a @ (b @ c), *args)
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
     result = compare(lambda a, b: a @ b, lambda a, b: a @ b.T, signature((3, 3)), signature((3, 3)))
-    assert result.status == Status.INEQUIVALENT, result.issues
+    assert result.status == Status.INEQUIVALENT, result
 
 
 @pytest.mark.parametrize("function", [lambda a, b, c: (a @ b) @ c, lambda a, b, c: a @ (b @ c)])
@@ -158,9 +158,9 @@ def test_dot_broadcast_and_reshape():
         signature((2, 3)),
         signature((3, 4)),
     )
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
     result = compare(lambda x: x.reshape(12).reshape(3, 4), lambda x: x, signature((3, 4)))
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
 
 
 def test_conditions_and_jit_bindings():
@@ -168,9 +168,9 @@ def test_conditions_and_jit_bindings():
         lambda x: jax.lax.cond(x > 0, lambda y: y + y, lambda y: -y, x),
         lambda x: jnp.where(x > 0, 2 * x, -x),
     )
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
     result = compare(jax.jit(lambda x: jnp.sin(x) ** 2 + jnp.cos(x) ** 2), jnp.ones_like)
-    assert result.status == Status.EQUIVALENT, result.issues
+    assert result.status == Status.EQUIVALENT, result
 
 
 def test_unsupported_loop_is_not_an_inequality():

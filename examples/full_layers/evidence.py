@@ -145,7 +145,7 @@ def verify_indexer(profile):
             # 实际方程列表必须变化；名称相同不算覆盖。
             assert raw_schedule(graph) != raw_schedule(other)
             for form in (report.left, report.right):
-                assert form is not None and form.complete
+                assert form is not None
                 core.check_jaxpr(form.jaxpr)
                 # 规范化幂等；两次规范化必须得到同一图。
                 assert canonicalize(form.jaxpr).graph == form.graph

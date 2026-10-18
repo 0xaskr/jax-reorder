@@ -1,7 +1,8 @@
-"""原始图对应证据及独立校验，不重新执行规范化或 BFS。
+"""构造“左侧原图到右侧原图”的对应证据，并独立复核这份证据。
 
-证据构造读取规范化过程保存的来源；校验只读取两份原始图和对应表。
-参数、常量的精确编码与比较器共享，属于需要单独测试的语义信任基础。
+证据来自规范化过程中留下的来源记录；复核时只读两份原始图和对应表，
+不重新跑规范化或 BFS，避免“自己证明自己”。
+参数和常量沿用与比较器相同的精确编码，这部分是语义信任的基础，需要单独测试。
 """
 
 from __future__ import annotations
@@ -212,15 +213,15 @@ def verify_correspondence(
     right: core.Jaxpr,
     correspondence: GraphCorrespondence,
     *,
-    derivative_scope: str = "all",
+    include_derivative_rules: bool = True,
 ) -> None:
     """逐区域复核原始图的双射与绑定；成功返回 None，否则抛出明确错误。
 
     本函数不接受规范化器对象，也不调用 canonicalize/compare_jaxprs。
     即使规范化器忽略了一个参数或错误地合并节点，原图校验仍应拒绝。
     接口校验、SSA 和支持域在此独立检查；完整 JAX 类型检查仍由调用方执行。
-    derivative_scope 控制参数视图里物化的自定义求导规则范围；规则内部
-    一律收窄为 primal，避免递归展开未请求的高阶规则。
+    include_derivative_rules 要和生成证据时保持一致；规则内部一律只看
+    前向，避免递归展开未请求的高阶规则。
     """
 
     def require(condition: bool, path: str, reason: str) -> None:
@@ -249,7 +250,11 @@ def verify_correspondence(
         "environment",
         "correspondence adapter requires audited JAX/jaxlib 0.11.2",
     )
-    require(derivative_scope in ("all", "primal"), "scope", "invalid derivative scope")
+    require(
+        type(include_derivative_rules) is bool,
+        "scope",
+        "include_derivative_rules must be a bool",
+    )
     supported = supported_primitive_identities()
 
     def check_domain(graph: core.Jaxpr, path: str) -> None:
@@ -451,18 +456,21 @@ def verify_correspondence(
                 input_order = children["params.jaxpr"].inputs
                 permutation(input_order, len(equation.invars), len(other.invars), where)
             # 规则区域内部不再展开更高阶规则；其余区域按调用方传入的范围复核，
-            # 与规范化时使用的 derivative_scope 保持一致。
-            scope = "primal" if ".params.rules[" in where else derivative_scope
+            # 与规范化时使用的 include_derivative_rules 保持一致。
+            include = False if ".params.rules[" in where else include_derivative_rules
             # 此处重新读取原参数并物化求导规则，不接受规范化器提供的相等结论。
             ap, ac = parameter_view(
-                equation, lambda v, values=values: values[v], derivative_scope=scope, parent=a
+                equation,
+                lambda v, values=values: values[v],
+                include_derivative_rules=include,
+                parent=a,
             )
             bp, bc = parameter_view(
                 other,
                 lambda v: v,
                 inputs=input_order,
                 outputs=eqmap.outputs,
-                derivative_scope=scope,
+                include_derivative_rules=include,
                 parent=b,
             )
             require(encoded_equal(ap, bp), where, "primitive parameters differ")

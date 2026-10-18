@@ -1,7 +1,7 @@
-"""符号值模型：坐标、精确常量、绑定重命名与张量元素公式。
+"""符号值模型：坐标、精确常量、绑定重命名和标量公式。
 
-本模块只依赖 SymPy/NumPy，不依赖构造器、区域绑定或查询 worker。symbolic、
-regions、trusted 共用这些基础类型，避免三者互相导入形成环。
+本模块只依赖 SymPy 和 NumPy。symbolic、regions、trusted 共用这些基础类型，
+放在单独文件里是为了避免它们互相导入成环。
 """
 
 from __future__ import annotations

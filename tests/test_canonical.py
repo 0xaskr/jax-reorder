@@ -190,7 +190,6 @@ def test_unused_equations_are_retained_and_fully_compared():
 
     graph = trace(fn, 1.0, 2.0)
     result = canonicalize(graph)
-    assert result.complete
     assert result.unused_equations == (0,)
     assert result.equation_order == (1, 0)
     assert_preserved(graph, result, 1.0, 2.0)
@@ -204,7 +203,6 @@ def test_source_and_empty_outputs(fn):
     """没有方程的图（直通、常量、空输出、重复输出）也必须可以规范化并保持接口。"""
     graph = trace(fn, 1.0)
     result = canonicalize(graph)
-    assert result.complete
     assert result.graph.nodes == ()
     assert_preserved(graph, result, 1.0)
 
@@ -300,5 +298,5 @@ def test_long_chain_does_not_recurse_on_dependencies():
 
     graph = trace(fn, 1.0)
     result = canonicalize(graph)
-    assert result.complete and max(result.depths) == 1200
+    assert max(result.depths) == 1200
     assert compare_jaxprs(graph, alpha_rename(graph)).status == Status.EQUIVALENT

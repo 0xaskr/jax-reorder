@@ -98,7 +98,6 @@ def test_unrooted_graph_preserves_every_node_and_is_canonical(pair, args):
     result = compare_jaxprs(a, b)
     assert result.status == Status.EQUIVALENT, result
     assert result.left.unused_equations
-    assert result.left.complete
     assert original == (str(a), str(b))
     assert compare_jaxprs(b, a).status == Status.EQUIVALENT
     for raw, normalized in ((a, result.left), (b, result.right)):

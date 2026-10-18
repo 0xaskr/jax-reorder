@@ -1,10 +1,10 @@
-"""有限性事实的 SSA 分析；不执行数组，也不展开张量元素。
+"""用 SSA 分析证明某些子表达式一定是有限值，不执行数组，也不展开张量元素。
 
-特别验证 where(mask, softmax(where(mask, finite, -inf)), 0) 的最终值：
-softmax 内部的全遮蔽路径仍未被证明定义，这里只证明最后选择的值有限，
-原始定义条件继续由 SymPy 构造器保存，有限性事实不能替代定义条件。
-分析以 SSA 值（Source 对象身份）为单位，不按结构相等合并节点；只有显式
-列出的规则能给出 True，其余保守视为未知，不做一般 IEEE 浮点推理。
+典型例子是 where(mask, softmax(where(mask, finite, -inf)), 0)：softmax 内部
+全遮蔽的路径仍然没有被证明有定义，这里只能证明最终选出来的值是有限的。
+有限性只是辅助事实，原始定义条件仍由 SymPy 构造器保存，不能拿它替代。
+分析以 SSA 值（Source 对象身份）为单位，只有显式列出的规则能给出 True，
+其余一律保守地当作未知，不做一般的 IEEE 浮点推理。
 """
 
 from __future__ import annotations
@@ -375,7 +375,9 @@ def nonfinite_graph(
         found |= any(
             nonfinite(var.val, var.aval) for var in eq.invars if isinstance(var, core.Literal)
         )
-        _, children = parameter_view(eq, lambda _: None, derivative_scope="primal", parent=graph)
+        _, children = parameter_view(
+            eq, lambda _: None, include_derivative_rules=False, parent=graph
+        )
         for child in children.values():
             found |= nonfinite_graph(child, budget, cache)
     found |= any(

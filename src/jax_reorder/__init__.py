@@ -1,33 +1,31 @@
-"""CPU JAX 计算图规范化与比较的公开接口。
+"""CPU 上比较两份 JAX 计算图是否等价的公开接口。
 
-常用入口按已有输入选择：
-- 手中是 Python 函数：compare_functions，返回 FunctionComparison。
-- 手中是带常量绑定的 jaxpr：compare_algebraic_jaxprs，返回 AlgebraComparison。
-- 仅检查计算图结构：compare_jaxprs，返回 Comparison 阶段诊断。
-- 只需规范化一张图：canonicalize，返回 Canonicalized。
-- 需要分开追踪和比较：先 trace_function，再 compare_function_traces。
+按手里的输入选入口：
+- 有 Python 函数：compare_functions，会自己追踪并返回 FunctionComparison；
+- 有带常量绑定的 jaxpr：compare_algebraic_jaxprs；
+- 只想看结构：compare_jaxprs 或 canonicalize；
+- 想先追踪再比较：trace_function 加 compare_function_traces。
 
-函数入口默认只检查 forward；显式请求 jvp/vjp 才检查相应的一阶求导程序。
-JVP 是雅可比与输入切向量的乘积，VJP 是输出余切向量经雅可比反向传播的结果。
-图入口默认还比较已适配的自定义一阶规则，derivative_scope="primal" 限定为前向。
+结论怎么读：函数入口默认只查前向，显式请求 jvp / vjp 才比较对应的一阶求导
+程序。JVP 是雅可比乘输入切向量，VJP 是输出余切向量反向传播；FunctionComparison
+按模式分别保存结果。图入口默认还比较 custom_jvp / custom_vjp 携带的一阶
+规则，include_derivative_rules=False 可只看前向。
 
-FunctionComparison.modes 保存各模式的 ModeComparison；其中的 comparison
-在进入图比较后保存 Comparison。Comparison.left/right 是两侧的 Canonicalized，
-correspondence 则是等价时生成并复核的 GraphCorrespondence 对应证据。
-verify_correspondence 可独立复核这份证据，不重新执行规范化。
+结构不同时，函数入口默认交给 SymPy 再做数学判定；equivalence="structural"
+则只停留在结构层。inequivalent 表示有完整输出的数学不等价证据，different 只是
+结构差异诊断，不推出数学结论。检查未完成、契约不兼容或运行失败都抛异常。
 
-函数入口默认在结构不同时交给可信 SymPy 数学后端；equivalence="structural" 保留结构语义。
-代数结论使用带明确浮点警告的理想实数解释，不代表一般 Python 或逐位浮点等价。
-inequivalent 表示有完整输出的数学不等价证据；different 仅是显式结构模式的图差异诊断；
-检查未完成、契约不兼容或运行失败均抛出分类异常。
+注意边界：代数结论建立在“理想实数”解释上，会附带浮点警告，不代表一般 Python
+等价或逐位浮点等价。等价时 Comparison.correspondence 保存原图对应证据，
+verify_correspondence 可以单独复核，不必重跑规范化。
 
-实现按 core（结构规范化与比较）→ algebra（SymPy 代数后端）→ functions（函数契约编排）
-分层，errors 是跨层共享的异常分类。子模块路径属于实现细节，不承诺稳定导入路径；
-对外只以本模块的 __all__ 为准。
+实现分三层：core（规范化与结构比较）→ algebra（SymPy 数学判定）→ functions
+（追踪与契约编排），errors 提供跨层共用的异常。子模块路径是实现细节，对外只以
+本模块的 __all__ 为准。
 """
 
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs
-from .core.canonical import Canonicalized, Comparison, Status, canonicalize, compare_jaxprs
+from .core.canonical import Canonicalized, Comparison, canonicalize, compare_jaxprs
 from .core.correspondence import EquationCorrespondence, GraphCorrespondence, verify_correspondence
 from .errors import (
     ComparisonBudgetError,
@@ -54,6 +52,7 @@ from .functions import (
     compare_functions,
     trace_function,
 )
+from .status import Status
 
 # 对外只导出结果类型、显式错误与调用入口，内部编码器和搜索状态留在各模块中。
 __all__ = [

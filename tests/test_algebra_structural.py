@@ -54,7 +54,7 @@ def test_primitive_structural_pair_bypasses_mathematical_queries(case, monkeypat
     assert result.work == 0 and not result.warnings
     assert (
         verify_correspondence(
-            original, normalized.jaxpr, result.correspondence, derivative_scope="primal"
+            original, normalized.jaxpr, result.correspondence, include_derivative_rules=False
         )
         is None
     )
@@ -74,7 +74,7 @@ def test_structural_pair_with_exponential_expansion_uses_existing_evidence():
     assert result.status == Status.EQUIVALENT, result
     assert result.equivalence_kind == "structural" and result.work == 0
     assert (
-        verify_correspondence(graph, graph, result.correspondence, derivative_scope="primal")
+        verify_correspondence(graph, graph, result.correspondence, include_derivative_rules=False)
         is None
     )
 
@@ -118,4 +118,4 @@ def test_structural_correspondence_is_independently_checked(change):
     else:
         proof = None
     with pytest.raises(CorrespondenceError):
-        verify_correspondence(graph, other, proof, derivative_scope="primal")
+        verify_correspondence(graph, other, proof, include_derivative_rules=False)

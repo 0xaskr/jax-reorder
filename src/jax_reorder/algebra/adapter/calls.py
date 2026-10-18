@@ -1,12 +1,10 @@
-"""完整结构相同的纯 JIT 用同一函数符号表示，避免展开共同非线性区域。
+"""让两侧“完整相同”的纯 JIT 调用在符号层用同一个函数符号表示。
 
-两侧原图各自包含一个完整结构相同、执行契约默认且无非有限值的纯 JIT 时，
-把调用内部展开成符号公式既昂贵又不利于合并。本模块用规范结构编码给这类
-子图建立精确身份，让数学层把它表示成同一个不透明函数符号；身份来自图内容
-和端口双射，不使用函数名、repr 或哈希摘要。
-不变量：只有两侧共有（键出现在各自根图成员集合中）的调用才共享符号；
-有序/effectful 图与非默认 JIT 契约不参与共享，含非有限常量的调用由
-冻结阶段（algebra.adapter.transport）拒绝共享并保留完整展开边界。
+把这类调用整个展开成符号公式既慢，又不利于把两边对应起来。本模块用规范
+结构的编码给子图建立精确身份，数学层据此把它当成一个不透明的函数符号。
+身份只来自图内容和端口双射，不用函数名、repr 或哈希。
+一条不变量：只有两侧共有的调用才能共享符号；有序或带 effect 的图、非默认
+JIT 契约不参与；含非有限常量的调用会在冻结阶段被拒，保留完整展开边界。
 """
 
 from __future__ import annotations
@@ -71,10 +69,10 @@ class CommonCalls:
                         )
                 if children:
                     _, left_children = parameter_view(
-                        eq, lambda _: None, derivative_scope="primal", parent=original
+                        eq, lambda _: None, include_derivative_rules=False, parent=original
                     )
                     _, right_children = parameter_view(
-                        other, lambda _: None, derivative_scope="primal", parent=adapted
+                        other, lambda _: None, include_derivative_rules=False, parent=adapted
                     )
                     pending.extend(
                         (left_children[path], right_children[path], witness)
@@ -131,7 +129,7 @@ class CommonCalls:
             self.budget.spend(path="algebra.call_graph")
             inputs = tuple(reference(v) for v in eq.invars)
             variables.update((v, ("node", i, j)) for j, v in enumerate(eq.outvars))
-            params = dict(semantic_parameters(eq, scope="primal", parent=graph))
+            params = dict(semantic_parameters(eq, include_derivative_rules=False, parent=graph))
             if default_jit(eq, params):
                 calls.add(self.key(params["jaxpr"]))
             if eq.primitive is pjit.jit_p:

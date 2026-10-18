@@ -35,7 +35,7 @@ def test_default_jit_composes_different_private_residual_interfaces(mode):
     """默认执行属性的 JIT 允许组合；两侧残差接口不同时仍走代数路径。"""
     args = jax.ShapeDtypeStruct((4, 3), jnp.float32), jax.ShapeDtypeStruct((4, 2), jnp.float32)
     result = compare_functions(jax.jit(broadcast_sum), jax.jit(matrix_sum), *args, modes=(mode,))
-    assert result.status == Status.EQUIVALENT, result.modes[0].issues
+    assert result.status == Status.EQUIVALENT, result.modes[0]
     for report in result.modes:
         # correspondence 为 None 表示结构路径没通过，结论来自代数查询。
         assert report.algebra and report.algebra.backend_result

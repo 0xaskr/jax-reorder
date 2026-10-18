@@ -33,7 +33,7 @@ def test_vjp_casts_with_default_rank_dependent_sharding_are_scalar(dtype):
     args = jax.ShapeDtypeStruct((4, 3), dtype), jax.ShapeDtypeStruct((4, 2), jnp.float32)
     # 只请求 vjp 模式，差异恰好出现在求导生成的 cast 参数上。
     result = compare_functions(jax.jit(broadcast), jax.jit(matrix), *args, modes=("vjp",))
-    assert result.status == Status.EQUIVALENT, result.modes[0].issues
+    assert result.status == Status.EQUIVALENT, result.modes[0]
     mode = result.modes[0]
     # algebra backend 记录非空，说明结构不同后由代数路径接受；结构路径时该字段为 None。
     assert mode.algebra.backend_result is not None

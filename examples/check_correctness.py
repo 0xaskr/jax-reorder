@@ -111,8 +111,7 @@ def run_case(case, samples, show_jaxpr):
     right = jax.make_jaxpr(case.candidate)(*samples[0])
     result = compare_jaxprs(left, right)
     assert result.status == case.expected, (
-        f"预期 {case.expected.value}，实际 {result.status.value}；"
-        f"差异={result.difference}；原因={result.issues}"
+        f"预期 {case.expected.value}，实际 {result.status.value}；差异={result.difference}"
     )
 
     normalized = [canonicalize(graph) for graph in (left, right)]
@@ -153,7 +152,7 @@ def run_case(case, samples, show_jaxpr):
         for label, graph, item in zip(("基准", "候选"), (left, right), normalized, strict=True):
             print(f"  {label}原始 jaxpr:\n{graph}")
             print(f"  BFS 原方程索引={item.bfs_order}，依赖深度={item.depths}")
-            print(f"  重排原方程索引={item.equation_order}，complete={item.complete}")
+            print(f"  重排原方程索引={item.equation_order}")
             print(f"  {label}重排 jaxpr:\n{item.jaxpr}")
 
 

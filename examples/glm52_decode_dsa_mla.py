@@ -488,7 +488,6 @@ def compare(case, base_trace, args, profile="glm"):
             if comparison.algebra and comparison.algebra.backend_result
             else None
         ),
-        "issues": [{"path": x.path, "reason": x.reason} for x in comparison.issues],
         "difference": comparison.difference,
         "warnings": comparison.algebra.warnings if comparison.algebra else (),
         "rules": comparison.algebra.rules if comparison.algebra else (),

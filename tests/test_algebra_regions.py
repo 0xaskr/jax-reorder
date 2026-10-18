@@ -94,9 +94,9 @@ def test_nested_cond_scan_and_jit_regions():
     assert result.status == Status.EQUIVALENT, result
     # 重复返回同一 Var 时，结构证据须与父节点的结果槽位保持一致。
     original = trace_function(make(False), jnp.ones(2), jnp.ones(2), mode="vjp").jaxpr
-    normalized = canonicalize(original, derivative_scope="primal")
+    normalized = canonicalize(original, include_derivative_rules=False)
     assert (
-        compare_jaxprs(original, normalized.jaxpr, derivative_scope="primal").status
+        compare_jaxprs(original, normalized.jaxpr, include_derivative_rules=False).status
         == Status.EQUIVALENT
     )
 

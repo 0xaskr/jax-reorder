@@ -1,10 +1,11 @@
-"""函数入口：把 Python 函数追踪成 jaxpr 快照，再比较这些快照。
+"""函数入口：先把 Python 函数追踪成 jaxpr，再比较这些 jaxpr。
 
-一次比较只覆盖给定的参数、静态参数、变换序列和显式请求的模式。
-求导模式会把种子也当成普通输入来追踪，因此覆盖任意种子，而不是某个固定梯度。
-调用方要保证传入纯函数；本模块不分析追踪范围之外的 Python 行为。
+一次比较只覆盖给定的输入、静态参数、变换顺序和显式请求的模式。
+求导模式把种子也当成普通输入来追踪，所以结论对任意种子成立，而不是只对
+某个固定梯度成立。调用方要保证传进来的是纯函数；追踪范围之外的 Python
+行为不在结论范围内。
 
-本文件只负责“追踪”和“组织比较”：规范化与图比较在 core/，代数证明在 algebra/。
+本文件只做“追踪 + 组织比较”：规范化和图比较在 core/，数学判定在 algebra/。
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from jax._src.layout import AutoLayout, Format
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs
 from .algebra.budget import Budget, validate_timeout
 from .core._typing import TreeDef
-from .core.canonical import Comparison, Issue, Status, compare_jaxprs, difference
+from .core.canonical import Comparison, compare_jaxprs, difference
 from .core.semantics import Encoder, Frozen, encoded_equal
 from .errors import (
     ComparisonContractError,
@@ -34,6 +35,7 @@ from .errors import (
     TraceError,
     UnsupportedJaxprError,
 )
+from .status import Status
 
 # 顺序固定，unverified_modes 按这个顺序列出，报告才稳定。
 MODES = ("forward", "jvp", "vjp")
@@ -116,7 +118,6 @@ class ModeComparison:
     status: Status
     # 结构比较的报告，留着方便定位差异来自哪一步改写。
     comparison: Comparison | None = None
-    issues: tuple[Issue, ...] = ()
     # 已确认的差异位置：结构差异的路径，或数学不等价的输出序号。
     difference: str | None = None
     left: FunctionTrace | None = field(default=None, compare=False, repr=False)
@@ -400,10 +401,10 @@ def compare_function_traces(
 
     模式、环境（context）和函数签名必须完全一致，否则抛 ComparisonContractError：
     前提不同的两张图没法比，不能先比图再补说明。equivalence="auto" 时，
-    只有结构比较得出 different 才继续做代数证明。图比较固定用
-    derivative_scope="primal"，因为求导程序已经通过公开变换展开过了，
-    不能从这次检查外推还没请求的高阶规则。比较中的 ComparisonError
-    会补上模式前缀后重新抛出。
+    只有结构比较得出 different 才继续做代数证明。图比较固定不看
+    custom_jvp / custom_vjp 携带的规则（include_derivative_rules=False），
+    因为求导程序已经通过公开变换展开过了，不能从这次检查外推还没请求的
+    高阶规则。比较中的 ComparisonError 会补上模式前缀后重新抛出。
     """
     if equivalence not in ("auto", "structural"):
         raise ValueError("equivalence must be auto or structural")
@@ -426,9 +427,9 @@ def compare_function_traces(
     # 求导已经展开成一阶程序了，这里只比较展开后的前向语义；
     # 一次一阶检查推不出还没请求的高阶规则。
     try:
-        result = compare_jaxprs(left.jaxpr, right.jaxpr, derivative_scope="primal")
+        result = compare_jaxprs(left.jaxpr, right.jaxpr, include_derivative_rules=False)
         algebra = None
-        status, issues, difference_path = result.status, result.issues, result.difference
+        status, difference_path = result.status, result.difference
         kind = "structural" if status == Status.EQUIVALENT else None
         if equivalence == "auto" and status == Status.DIFFERENT:
             algebra = compare_algebraic_jaxprs(
@@ -437,7 +438,7 @@ def compare_function_traces(
                 algebra_budget=algebra_budget,
                 algebra_timeout=algebra_timeout,
             )
-            status, issues = algebra.status, algebra.issues
+            status = algebra.status
             kind = algebra.equivalence_kind
             if status == Status.EQUIVALENT:
                 difference_path = None
@@ -449,7 +450,6 @@ def compare_function_traces(
         left.mode,
         status,
         comparison=result,
-        issues=issues,
         difference=difference_path,
         left=left,
         right=right,

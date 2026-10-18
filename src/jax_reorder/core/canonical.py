@@ -1,9 +1,14 @@
-"""从输出反向 BFS 编号，按依赖深度重排，再精确比较计算图。
+"""把 jaxpr 规范化成与书写方式无关的结构，再逐字段比较两张计算图。
 
-本模块维护两种顺序：规范结构中的节点按 BFS 编号存放，可执行 jaxpr
-中的方程按（依赖深度，BFS 编号）存放。BFS 访问顺序不能直接作为执行顺序。
-保留普通运算的操作数位置、结果端口和共享关系，不应用交换律或结合律。
-jit/cond/shard_map 的私有端口与循环捕获形参允许同步置换，外部函数输入顺序保持不变。
+模块里同时存在两套顺序，用途不同，不能混用：
+- 规范结构 Graph.nodes 按从输出出发的 BFS 编号存放，只用于比较；
+- 可执行 jaxpr 的方程按“依赖深度、BFS 编号”排序，只用于执行。
+所以 BFS 访问顺序不是执行顺序。
+
+比较会保留算子、操作数位置、结果端口、共享关系、常量、抽象值和嵌套结构；
+普通运算的操作数不交换，也不做结合律、分配律、常量折叠或 DCE。
+jit、cond、shard_map 的私有端口和循环捕获形参允许同步置换，外部输入顺序
+保持不变。非法图、未知语义和预算耗尽都直接抛出分类异常。
 """
 
 from __future__ import annotations
@@ -13,7 +18,6 @@ from collections import deque
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from enum import StrEnum
 from itertools import permutations
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
@@ -33,6 +37,7 @@ from ..errors import (
     InvalidJaxprError,
     UnsupportedJaxprError,
 )
+from ..status import Status
 from ._typing import EncodedRegion, Parameters, ValueReference
 from .correspondence import GraphCorrespondence, build_correspondence, verify_correspondence
 from .params import semantic_parameters
@@ -107,23 +112,6 @@ def ordered_equation(equation: core.JaxprEqn) -> bool:
     return False
 
 
-class Status(StrEnum):
-    """比较结论和结构阶段诊断；DIFFERENT 不表示数学不等价，不包含失败状态。"""
-
-    # 使用字符串枚举，调用方可以直接以 .value 写入结构化报告。
-    EQUIVALENT = "equivalent"
-    INEQUIVALENT = "inequivalent"
-    DIFFERENT = "different"
-
-
-@dataclass(frozen=True)
-class Issue:
-    """阻止完整比较的问题：path 定位图内位置，reason 说明原因。"""
-
-    path: str
-    reason: str
-
-
 @dataclass(frozen=True)
 class Node:
     """一个方程的规范表示；相同算子的两次调用仍是两个独立节点。
@@ -153,7 +141,7 @@ class Graph:
     inputs 保存有序输入的抽象值，outputs 保存有序输出的值引用。
     constants 记录（抽象值，常量内容），其可达前缀按首次使用顺序编号；
     nodes 的可达前缀按 BFS 编号，剩余常量和节点由完整图搜索确定顺序。
-    未使用部分也参与精确搜索；保留未使用节点和常量本身不使结果变为不完整。
+    未使用部分也参与精确搜索；不能把它们当作可忽略的尾部。
     """
 
     inputs: tuple[Frozen, ...]
@@ -184,7 +172,6 @@ class Canonicalized:
     depths: tuple[int, ...]
     unused_equations: tuple[int, ...]
     unused_constants: tuple[int, ...]
-    issues: tuple[Issue, ...]
     value_references: Mapping[core.Var, ValueReference] = field(compare=False, repr=False)
     # lineage：中间图 →（原图，中间图每个方程对应的原方程索引）。
     # regions：各子图的规范化结果；semantic_views：方程用于比较的完整语义参数。
@@ -198,13 +185,8 @@ class Canonicalized:
     semantic_views: Mapping[core.JaxprEqn, Parameters] = field(
         default_factory=dict, compare=False, repr=False
     )
-    # 记录这份结果是否包含注册的一阶规则；供诊断区分完整规则与仅前向范围。
-    derivative_scope: str = "all"
-
-    @property
-    def complete(self) -> bool:
-        """是否完成全图规范化；成功生成可执行图不一定意味着完整规范化。"""
-        return not self.issues
+    # 这份结果是否把 custom_jvp / custom_vjp 携带的一阶规则算进了比较。
+    include_derivative_rules: bool = True
 
 
 @dataclass(frozen=True)
@@ -216,7 +198,6 @@ class Comparison:
     """
 
     status: Status
-    issues: tuple[Issue, ...] = ()
     difference: str | None = None
     left: Canonicalized | None = field(default=None, compare=False, repr=False)
     right: Canonicalized | None = field(default=None, compare=False, repr=False)
@@ -263,7 +244,7 @@ class _Normalizer:
 
     def __init__(
         self,
-        derivative_scope: str = "all",
+        include_derivative_rules: bool = True,
         search_budget: int = DEFAULT_SEARCH_BUDGET,
         decisions: tuple[tuple[int, ...], ...] = (),
     ) -> None:
@@ -273,10 +254,10 @@ class _Normalizer:
         # 缓存不跨公开调用复用，避免再次调用时沿用已经改变的常量或图内容。
         # 同步置换会创建临时分支图。缓存持有图对象，避免释放后 id 被其他图复用。
         self.cache: dict[core.Jaxpr, Canonicalized] = {}
-        # 同一子图按 all/primal 范围比较时，求导规则是否参与不同，必须分开缓存。
-        self.scoped_cache: dict[tuple[core.Jaxpr, str], Canonicalized] = {}
+        # 同一子图按“是否物化求导规则”不同而结果不同，必须分开缓存。
+        self.scoped_cache: dict[tuple[core.Jaxpr, bool], Canonicalized] = {}
         self.semantic_views: dict[core.JaxprEqn, Parameters] = {}
-        self.derivative_scope = derivative_scope
+        self.include_derivative_rules = include_derivative_rules
         self.search_budget = search_budget
         # decisions 是外层搜索已选定的槽位置换前缀；遇到下一个歧义点时暂停并分叉。
         self.decisions = decisions
@@ -285,10 +266,10 @@ class _Normalizer:
         # 每张中间图的方程追溯到原始区域，供独立校验器检查原始图对应关系。
         self.lineage: dict[core.Jaxpr, tuple[core.Jaxpr, tuple[int, ...]]] = {}
 
-    def _scope(self, path: str) -> str:
-        """按参数路径识别物化规则内部区域，限制自定义求导的展开层数。"""
-        # 本轮只验证一阶规则；规则内部普通调用不自动递归证明高阶求导。
-        return "primal" if ".params.rules[" in path else self.derivative_scope
+    def _include_derivative_rules(self, path: str) -> bool:
+        """按参数路径判断这个区域要不要物化自定义求导规则。"""
+        # 规则内部只比前向，避免把一阶检查递归外推成高阶证明。
+        return False if ".params.rules[" in path else self.include_derivative_rules
 
     def _free_slots(self, ports: Iterable[int], path: str) -> tuple[int, ...]:
         """无使用路径可排序时探索完整置换，不用原始位置作为语义平局规则。"""
@@ -331,9 +312,9 @@ class _Normalizer:
                     result = finished.value
                     self.cache[current] = self.cache[result.jaxpr] = result
                     # 原图与返回图均指向同一次结果，后续同步换序会继续引用这些对象。
-                    scope = self._scope(current_path)
-                    self.scoped_cache[(current, scope)] = result
-                    self.scoped_cache[(result.jaxpr, scope)] = result
+                    include = self._include_derivative_rules(current_path)
+                    self.scoped_cache[(current, include)] = result
+                    self.scoped_cache[(result.jaxpr, include)] = result
                     self.active.remove(current)
                     stack.pop()
                     value = result
@@ -341,7 +322,7 @@ class _Normalizer:
                 if child in self.active:
                     raise InvalidJaxprError(child_path, "cyclic nested jaxpr")
                 # 同一对象进入不同求导范围时不可共用结果，避免漏比或多比规则。
-                key = (child, self._scope(child_path))
+                key = (child, self._include_derivative_rules(child_path))
                 value = self.scoped_cache.get(key)
                 if value is None:
                     push(child, child_path)
@@ -379,7 +360,7 @@ class _Normalizer:
         return rebound
 
     def _jit_bindings(
-        self, eq: core.JaxprEqn, output_order: Sequence[int], path: str, issues: list[Issue]
+        self, eq: core.JaxprEqn, output_order: Sequence[int], path: str
     ) -> NormalizationTask[core.JaxprEqn]:
         """调用输入、输出和分片/布局/donation 描述同步置换，调用边界仍保留。"""
         # 参数集合按锁定的 JAX 0.11.2 核对：出现未知或缺失参数时明确失败，
@@ -422,7 +403,7 @@ class _Normalizer:
         # 父图实参、子图形参及逐端口元数据必须采用同一置换，才能保持调用语义。
         child = self._rebind_outputs(child, output_order)
         normalized = yield child, f"{path}.params.jaxpr"
-        input_order = self._capture_order(normalized, len(eq.invars), path, issues)
+        input_order = self._capture_order(normalized, len(eq.invars), path)
         params["jaxpr"] = self._rebind_inputs(normalized.jaxpr, input_order)
         for name in ("in_shardings", "in_layouts", "donated_invars"):
             params[name] = tuple(params[name][i] for i in input_order)
@@ -433,7 +414,7 @@ class _Normalizer:
         )
 
     def _capture_order(
-        self, result: Canonicalized, count: int, path: str, issues: list[Issue], start: int = 0
+        self, result: Canonicalized, count: int, path: str, start: int = 0
     ) -> tuple[int, ...]:
         """按规范子图的首次使用位置排列捕获前缀，不能顺带改变 carry 位置。"""
         slots = {}
@@ -461,7 +442,7 @@ class _Normalizer:
         return (*used, *self._free_slots(unused, path))
 
     def _shard_bindings(
-        self, eq: core.JaxprEqn, output_order: Sequence[int], path: str, issues: list[Issue]
+        self, eq: core.JaxprEqn, output_order: Sequence[int], path: str
     ) -> NormalizationTask[core.JaxprEqn]:
         """分片边界的私有端口同步置换，轴环境和逐位置 spec 都保持绑定。"""
         expected = {"jaxpr", "mesh", "in_specs", "out_specs", "check_vma", "newly_manual_axes"}
@@ -486,7 +467,7 @@ class _Normalizer:
             config._check_vma(params["check_vma"]),
         ):
             normalized = yield child, f"{path}.params.jaxpr"
-        inputs = self._capture_order(normalized, len(eq.invars), path, issues)
+        inputs = self._capture_order(normalized, len(eq.invars), path)
         params["jaxpr"] = self._rebind_inputs(normalized.jaxpr, inputs)
         params["in_specs"] = tuple(params["in_specs"][i] for i in inputs)
         params["out_specs"] = tuple(params["out_specs"][i] for i in output_order)
@@ -497,7 +478,7 @@ class _Normalizer:
         )
 
     def _loop_bindings(
-        self, eq: core.JaxprEqn, path: str, issues: list[Issue], uses: Mapping[core.Var, _UsePath]
+        self, eq: core.JaxprEqn, path: str, uses: Mapping[core.Var, _UsePath]
     ) -> NormalizationTask[core.JaxprEqn]:
         """同步循环捕获接口，分别处理 scan 的角色树与 while 的两组常量。
 
@@ -549,9 +530,9 @@ class _Normalizer:
             )
             body = self._rebind_outputs(self._rebind_inputs(body, initial_order), out_order)
             normalized = yield body, f"{path}.params.jaxpr"
-            captures = self._capture_order(normalized, nc, path, issues)
+            captures = self._capture_order(normalized, nc, path)
             xs_order = self._capture_order(
-                normalized, len(eq.invars) - nc - nk, path, issues, start=nc + nk
+                normalized, len(eq.invars) - nc - nk, path, start=nc + nk
             )
             order = (*captures, *(nc + i for i in carry_order), *xs_order)
             # body 的 carry 已调整一次，因此这里只再排列捕获与 xs。
@@ -591,8 +572,8 @@ class _Normalizer:
         body = self._rebind_outputs(body, carry_order)
         normalized_cond = yield condition, f"{path}.params.cond_jaxpr"
         normalized_body = yield body, f"{path}.params.body_jaxpr"
-        cond_order = self._capture_order(normalized_cond, nc, f"{path}.condition", issues)
-        body_order = self._capture_order(normalized_body, nb, f"{path}.body", issues)
+        cond_order = self._capture_order(normalized_cond, nc, f"{path}.condition")
+        body_order = self._capture_order(normalized_body, nb, f"{path}.body")
         params["cond_jaxpr"] = self._rebind_inputs(
             normalized_cond.jaxpr, (*cond_order, *range(nc, nc + carry_count))
         )
@@ -610,7 +591,6 @@ class _Normalizer:
         self,
         eq: core.JaxprEqn,
         path: str,
-        issues: list[Issue],
         output_order: Sequence[int] | None = None,
     ) -> NormalizationTask[core.JaxprEqn]:
         """按分支中的实际使用顺序，同步置换 cond 实参与全部分支形参。
@@ -682,7 +662,9 @@ class _Normalizer:
         # 中复用同一次结果，避免重复物化并保证两轮参数一致。
         params = self.semantic_views.get(eq)
         if params is None:
-            params = semantic_parameters(eq, scope=self._scope(eq_path), parent=parent)
+            params = semantic_parameters(
+                eq, include_derivative_rules=self._include_derivative_rules(eq_path), parent=parent
+            )
         self.semantic_views[eq] = params
         for name, value in sorted(params.items()):
             # jit 的函数名只用于诊断；比较键中排除它，返回的方程仍保留原参数。
@@ -729,7 +711,6 @@ class _Normalizer:
         extra_predecessors: dict[int, list[int]] = {}
         effect_roots: list[int] = []
         previous_ordered: int | None = None
-        issues: list[Issue] = []
 
         # named-axis effect 表示所需的轴环境，NoDCEEffect 对应保留计算的标记。
         # 这里只接受已适配的这两类；未知 effect 即使出现在未使用分支也要拒绝。
@@ -784,19 +765,13 @@ class _Normalizer:
                     eq, range(len(eq.outvars)), uses, f"{path}.eqns[{i}].results"
                 )
                 if eq.primitive is pjit.jit_p:
-                    eq = yield from self._jit_bindings(
-                        eq, output_order, f"{path}.eqns[{i}]", issues
-                    )
+                    eq = yield from self._jit_bindings(eq, output_order, f"{path}.eqns[{i}]")
                 elif eq.primitive is shard_map.shard_map_p:
-                    eq = yield from self._shard_bindings(
-                        eq, output_order, f"{path}.eqns[{i}]", issues
-                    )
+                    eq = yield from self._shard_bindings(eq, output_order, f"{path}.eqns[{i}]")
                 else:
-                    eq = yield from self._cond_bindings(
-                        eq, f"{path}.eqns[{i}]", issues, output_order
-                    )
+                    eq = yield from self._cond_bindings(eq, f"{path}.eqns[{i}]", output_order)
             elif eq.primitive in (lax.scan_p, lax.while_p):
-                eq = yield from self._loop_bindings(eq, f"{path}.eqns[{i}]", issues, uses)
+                eq = yield from self._loop_bindings(eq, f"{path}.eqns[{i}]", uses)
             equations[i] = eq
             if i in node_paths:
                 parent_path = node_paths[i]
@@ -869,10 +844,8 @@ class _Normalizer:
             return ("result", identifiers[index], port)
 
         def nested(child: core.Jaxpr, child_path: str) -> Canonicalized:
-            """在子图边界内独立规范化；子图部分完成会使整个比较也不完整。"""
-            result = self.scoped_cache[(child, self._scope(child_path))]
-            issues.extend(result.issues)
-            return result
+            """在子图边界内独立规范化；子图结果直接参与当前区域的编码。"""
+            return self.scoped_cache[(child, self._include_derivative_rules(child_path))]
 
         encoder = Encoder(nested, reference)
         frozen_params = []
@@ -912,21 +885,19 @@ class _Normalizer:
             frozen_params.append(tuple(encoded_params))
             # 子图已由工作栈处理；此处只把参数中的子图替换成对应的新 jaxpr。
             # 没有需要替换的子图时，复用原方程对象，不修改原输入图。
+            # 同一方程里的所有子图沿用同一范围；rules 内部固定只看前向。
+            include_rules = self._include_derivative_rules(eq_path)
             params = replace_nested(
                 eq.params,
-                lambda child, eq_path=eq_path: (
-                    self.scoped_cache[(child, self._scope(eq_path))].jaxpr
-                ),
+                lambda child, include=include_rules: self.scoped_cache[(child, include)].jaxpr,
             )
             new_eq = eq if params is eq.params else eq.replace(params=params)
             new_equations.append(new_eq)
             self.semantic_views[new_eq] = {
                 key: replace_nested(
                     value,
-                    lambda child, key=key, eq_path=eq_path: (
-                        self.scoped_cache[
-                            (child, "primal" if key == "rules" else self._scope(eq_path))
-                        ].jaxpr
+                    lambda child, key=key, include=include_rules: (
+                        self.scoped_cache[(child, False if key == "rules" else include)].jaxpr
                     ),
                 )
                 for key, value in self.semantic_views[eq].items()
@@ -1004,8 +975,7 @@ class _Normalizer:
             core.check_jaxpr(reordered)
         except (core.JaxprTypeError, TypeError, ValueError, NameError) as exc:
             raise InvalidJaxprError(path, f"JAX type check failed: {exc}") from exc
-        # 共享子图可能被多处引用，相同 issue 只保留首次出现；变量映射覆盖输入、
-        # 常量和方程结果，供对应关系模块把规范引用还原到原始绑定。
+        # 变量映射覆盖输入、常量和方程结果，供对应关系模块把规范引用还原到原始绑定。
         return Canonicalized(
             reordered,
             form,
@@ -1014,13 +984,16 @@ class _Normalizer:
             tuple(depths),
             unused,
             unused_constants,
-            tuple(dict.fromkeys(issues)),
             MappingProxyType({v: reference(v) for v in (*inputs, *constants, *producers)}),
+            include_derivative_rules=self._include_derivative_rules(path),
         )
 
 
 def canonicalize(
-    jaxpr: core.Jaxpr, *, derivative_scope: str = "all", search_budget: int = DEFAULT_SEARCH_BUDGET
+    jaxpr: core.Jaxpr,
+    *,
+    include_derivative_rules: bool = True,
+    search_budget: int = DEFAULT_SEARCH_BUDGET,
 ) -> Canonicalized:
     """规范化一个包含常量绑定的 CPU jaxpr，保留操作及其依赖关系。
 
@@ -1031,9 +1004,10 @@ def canonicalize(
     调用方需保持追踪上下文一致，并另行核对展平前的函数输入输出 pytree。
     依赖链、嵌套区域和参数使用显式栈；JAX 自身的检查仍可能受其资源限制。
 
-    derivative_scope="all" 物化已适配的注册一阶规则；"primal" 仅比较前向。
-    search_budget 分别用于内部槽位候选搜索和每次无根图搜索；超限抛出
-    ComparisonBudgetError，不返回尚未证明为规范形式的局部最优结果。
+    include_derivative_rules=True 时把 custom_jvp / custom_vjp 携带的一阶
+    规则也物化进比较；False 只比较普通前向调用。search_budget 分别用于
+    内部槽位候选搜索和每次无根图搜索；超限抛出 ComparisonBudgetError，
+    不返回尚未证明是规范形式的局部最优结果。
     """
     try:
         if (jax.__version__, jaxlib.__version__) != ("0.11.2", "0.11.2"):
@@ -1042,8 +1016,8 @@ def canonicalize(
                 "IR adapter requires audited JAX/jaxlib 0.11.2; "
                 "run the version upgrade validation before extending support",
             )
-        if derivative_scope not in ("all", "primal"):
-            raise ValueError("derivative_scope must be all or primal")
+        if type(include_derivative_rules) is not bool:
+            raise ValueError("include_derivative_rules must be a bool")
         if type(search_budget) is not int or search_budget < 1:
             raise ValueError("search_budget must be a positive integer")
         # 每个待办项是一段内部槽位选择。重跑到下一处歧义时枚举所有选择，
@@ -1062,7 +1036,7 @@ def canonicalize(
                     used=attempts,
                     limit=search_budget,
                 )
-            normalizer = _Normalizer(derivative_scope, search_budget, decisions)
+            normalizer = _Normalizer(include_derivative_rules, search_budget, decisions)
             try:
                 result = normalizer.normalize(jaxpr, "jaxpr")
             except _AmbiguousSlots as choice:
@@ -1090,7 +1064,7 @@ def canonicalize(
                 lineage=MappingProxyType(dict(normalizer.lineage)),
                 regions=MappingProxyType(dict(normalizer.cache)),
                 semantic_views=MappingProxyType(dict(normalizer.semantic_views)),
-                derivative_scope=derivative_scope,
+                include_derivative_rules=include_derivative_rules,
             )
             # 仅一个候选时省去大图排序键；出现第二个候选后才需要比较完整键。
             if best is None:
@@ -1149,7 +1123,7 @@ def compare_jaxprs(
     left: core.Jaxpr,
     right: core.Jaxpr,
     *,
-    derivative_scope: str = "all",
+    include_derivative_rules: bool = True,
     search_budget: int = DEFAULT_SEARCH_BUDGET,
 ) -> Comparison:
     """结构阶段诊断：返回 equivalent/different；未完成检查直接抛出异常。
@@ -1159,20 +1133,18 @@ def compare_jaxprs(
     different 仅表示完整图结构不同，不提供数学不等价结论。
     完整数学比较请使用 compare_algebraic_jaxprs 或默认 compare_functions。
     """
-    if derivative_scope not in ("all", "primal"):
-        raise ValueError("derivative_scope must be all or primal")
+    if type(include_derivative_rules) is not bool:
+        raise ValueError("include_derivative_rules must be a bool")
     if type(search_budget) is not int or search_budget < 1:
         raise ValueError("search_budget must be a positive integer")
     normalized = []
     for side, graph in (("left", left), ("right", right)):
         try:
             result = canonicalize(
-                graph, derivative_scope=derivative_scope, search_budget=search_budget
+                graph,
+                include_derivative_rules=include_derivative_rules,
+                search_budget=search_budget,
             )
-            if not result.complete:
-                # 部分完成不再是正常结果：取首个 issue 转成显式异常并补充侧别路径。
-                issue = result.issues[0]
-                raise UnsupportedJaxprError(issue.path, issue.reason)
             normalized.append(result)
         except ComparisonError as exc:
             raise exc.at(side) from exc
@@ -1186,7 +1158,9 @@ def compare_jaxprs(
         correspondence = None
         if found is None:
             correspondence = build_correspondence(left, right, a, b)
-            verify_correspondence(left, right, correspondence, derivative_scope=derivative_scope)
+            verify_correspondence(
+                left, right, correspondence, include_derivative_rules=include_derivative_rules
+            )
     except ComparisonError:
         # 已分类的比较错误保留原类型和诊断；其余异常包装成内部错误，保留异常链。
         raise

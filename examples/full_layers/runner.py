@@ -158,7 +158,7 @@ def verify(profile, *, family="glm5", samples=3):
             normalized = (report.left, report.right)
             executables = []
             for form in normalized:
-                assert form is not None and form.complete
+                assert form is not None
                 core.check_jaxpr(form.jaxpr)
                 # 幂等：再次规范化必须得到同一图，避免表示不稳定。
                 assert canonicalize(form.jaxpr).graph == form.graph

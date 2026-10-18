@@ -68,7 +68,9 @@ def test_original_layer_and_algebraic_candidates(profile, dtype, name):
         modes=("forward", "jvp", "vjp"),
         check_cpu=True,
     )
-    assert report.status == Status.EQUIVALENT, [(m.mode, m.issues) for m in report.modes]
+    assert report.status == Status.EQUIVALENT, [
+        (m.mode, m.status, m.difference) for m in report.modes
+    ]
     assert report.cpu_compiled
     for mode in report.modes:
         assert mode.equivalence_kind == "algebraic"
@@ -105,7 +107,9 @@ def test_full_original_sinkhorn_context(name, dtype):
     args = context_inputs((1, 1, 4, 8), dtype, 17)
     left, right = in_context(original().hc_post), in_context(getattr(candidates, name))
     report = compare_functions(left, right, *args, modes=("forward", "jvp", "vjp"), check_cpu=True)
-    assert report.status == Status.EQUIVALENT, [(m.mode, m.issues) for m in report.modes]
+    assert report.status == Status.EQUIVALENT, [
+        (m.mode, m.status, m.difference) for m in report.modes
+    ]
     assert all("common_jit" in mode.algebra.rules for mode in report.modes)
     for a, b in zip(jax.tree.leaves(left(*args)), jax.tree.leaves(right(*args)), strict=True):
         check_close(a, b)
@@ -115,7 +119,7 @@ def test_real_dimensions_in_full_original_context():
     args = context_inputs((1, 1, 4, 5120), jnp.bfloat16, 53)
     left, right = in_context(original().hc_post), in_context(candidates.post_matmul)
     report = compare_functions(left, right, *args, modes=("forward",), check_cpu=True)
-    assert report.status == Status.EQUIVALENT, report.modes[0].issues
+    assert report.status == Status.EQUIVALENT, report.modes[0]
     for a, b in zip(jax.tree.leaves(left(*args)), jax.tree.leaves(right(*args)), strict=True):
         check_close(a, b)
 

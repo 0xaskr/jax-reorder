@@ -52,7 +52,7 @@ def test_common_nonlinear_call_preserves_definition_and_limits_work():
 
     x = jnp.arange(12, dtype=jnp.float32).reshape(3, 4) / 12
     result = compare_functions(left, right, x, jnp.float32(2), jnp.float32(3))
-    assert result.status == Status.EQUIVALENT, result.modes[0].issues
+    assert result.status == Status.EQUIVALENT, result.modes[0]
     mode = result.modes[0]
     # common_jit 表示公共调用被整体当作一个符号定义，而不是逐次展开。
     assert "common_jit" in mode.algebra.rules

@@ -1,8 +1,9 @@
-"""预算受控的 SymPy 化简与恒等查询。
+"""受预算约束的 SymPy 化简和恒等查询。
 
-这里只包含不依赖 SymbolicBuilder/worker 的纯表达式操作：显式展开预估、化简、
-ArrayExpr 兼容性判断、恒等比较、定义条件规范化与坐标级反例符号化。
-trusted 的 worker 协议和 symbolic 的构造器共用本模块，避免二者互相导入。
+这里放的是纯表达式操作，不依赖 SymbolicBuilder 或 worker：展开成本预估、
+化简、ArrayExpr 兼容性判断、恒等比较、定义条件规范化，以及把坐标级反例
+符号化。trusted 的 worker 协议和 symbolic 的构造器共用这些函数，避免两者
+互相导入。
 """
 
 from __future__ import annotations

@@ -23,13 +23,13 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-"""把已通过结构校验的 JAX 图构造成保持 shape 的 SymPy 表达式。
+"""把已通过结构校验的 JAX 图构造成带 shape 的 SymPy 表达式。
 
 沿用 jax2sympy 的 SSA 遍历和逐点映射：每个输出端口表示为在自由坐标上取值
-的 Indexed/Sum 表达式，同时保存原始定义条件、有限性事实和来源路径。
-这里只负责忠实构造与显式拒绝，不做数学判断；化简和恒等查询由
-algebra.trusted 交给可信 SymPy。未适配的原语、区域或 dtype 必须报错，
-不能为了得到结论而丢弃语义。
+的 Indexed 或 Sum 表达式，同时保存原始定义条件、有限性事实和来源路径。
+本模块只负责忠实构造和显式拒绝，不做数学判断；化简和恒等查询交给
+algebra.trusted 里的 SymPy。未适配的原语、区域或 dtype 必须报错，不能为了
+得出结论而丢掉语义。
 """
 
 from __future__ import annotations

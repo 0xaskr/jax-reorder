@@ -1,8 +1,10 @@
-"""比较与代数适配共享的参数视图。
+"""给原语参数提供一处统一的“比较视图”。
 
-本模块把原语参数转换成供语义编码、对应校验和代数冻结使用的视图，并把注册
-的一阶自定义求导规则物化成可比较的子图。它属于 core 层，不依赖 algebra 或
-functions，避免上层直接导入其他模块的私有辅助函数。
+比较编码、对应校验和代数冻结都要看同一份参数，各写一份迟早会走样，所以集中
+到这里：parameter_view 输出可精确比较的编码，并把嵌套子图登记成路径；
+semantic_parameters 处理自定义求导调用的参数，需要时物化一阶规则。
+本模块属于 core，不依赖 algebra 或 functions，避免上层去 import 别的模块的
+私有辅助函数。
 """
 
 from __future__ import annotations
@@ -29,15 +31,15 @@ def parameter_view(
     inputs: Sequence[int] | None = None,
     outputs: Sequence[int] | None = None,
     parameters: Mapping[str, Any] | None = None,
-    derivative_scope: str = "all",
+    include_derivative_rules: bool = True,
     parent: core.Jaxpr | None = None,
 ) -> tuple[tuple[tuple[str, Frozen], ...], dict[str, core.Jaxpr]]:
     """保留参数内容，用子图路径作占位并另行交给图校验器。
 
     不读取规范图的参数编码。jit 名称和 reduce callable 是锁定版本中
     已审查的两个例外；其余值一律由完整编码检查。parameters 可传入已物化
-    的语义视图；parent 提供捕获常量所在的原始区域；derivative_scope 控制
-    规则适配器展开到什么范围。
+    的语义视图；parent 提供捕获常量所在的原始区域；
+    include_derivative_rules 控制要不要物化 custom_jvp / custom_vjp 的规则。
 
     inputs/outputs 是从左侧槽位到当前右侧槽位的映射，只用于把右侧的逐位置
     元数据投影到左侧顺序。返回参数编码及“参数路径 → 原始子图”的映射。
@@ -53,7 +55,9 @@ def parameter_view(
     encoder = Encoder(nested, variable)
     values = []
     params = (
-        semantic_parameters(equation, scope=derivative_scope, parent=parent)
+        semantic_parameters(
+            equation, include_derivative_rules=include_derivative_rules, parent=parent
+        )
         if parameters is None
         else parameters
     )
@@ -95,14 +99,18 @@ def parameter_view(
 
 
 def semantic_parameters(
-    equation: core.JaxprEqn, *, scope: str = "all", parent: core.Jaxpr | None = None
+    equation: core.JaxprEqn,
+    *,
+    include_derivative_rules: bool = True,
+    parent: core.Jaxpr | None = None,
 ) -> Parameters:
     """已知 callable 展开为语义图；其余原语参数原样交给通用编码器。
 
     返回值仅供比较使用，原方程仍保留 callable 以支持执行和 JAX 变换。
-    parent 提供捕获常量的原始绑定；scope 由调用入口约束为 all 或 primal。
+    parent 提供捕获常量的原始绑定；include_derivative_rules=False 时只比较
+    普通前向调用。
     custom 调用的返回视图固定包含 call_jaxpr、num_consts、symbolic_zeros，
-    scope="all" 时再附加物化的一阶 rules；参数模式变化时明确拒绝。
+    为 True 时再附加物化的一阶 rules；参数模式变化时明确拒绝。
     """
     if equation.primitive not in CUSTOM_PRIMITIVES:
         return equation.params
@@ -127,10 +135,10 @@ def semantic_parameters(
         or len(p["call_jaxpr"].outvars) != len(equation.outvars)
     ):
         raise InvalidJaxprError("derivative", "invalid custom derivative interface")
-    # 返回的是比较视图，不改 equation.params。all 展开注册的一阶规则；primal
-    # 只比较当前调用的前向语义，供已经显式展开 JVP/VJP 的函数模式等路径使用。
+    # 返回的是比较视图，不改 equation.params。True 时物化一阶规则；False 只
+    # 比较当前调用的前向语义，供已经显式展开 JVP/VJP 的函数模式等路径使用。
     result = {name: p[name] for name in ("call_jaxpr", "num_consts", "symbolic_zeros")}
-    if scope == "all":
+    if include_derivative_rules:
         try:
             result["rules"] = (
                 _jvp_rules(p, equation, parent)

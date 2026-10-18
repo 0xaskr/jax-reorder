@@ -1,9 +1,9 @@
-"""理想实数解释下的索引代数比较；不改变原有结构比较入口。
+"""代数比较的编排层：结构能对上就结束，对不上再交给 SymPy。
 
-本模块是代数后端的编排层：先复用结构等价结论，再对结构不同的图做完整语义
-校验，把图和共同调用冻结后交给独立 SymPy worker 判定，最后汇总结果。
-数学结论只来自 worker；本模块不执行 JAX 数组，也不自行推导恒等式。
-结果对象只表示已完成的结构等价、数学等价或数学不等价；未完成与失败以异常报告。
+流程是：先做结构比较，结构等价就直接返回，不进入数学路径，也不加浮点警告；
+结构不同时再核对输入输出契约、找出两侧共同且完整相同的纯 JIT 调用，把图
+冻结后交给独立 worker 判定，最后汇总成结果。数学结论只来自 worker，本模块
+不执行 JAX 数组，也不自己推导恒等式。未完成和失败都用异常报告。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from jax._src import core
 
-from ..core.canonical import Issue, Status, canonicalize, compare_jaxprs
+from ..core.canonical import canonicalize, compare_jaxprs
 from ..core.correspondence import GraphCorrespondence, build_correspondence
 from ..errors import (
     ComparisonContractError,
@@ -23,6 +23,7 @@ from ..errors import (
     ComparisonStage,
     UnsupportedJaxprError,
 )
+from ..status import Status
 from .adapter.calls import CommonCalls
 from .budget import Budget, validate_timeout
 
@@ -57,7 +58,6 @@ class AlgebraComparison:
     """
 
     status: Status
-    issues: tuple[Issue, ...] = ()
     rules: tuple[str, ...] = ()
     assumptions: tuple[str, ...] = ASSUMPTIONS
     warnings: tuple[str, ...] = (FLOAT_WARNING,)
@@ -89,18 +89,12 @@ class AlgebraComparison:
 def _prepare(graph: core.Jaxpr) -> tuple[core.Jaxpr, GraphCorrespondence]:
     """完成全图语义检查，并生成原图到区域适配图的结构对应证据。
 
-    第一次规范化确认没有未知语义或未完成部分，并得到可执行图；
-    第二次规范化适配后的 jaxpr，为 build_correspondence 提供适配图一侧的
-    来源记录（lineage）和区域视图。原图索引与适配图索引不能混用。
+    第一次规范化确认没有未知语义，并得到可执行图；第二次规范化适配后的
+    jaxpr，为 build_correspondence 提供适配图一侧的来源记录（lineage）和
+    区域视图。原图索引与适配图索引不能混用。
     """
-    normalized = canonicalize(graph, derivative_scope="primal")
-    if not normalized.complete:
-        issue = normalized.issues[0]
-        raise UnsupportedJaxprError(issue.path, issue.reason)
-    again = canonicalize(normalized.jaxpr, derivative_scope="primal")
-    if not again.complete:
-        issue = again.issues[0]
-        raise UnsupportedJaxprError(issue.path, issue.reason)
+    normalized = canonicalize(graph, include_derivative_rules=False)
+    again = canonicalize(normalized.jaxpr, include_derivative_rules=False)
     correspondence = build_correspondence(graph, normalized.jaxpr, normalized, again)
     return normalized.jaxpr, correspondence
 
@@ -125,7 +119,7 @@ def compare_algebraic_jaxprs(
 
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
-    structural = compare_jaxprs(left, right, derivative_scope="primal")
+    structural = compare_jaxprs(left, right, include_derivative_rules=False)
     if structural.status == Status.EQUIVALENT:
         return AlgebraComparison(
             Status.EQUIVALENT,

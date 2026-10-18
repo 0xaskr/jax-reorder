@@ -1,9 +1,9 @@
-"""把 cond/scan/while 区域绑定到与外围图相同的 SymPy 构造器。
+"""给 cond / scan / while 区域建立与外围图相同的符号绑定。
 
-区域实参、分支结果、carry 和序列切片都由同一个 SymbolicBuilder 构造，因此
-自由坐标、定义条件和有限性事实能穿过区域边界继续保留。一般 scan 只做有界
-符号展开，while 只接受能符号确定的终止；无法表达的区域明确抛出
-UnsupportedJaxprError，不猜测循环行为。
+区域实参、分支结果、carry 和序列切片都用同一个 SymbolicBuilder 构造，
+所以自由坐标、定义条件和有限性事实能穿过区域边界继续保留。一般 scan 只做
+有界符号展开；while 只接受能符号确定终止的情况。表达不了的区域直接抛
+UnsupportedJaxprError，不猜循环行为。
 """
 
 from __future__ import annotations

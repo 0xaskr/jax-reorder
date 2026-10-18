@@ -1,4 +1,8 @@
-"""符号层读取的最小图接口，兼容 JAX 图与隔离 worker 的冻结对象。"""
+"""符号层读取图所需的最小接口，同时兼容真实 JAX 图和 worker 里的冻结对象。
+
+用 Protocol 描述字段，是为了让 builder 和隔离 worker 共用同一套读取代码；
+这里只声明形状，不包含任何逻辑。
+"""
 
 from collections.abc import Sequence
 from typing import Any, Protocol

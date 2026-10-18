@@ -41,7 +41,7 @@ def test_changed_coordinate_maps_are_inequivalent(left, right):
     """下标映射改变即为不同函数；负结论必须由输出坐标查询支撑。"""
     spec = jax.ShapeDtypeStruct((6,), jnp.float32)
     mode = compare_functions(left, right, spec).modes[0]
-    assert mode.status == Status.INEQUIVALENT, mode.issues
+    assert mode.status == Status.INEQUIVALENT, mode
     # 要求至少一条 output_coordinate 作用域的查询返回 False，排除靠不相关查询蒙对。
     assert any(
         q.answer is False and q.scope.startswith("output_coordinate")
@@ -54,7 +54,7 @@ def test_same_coordinate_maps_still_allow_algebraic_rewrites(view):
     """只要两侧视图坐标映射相同，加法的代数改写仍应被接受。"""
     spec = jax.ShapeDtypeStruct((6,), jnp.float32)
     mode = compare_functions(lambda x: view(x) + view(x), lambda x: 2 * view(x), spec).modes[0]
-    assert mode.status == Status.EQUIVALENT, mode.issues
+    assert mode.status == Status.EQUIVALENT, mode
 
 
 def test_large_matrix_association_still_uses_array_expressions():

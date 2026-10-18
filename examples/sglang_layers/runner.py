@@ -100,7 +100,7 @@ def verify(spec, profile, *, show_jaxpr=False):
             assert str(base_graph) == original
             normalized = (report.left, report.right)
             for item in normalized:
-                assert item is not None and item.complete
+                assert item is not None
                 core.check_jaxpr(item.jaxpr)
                 # 规范化幂等：再次规范化必须得到同一图。
                 assert canonicalize(item.jaxpr).graph == item.graph

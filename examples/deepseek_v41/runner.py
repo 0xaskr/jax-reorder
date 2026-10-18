@@ -46,7 +46,7 @@ def prove(left, right, args, expected=True):
 
     args 是四个输入口的抽象签名；expected=False 表示期望三种模式都判为
     different。返回 JSON 可序列化的记录：耗时、总状态、CPU 编译标志，以及
-    各模式的结构结论、代数状态、工作量、警告和问题列表。结论不符时抛出
+    各模式的结构结论、代数状态、工作量和警告。结论不符时抛出
     AssertionError，不写文件。
     """
     start = time.perf_counter()
@@ -54,7 +54,7 @@ def prove(left, right, args, expected=True):
     # 三种模式分别核对；前向等价不能代替求导图的结论。
     for mode in report.modes:
         if (mode.status == Status.EQUIVALENT) != expected:
-            raise AssertionError((right.__name__, mode.mode, mode.status, mode.issues))
+            raise AssertionError((right.__name__, mode.mode, mode.status, mode.difference))
     return {
         "seconds": time.perf_counter() - start,
         "status": report.status.value,
@@ -68,7 +68,6 @@ def prove(left, right, args, expected=True):
                 "kind": m.equivalence_kind,
                 "work": m.algebra.work if m.algebra else None,
                 "warnings": m.algebra.warnings if m.algebra else (),
-                "issues": [{"path": issue.path, "reason": issue.reason} for issue in m.issues],
             }
             for m in report.modes
         ],

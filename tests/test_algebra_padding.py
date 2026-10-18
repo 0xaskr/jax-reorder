@@ -37,7 +37,7 @@ def test_vjp_of_partitioned_reduction_reassembles_zero_extended_parts(cut, dtype
 
     a = jax.ShapeDtypeStruct((5,), dtype)
     result = compare_functions(jax.jit(whole), jax.jit(split), a, a, modes=("vjp",))
-    assert result.status == Status.EQUIVALENT, result.modes[0].issues
+    assert result.status == Status.EQUIVALENT, result.modes[0]
 
 
 @pytest.mark.parametrize("cut", [1, 3])

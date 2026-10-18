@@ -67,7 +67,7 @@ worker 用独立失败消息传输异常分类、诊断与远端 traceback；超
 这是时间/表达式工作量边界，没有新增进程 RSS 硬上限。
 
 `AlgebraComparison` 只记录当前判定路径：`correspondence` 保存结构快速路径的
-`GraphCorrespondence`，可用 `verify_correspondence(left, right, correspondence, derivative_scope="primal")`
+`GraphCorrespondence`，可用 `verify_correspondence(left, right, correspondence, include_derivative_rules=False)`
 复核；`backend_result` 保存 SymPy 的 backend/version、实际查询方法链、True/False/None、
 输出位置、条件、完整不透明定义、工作量和时间。查询记录用于审计，不是独立证书。
 数学路径的 `correspondence` 为 `None`；结构路径的 `backend_result` 为 `None`。

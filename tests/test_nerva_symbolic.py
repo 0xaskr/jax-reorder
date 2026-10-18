@@ -155,9 +155,9 @@ def test_whole_jax_pair_uses_public_comparator(pairs, name):
         patch.object(dispatch, "apply_primitive", forbidden),
     ):
         result = compare_functions(function, equivalent, *args, algebra_timeout=180)
-        assert result.status == Status.EQUIVALENT, result.modes[0].issues
+        assert result.status == Status.EQUIVALENT, result.modes[0]
         result = compare_functions(function, wrong, *args, algebra_timeout=180)
-        assert result.status == Status.INEQUIVALENT, result.modes[0].issues
+        assert result.status == Status.INEQUIVALENT, result.modes[0]
 
 
 @pytest.mark.parametrize(
@@ -173,4 +173,4 @@ def test_whole_jax_pair_uses_public_comparator(pairs, name):
 def test_independent_handwritten_formula(pairs, name, rewritten):
     original, _, args = pairs[name]
     result = compare_functions(original, rewritten, *args)
-    assert result.status == Status.EQUIVALENT, result.modes[0].issues
+    assert result.status == Status.EQUIVALENT, result.modes[0]

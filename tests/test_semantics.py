@@ -220,7 +220,6 @@ def test_partially_unused_multi_result_keeps_all_result_types():
     """只使用多结果中的一个输出时，另一个结果的 aval 仍要保留。"""
     graph = jax.make_jaxpr(lambda x: lax.top_k(x, 2)[0])(np.array([1, 3, 2], np.float32))
     normalized = canonicalize(graph)
-    assert normalized.complete
     # top_k 的两个结果（值与下标）都出现在节点输出中，但图只引用第 0 个。
     assert len(normalized.graph.nodes[0].outputs) == 2
     assert normalized.graph.outputs == (("result", 0, 0),)

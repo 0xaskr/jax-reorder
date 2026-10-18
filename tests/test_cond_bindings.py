@@ -265,7 +265,6 @@ def test_multiple_unused_slots_are_retained_and_matched():
     args = (jnp.bool_(True), jnp.float32(3), jnp.float32(1), jnp.float32(2))
     graph = jax.make_jaxpr(unused)(*args)
     result = canonicalize(graph)
-    assert result.complete
     assert len(result.graph.nodes[0].inputs) == 4
     assert compare_jaxprs(graph, graph).status == Status.EQUIVALENT
 
