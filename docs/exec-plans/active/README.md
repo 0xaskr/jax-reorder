@@ -1,5 +1,10 @@
 # 进行中的计划
 
+[JAX / Pallas 语义中间层：设计记录与后续计划](pallas-semantic-layer.md)：实施中。
+内部 `ProgramView`、符号 blocked 域、分片契约、存储版本、结构/normalized 证据链已落地；
+新增单 program 本地 DMA、信号量和 VMEM scratch 复用检查，定向验证通过；
+继续补齐 M1、通信和 JAX 迁移，完整目标尚未完成。暂不接 MLIR；边界和验证记录见该计划。
+
 [核心库类型信息补全](../completed/type-annotations.md)已完成并归档：异常阶段与分类改用 `StrEnum`，补全核心库签名、回调与容器类型，接入持续检查。分阶段 1957 项通过，1 项既有超时在修改前源码也可复现；详见验证记录。
 
 [代码架构分层重构](../completed/architecture-refactor.md)已完成并归档：`jax_reorder` 从 20 个平铺模块拆为 `core/`、`algebra/`（含 `adapter/`）与 `functions.py` 三层，拆解 symbolic/regions/trusted 导入环并新增分层守卫测试。顶层公共 API 不变，子模块路径按 0.2.0 破坏性调整；核心分组 465 passed，详见归档记录。
