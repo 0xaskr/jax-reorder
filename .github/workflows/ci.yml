@@ -28,7 +28,7 @@ jobs:
           uv run ruff format --check .
           uv run basedpyright
           uv run python tools/check_docs.py
-          uv run pytest -m 'not business and not stress'
+          uv run pytest -m 'not business and not stress and not pallas_communication'
           uv run python tests/adapter_inventory.py --report /tmp/adapter-inventory.json
           uv run python tests/lax_inventory.py
           uv run python examples/inspect_jaxpr.py
@@ -50,6 +50,25 @@ jobs:
             /tmp/business-layer-cases.json
             /tmp/full-layers.json
           if-no-files-found: warn
+  pallas-communication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.9"
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest -m pallas_communication --junitxml=/tmp/pallas-communication.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pallas-communication-evidence
+          path: /tmp/pallas-communication.xml
   collectives:
     runs-on: ubuntu-latest
     strategy:

@@ -109,6 +109,762 @@
       "out_specs": "builtins.tuple"
     }
   },
+  "pallas": {
+    "descriptor_fields": {
+      "GridMapping": [
+        "grid",
+        "grid_names",
+        "block_mappings",
+        "index_map_tree",
+        "index_map_avals",
+        "vmapped_dims",
+        "scratch_avals",
+        "num_index_operands",
+        "num_inputs",
+        "num_outputs",
+        "get_grid_indices",
+        "local_grid_env",
+        "debug"
+      ],
+      "BlockMapping": [
+        "block_shape",
+        "transformed_block_aval",
+        "index_map_jaxpr",
+        "index_map_out_tree",
+        "array_aval",
+        "origin",
+        "transforms",
+        "pipeline_mode",
+        "debug"
+      ],
+      "Blocked": [
+        "block_size"
+      ],
+      "NDIndexer": [
+        "indices",
+        "shape",
+        "int_indexer_shape",
+        "validate"
+      ],
+      "Slice": [
+        "start",
+        "size",
+        "stride"
+      ],
+      "TransformedRef": [
+        "ref",
+        "transforms"
+      ],
+      "CompilerParams": [
+        "dimension_semantics",
+        "allow_input_fusion",
+        "vmem_limit_bytes",
+        "collective_id",
+        "has_side_effects",
+        "flags",
+        "internal_scratch_in_bytes",
+        "serialization_format",
+        "disable_bounds_checks",
+        "disable_semaphore_checks",
+        "skip_device_barrier",
+        "allow_collective_id_without_custom_barrier",
+        "shape_invariant_numerics",
+        "use_tc_tiling_on_sc",
+        "needs_layout_passes",
+        "fuse_transposed_lhs_in_matmul",
+        "opt_level"
+      ]
+    },
+    "ref_slots": [
+      "inner_aval",
+      "memory_space",
+      "kind"
+    ],
+    "effect_bindings": [
+      [
+        "ReadEffect",
+        "Var"
+      ],
+      [
+        "WriteEffect",
+        "Var"
+      ]
+    ],
+    "index_map_source_type": "Jaxpr",
+    "primitive_parameters": {
+      "pallas_call": {
+        "compiler_params": "builtins.NoneType",
+        "cost_estimate": "builtins.NoneType",
+        "debug": "builtins.bool",
+        "grid_mapping": "jax._src.pallas.core.GridMapping",
+        "input_output_aliases": "builtins.tuple",
+        "interpret": "builtins.bool",
+        "jaxpr": "jax._src.core.Jaxpr",
+        "mesh": "builtins.NoneType",
+        "metadata": "builtins.NoneType",
+        "name": "builtins.NoneType",
+        "out_avals": "builtins.tuple"
+      },
+      "iota": {
+        "dimension": "builtins.int",
+        "dtype": "numpy.dtypes.Int32DType",
+        "shape": "builtins.tuple",
+        "sharding": "builtins.NoneType"
+      },
+      "program_id": {
+        "axis": "builtins.int"
+      },
+      "mul": {
+        "out_dtype": "builtins.NoneType"
+      },
+      "add": {},
+      "get": {
+        "tree": "jaxlib._jax.pytree.PyTreeDef"
+      },
+      "swap": {
+        "tree": "jaxlib._jax.pytree.PyTreeDef"
+      },
+      "lt": {},
+      "masked_load": {
+        "args_tree": "jaxlib._jax.pytree.PyTreeDef",
+        "cache_modifier": "builtins.NoneType",
+        "eviction_policy": "builtins.NoneType",
+        "is_volatile": "builtins.bool"
+      },
+      "masked_swap": {
+        "args_tree": "jaxlib._jax.pytree.PyTreeDef",
+        "eviction_policy": "builtins.NoneType"
+      },
+      "dma_start": {
+        "add": "builtins.bool",
+        "device_id_type": "jax._src.pallas.primitives.DeviceIdType",
+        "priority": "builtins.int",
+        "tree": "jaxlib._jax.pytree.PyTreeDef"
+      },
+      "dma_wait": {
+        "device_id_type": "jax._src.pallas.primitives.DeviceIdType",
+        "insert_dummy_device": "builtins.bool",
+        "is_wait_send": "builtins.bool",
+        "tree": "jaxlib._jax.pytree.PyTreeDef"
+      }
+    },
+    "grid_dimension_semantics": [
+      "parallel",
+      "core_parallel",
+      "subcore_parallel",
+      "arbitrary"
+    ],
+    "compiler_defaults": {
+      "dimension_semantics": null,
+      "allow_input_fusion": null,
+      "vmem_limit_bytes": null,
+      "collective_id": null,
+      "has_side_effects": false,
+      "flags": null,
+      "internal_scratch_in_bytes": null,
+      "serialization_format": 1,
+      "disable_bounds_checks": false,
+      "disable_semaphore_checks": false,
+      "skip_device_barrier": false,
+      "allow_collective_id_without_custom_barrier": false,
+      "shape_invariant_numerics": true,
+      "use_tc_tiling_on_sc": null,
+      "needs_layout_passes": true,
+      "fuse_transposed_lhs_in_matmul": false,
+      "opt_level": null
+    },
+    "scratch_refs": [
+      {
+        "dtype_type": "numpy.dtypes.Float32DType",
+        "shape": [
+          128
+        ],
+        "memory_space": "vmem",
+        "kind": null
+      },
+      {
+        "dtype_type": "jax._src.pallas.mosaic.core.DMASemaphore",
+        "shape": [],
+        "memory_space": "semaphore_mem",
+        "kind": null
+      }
+    ],
+    "dma_effect_ports": {
+      "dma_start": [
+        [
+          "ReadEffect",
+          0
+        ],
+        [
+          "WriteEffect",
+          1
+        ],
+        [
+          "WriteEffect",
+          2
+        ]
+      ],
+      "dma_wait": [
+        [
+          "ReadEffect",
+          0
+        ],
+        [
+          "WriteEffect",
+          1
+        ],
+        [
+          "WriteEffect",
+          2
+        ]
+      ]
+    },
+    "dma_tree_schemas": {
+      "whole": {
+        "dma_start": {
+          "node": "builtins.tuple",
+          "metadata": null,
+          "children": [
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            }
+          ]
+        },
+        "dma_wait": {
+          "node": "builtins.tuple",
+          "metadata": null,
+          "children": [
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            }
+          ]
+        }
+      },
+      "sliced": {
+        "dma_start": {
+          "node": "builtins.tuple",
+          "metadata": null,
+          "children": [
+            {
+              "node": "jax._src.state.types.TransformedRef",
+              "metadata": [],
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": [
+                    {
+                      "node": "jax._src.state.indexing.NDIndexer",
+                      "metadata": [
+                        {
+                          "node": "builtins.tuple",
+                          "metadata": null,
+                          "children": [
+                            {
+                              "node": "jax._src.indexing.Slice",
+                              "metadata": [
+                                128,
+                                128,
+                                1
+                              ],
+                              "children": [
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                },
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        [
+                          256
+                        ],
+                        []
+                      ],
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "node": "jax._src.state.types.TransformedRef",
+              "metadata": [],
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": [
+                    {
+                      "node": "jax._src.state.indexing.NDIndexer",
+                      "metadata": [
+                        {
+                          "node": "builtins.tuple",
+                          "metadata": null,
+                          "children": [
+                            {
+                              "node": "jax._src.indexing.Slice",
+                              "metadata": [
+                                0,
+                                128,
+                                1
+                              ],
+                              "children": [
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                },
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        [
+                          256
+                        ],
+                        []
+                      ],
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            }
+          ]
+        },
+        "dma_wait": {
+          "node": "builtins.tuple",
+          "metadata": null,
+          "children": [
+            {
+              "node": "jax._src.state.types.TransformedRef",
+              "metadata": [],
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": [
+                    {
+                      "node": "jax._src.state.indexing.NDIndexer",
+                      "metadata": [
+                        {
+                          "node": "builtins.tuple",
+                          "metadata": null,
+                          "children": [
+                            {
+                              "node": "jax._src.indexing.Slice",
+                              "metadata": [
+                                128,
+                                128,
+                                1
+                              ],
+                              "children": [
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                },
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        [
+                          256
+                        ],
+                        []
+                      ],
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "node": "jax._src.state.types.TransformedRef",
+              "metadata": [],
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": [
+                    {
+                      "node": "jax._src.state.indexing.NDIndexer",
+                      "metadata": [
+                        {
+                          "node": "builtins.tuple",
+                          "metadata": null,
+                          "children": [
+                            {
+                              "node": "jax._src.indexing.Slice",
+                              "metadata": [
+                                0,
+                                128,
+                                1
+                              ],
+                              "children": [
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                },
+                                {
+                                  "node": "builtins.NoneType",
+                                  "metadata": null,
+                                  "children": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        [
+                          256
+                        ],
+                        []
+                      ],
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.NoneType",
+              "metadata": null,
+              "children": []
+            }
+          ]
+        }
+      }
+    },
+    "remote_dma": [
+      {
+        "primitive": "axis_index",
+        "parameters": {
+          "axis_name": "builtins.str"
+        },
+        "tree": null,
+        "wait_flags": [
+          null,
+          null
+        ],
+        "effects": [
+          [
+            "NamedAxisEffect",
+            "workers"
+          ]
+        ]
+      },
+      {
+        "primitive": "dma_start",
+        "parameters": {
+          "add": "builtins.bool",
+          "device_id_type": "jax._src.pallas.primitives.DeviceIdType",
+          "priority": "builtins.int",
+          "tree": "jaxlib._jax.pytree.PyTreeDef"
+        },
+        "tree": {
+          "node": "builtins.tuple",
+          "metadata": null,
+          "children": [
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.tuple",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        "wait_flags": [
+          null,
+          null
+        ],
+        "effects": [
+          [
+            "ReadEffect",
+            0
+          ],
+          [
+            "WriteEffect",
+            1
+          ],
+          [
+            "WriteEffect",
+            2
+          ],
+          [
+            "WriteEffect",
+            3
+          ]
+        ]
+      },
+      {
+        "primitive": "dma_wait",
+        "parameters": {
+          "device_id_type": "jax._src.pallas.primitives.DeviceIdType",
+          "insert_dummy_device": "builtins.bool",
+          "is_wait_send": "builtins.bool",
+          "tree": "jaxlib._jax.pytree.PyTreeDef"
+        },
+        "tree": {
+          "node": "builtins.tuple",
+          "metadata": null,
+          "children": [
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.tuple",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        "wait_flags": [
+          true,
+          true
+        ],
+        "effects": [
+          [
+            "ReadEffect",
+            1
+          ],
+          [
+            "WriteEffect",
+            0
+          ],
+          [
+            "WriteEffect",
+            2
+          ],
+          [
+            "WriteEffect",
+            3
+          ]
+        ]
+      },
+      {
+        "primitive": "dma_wait",
+        "parameters": {
+          "device_id_type": "jax._src.pallas.primitives.DeviceIdType",
+          "insert_dummy_device": "builtins.bool",
+          "is_wait_send": "builtins.bool",
+          "tree": "jaxlib._jax.pytree.PyTreeDef"
+        },
+        "tree": {
+          "node": "builtins.tuple",
+          "metadata": null,
+          "children": [
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": null,
+              "metadata": null,
+              "children": []
+            },
+            {
+              "node": "builtins.tuple",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            }
+          ]
+        },
+        "wait_flags": [
+          false,
+          false
+        ],
+        "effects": [
+          [
+            "ReadEffect",
+            0
+          ],
+          [
+            "WriteEffect",
+            1
+          ],
+          [
+            "WriteEffect",
+            2
+          ],
+          [
+            "WriteEffect",
+            3
+          ]
+        ]
+      }
+    ]
+  },
   "public_lax": [
     [
       "abs",

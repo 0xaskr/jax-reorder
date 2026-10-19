@@ -61,6 +61,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
 markers = [
+    "pallas_communication: 官方 TPU interpreter 的隔离进程验证，独立 CI 串行运行",
     "business: 原始业务层、AI hardcode 候选及独立数值参照",
     "stress: 受控规模的深度、长链和高扇出压力",
 ]

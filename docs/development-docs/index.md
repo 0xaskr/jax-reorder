@@ -4,6 +4,7 @@
 
 | 主题 | 文档 |
 | --- | --- |
+| JAX / Pallas 等价比较：范围、共享语义层、接口与验证记录 | [pallas-jax-equivalence.md](pallas-jax-equivalence.md) |
 | 核心库类型边界、异常枚举与持续类型检查 | [type-annotations.md](type-annotations.md) |
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
 | 可信 SymPy 数学判等、定义条件与结果接口 | [algebraic-equivalence.md](algebraic-equivalence.md) |
