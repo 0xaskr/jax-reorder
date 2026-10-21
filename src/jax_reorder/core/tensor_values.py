@@ -152,6 +152,12 @@ def tensor_value(
         shape = tuple(input_shape[i] for i in permutation)
         if prod(shape) != prod(typ.shape):
             raise UnsupportedJaxprError(path, "reshape changes the number of elements")
+        if prod(shape) == 0:
+            # No output lane can observe a coordinate of an empty view. Keep
+            # the operand and its conditions, but use unreachable placeholders
+            # instead of dividing/modding by an empty axis. Consumers retain
+            # the actual empty shape and therefore never read these lanes.
+            return _substitute(args[0], {f"local:{i}": integer(0) for i in range(len(input_shape))})
         linear = add(
             *(
                 scale(coordinate("local", i), prod(typ.shape[i + 1 :]))

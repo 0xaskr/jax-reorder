@@ -39,7 +39,7 @@ from .model import (
     ValueRef,
 )
 from .storage import Piece, Span, Storage
-from .tensor_domain import TensorDomain
+from .tensor_domain import POINTWISE_PRIMITIVES, TensorDomain
 
 
 @dataclass(frozen=True)
@@ -534,6 +534,8 @@ def functionalize_call(call: PallasCallView, *, budget: AnalysisBudget) -> Memor
             if params["broadcast_dimensions"] != () or len(args) != 1:
                 raise UnsupportedJaxprError(loc, "only scalar-to-block broadcast is projected")
             value = args[0]
+        elif name not in POINTWISE_PRIMITIVES:
+            raise UnsupportedJaxprError(loc, "value operation requires a tensor coordinate rule")
         elif name in ("lt", "le", "gt", "ge", "eq", "ne") and all(
             isinstance(v, IndexExpr) for v in args
         ):

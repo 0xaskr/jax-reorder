@@ -22,7 +22,14 @@ import pytest
 from jax import lax
 from jax._src import core
 
-from jax_reorder import ComparisonContractError, CompilationError, Status, TraceError
+from jax_reorder import (
+    ComparisonContractError,
+    CompilationError,
+    CoreExecutionBinding,
+    Status,
+    TraceError,
+    UnsupportedJaxprError,
+)
 from jax_reorder.functions import compare_function_traces, compare_functions, trace_function
 
 
@@ -286,6 +293,47 @@ def test_mathematical_inequivalence_retains_structural_report_and_output_evidenc
     assert mode.algebra.backend_result.output == 0
     # 至少有一条查询返回 False，说明负结论有实际查询记录而不是默认值。
     assert any(query.answer is False for query in mode.algebra.backend_result.queries)
+
+
+@pytest.mark.parametrize(
+    ("equivalence", "modes"),
+    [("structural", ("forward",)), ("auto", ("jvp",)), ("auto", ("forward", "vjp"))],
+)
+def test_function_execution_is_restricted_to_forward_auto(equivalence, modes):
+    condition = CoreExecutionBinding((((0,),),))
+    argument = jax.ShapeDtypeStruct((), jnp.float32)
+
+    def must_not_trace(x):
+        raise AssertionError("inapplicable execution must be rejected before tracing")
+
+    with pytest.raises(ValueError, match="auto.*forward"):
+        compare_functions(
+            must_not_trace,
+            must_not_trace,
+            argument,
+            equivalence=equivalence,
+            modes=modes,
+            execution=condition,
+        )
+    for mode in modes:
+        if equivalence == "auto" and mode == "forward":
+            continue
+        traced = trace_function(lax.neg, argument, mode=mode)
+        with pytest.raises(ValueError, match="auto.*forward"):
+            compare_function_traces(traced, traced, equivalence=equivalence, execution=condition)
+
+
+@pytest.mark.parametrize("entry", ["function", "trace"])
+@pytest.mark.parametrize("execution", [True, CoreExecutionBinding((((0,),),))])
+def test_function_structural_shortcut_does_not_discard_execution(entry, execution):
+    argument = jax.ShapeDtypeStruct((), jnp.float32)
+    error = ValueError if execution is True else UnsupportedJaxprError
+    with pytest.raises(error, match="binding pair|requires a remote"):
+        if entry == "function":
+            compare_functions(lax.neg, lax.neg, argument, execution=execution)
+        else:
+            traced = trace_function(lax.neg, argument)
+            compare_function_traces(traced, traced, execution=execution)
 
 
 def test_inequivalence_cannot_hide_another_requested_mode_failure(monkeypatch):

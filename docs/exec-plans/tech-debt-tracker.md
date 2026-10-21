@@ -29,6 +29,7 @@
 | LAYER-001 | 公共 Pallas 结构入口与大图接口细化已接入；GLM5 absorbed Attention/Decoder 的 prefill/decode 四个真实配置在 search_budget=1 下通过完整结构比较，Wan/EPMoE 原图自比较通过。CPU 正常 lowering 仍拒绝 TPU 内核；自比较不计为任意改写候选认证 | P2 | 已解决 | [实际后端边界](../development-docs/full-attention.md#已确认的拒绝与未支持)、[接口细化](../development-docs/region-bindings.md) |
 | PALLAS-001 | 当前设备局部覆盖缺口：远端条件初始化、并行共享 staging、一般索引/路由/终止及物理布局；执行绑定、预算与源后端限制分别列明。core_map/mpmd_map、输入输出共享 HBM 暂不支持 | P1 | 进行中 | [准确范围](../development-docs/pallas/validation.md)、[当前计划](active/pallas-semantic-layer.md) |
 | PALLAS-002 | 第一版之外的全局扩展：一般多轴 mesh 跨设备值组装、动态路由/通信协议及多主机验证。有限单轴协议与多维 kernel grid 已有专用规则，不构成一般全局证明；这些缺口不阻塞设备局部图比较 | P2 | 待处理 | [通信范围](../development-docs/pallas/communication.md)、[通信验收](completed/communication-protocols.md) |
+| PALLAS-003 | 外层一维快速投影已按当前运算 shape 绑定 `global` 范围，两个公共入口恢复正常；设备轴范围与未知输入数据值域保留 | P1 | 已解决 | [坐标范围修复验收](completed/pallas-broadcast-coordinates.md) |
 | LAYER-002 | 原 FluxSingleTransformerBlock Explicit sharding 与 GLM5 单 head 配置被锁定 JAX 追踪拒绝；未篡改原计算绕过 | P2 | 待处理 | [原始拒绝回归](../../tests/test_full_attention.py) |
 | LAYER-003 | GLM5 稀疏 DSA、完整 MoE Decoder、其他配置和多主机/GPU/TPU 未验证 | P2 | 待处理 | [完整层范围](../development-docs/full-attention.md) |
 | DOC-001 | `.agents/README.md` 仍有 scaffold 旧描述；当前工作区该目录只读，本轮以 AGENTS/架构/开发文档为当前事实来源 | P2 | 待处理 | [项目入口](../../AGENTS.md)、[当前架构](../../ARCHITECTURE.md) |

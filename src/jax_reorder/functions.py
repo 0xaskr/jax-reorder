@@ -26,6 +26,7 @@ from .algebra import AlgebraComparison, compare_algebraic_jaxprs
 from .algebra.budget import Budget, validate_timeout
 from .core._typing import TreeDef
 from .core.canonical import Comparison, compare_jaxprs, difference
+from .core.core_execution import CoreExecutionBinding
 from .core.semantics import Encoder, Frozen, encoded_equal
 from .errors import (
     ComparisonContractError,
@@ -122,7 +123,7 @@ class ModeComparison:
     difference: str | None = None
     left: FunctionTrace | None = field(default=None, compare=False, repr=False)
     right: FunctionTrace | None = field(default=None, compare=False, repr=False)
-    # 只有 auto 模式下结构比较得出 different 才填；structural 模式始终是 None。
+    # auto 模式结构不同或显式请求 execution 时填；structural 模式始终是 None。
     algebra: AlgebraComparison | None = None
     # 等价是怎么来的：structural（整张图相同）或 algebraic（独立代数证明）。
     equivalence_kind: str | None = None
@@ -396,18 +397,27 @@ def compare_function_traces(
     equivalence: str = "auto",
     algebra_budget: int = 10000,
     algebra_timeout: float = 60.0,
+    execution: CoreExecutionBinding
+    | tuple[CoreExecutionBinding, CoreExecutionBinding]
+    | None = None,
 ) -> ModeComparison:
     """先核对两侧契约是否一致，再比较图，返回这个模式的结论。
 
     模式、环境（context）和函数签名必须完全一致，否则抛 ComparisonContractError：
     前提不同的两张图没法比，不能先比图再补说明。equivalence="auto" 时，
-    只有结构比较得出 different 才继续做代数证明。图比较固定不看
+    结构比较得出 different 才继续做代数证明；显式 execution 即使结构相同也会
+    检查远端协议并保存绑定证据。该参数只支持 auto + forward，单绑定用于两侧，
+    左右绑定对分别作用于对应来源。图比较固定不看
     custom_jvp / custom_vjp 携带的规则（include_derivative_rules=False），
     因为求导程序已经通过公开变换展开过了，不能从这次检查外推还没请求的
     高阶规则。比较中的 ComparisonError 会补上模式前缀后重新抛出。
     """
     if equivalence not in ("auto", "structural"):
         raise ValueError("equivalence must be auto or structural")
+    if execution is not None and (
+        equivalence != "auto" or left.mode != "forward" or right.mode != "forward"
+    ):
+        raise ValueError("execution requires equivalence='auto' and forward mode only")
     # 不管哪种模式都先校验预算和超时：参数错了就在入口报，而不是因为
     # structural 模式不查代数就悄悄跳过。
     Budget(algebra_budget)
@@ -431,12 +441,13 @@ def compare_function_traces(
         algebra = None
         status, difference_path = result.status, result.difference
         kind = "structural" if status == Status.EQUIVALENT else None
-        if equivalence == "auto" and status == Status.DIFFERENT:
+        if equivalence == "auto" and (status == Status.DIFFERENT or execution is not None):
             algebra = compare_algebraic_jaxprs(
                 left.jaxpr,
                 right.jaxpr,
                 algebra_budget=algebra_budget,
                 algebra_timeout=algebra_timeout,
+                execution=execution,
             )
             status = algebra.status
             kind = algebra.equivalence_kind
@@ -474,12 +485,17 @@ def compare_functions(
     equivalence: str = "auto",
     algebra_budget: int = 10000,
     algebra_timeout: float = 60.0,
+    execution: CoreExecutionBinding
+    | tuple[CoreExecutionBinding, CoreExecutionBinding]
+    | None = None,
 ) -> FunctionComparison:
     """对每个请求的模式分别追踪、核对契约、比较，最后汇总成一份报告。
 
     - equivalence="auto"：结构不同时再试理想实数范围内的代数证明；"structural" 只看结构。
     - algebra_budget / algebra_timeout：限制每个模式的代数查询次数和符号 worker 超时；
       浮点交换律之类的警告留在 algebra 报告里，不会丢。
+    - execution：远端单 core 的共用绑定或左右绑定对，只支持 auto + forward；
+      即使结构相同也检查协议，将执行条件保存在该模式的 algebra 报告中。
     - check_cpu：额外编译两侧的物化图，用来区分“CPU 后端不接受这张图”和“图本身不支持”；
       它不做数值采样，样本相等也不能当成结构结论。
     - right_args / right_kwargs 传 None 表示右侧复用左侧的调用签名；传空容器表示右侧确实没有参数。
@@ -495,6 +511,8 @@ def compare_functions(
     validate_timeout(algebra_timeout)
     if not modes or len(set(modes)) != len(modes) or any(mode not in MODES for mode in modes):
         raise ValueError("modes must contain distinct forward/jvp/vjp entries")
+    if execution is not None and (equivalence != "auto" or modes != ("forward",)):
+        raise ValueError("execution requires equivalence='auto' and forward mode only")
     results = []
     # 只有请求了检查、且追踪和编译都成功才保持 True；图不同也可能编译成功。
     compiled = check_cpu
@@ -544,6 +562,7 @@ def compare_functions(
                 equivalence=equivalence,
                 algebra_budget=algebra_budget,
                 algebra_timeout=algebra_timeout,
+                execution=execution,
             )
         )
     # 汇总取最保守的结论：任一模式 inequivalent 就整体 inequivalent；

@@ -15,7 +15,9 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
+import sympy as sp
 
 from jax_reorder import (
     ComparisonBudgetError,
@@ -25,6 +27,8 @@ from jax_reorder import (
     compare_algebraic_jaxprs,
     compare_functions,
 )
+from jax_reorder.algebra.expression import SymbolicTensor
+from jax_reorder.algebra.finiteness import Source
 
 
 def compare(left, right, shape, dtype=jnp.float32, **options):
@@ -41,6 +45,215 @@ def equivalent(left, right, shape, dtype=jnp.float32):
     assert result.equivalence_kind == "algebraic", result
     assert result.backend_result is not None
     return result
+
+
+BOOLEAN_SCALARS = ("max", "min", "lt", "le", "gt", "ge")
+
+
+def boolean_scalar(name, left, right, *, reference=False):
+    if not reference:
+        return getattr(jax.lax, name)(left, right)
+    return {
+        "max": lambda: left | right,
+        "min": lambda: left & right,
+        "lt": lambda: ~left & right,
+        "le": lambda: ~left | right,
+        "gt": lambda: left & ~right,
+        "ge": lambda: left | ~right,
+    }[name]()
+
+
+BOOLEAN_DOTS = {
+    "vector": ((4,), (4,), (((0,), (0,)), ((), ()))),
+    "empty": ((0,), (0,), (((0,), (0,)), ((), ()))),
+    "outer": ((2,), (3,), (((), ()), ((), ()))),
+    "batch": ((2, 3, 4), (2, 4, 5), (((2,), (1,)), ((0,), (0,)))),
+    "multiple": ((2, 3, 4), (4, 3, 5), (((1, 2), (1, 0)), ((), ()))),
+}
+
+
+def boolean_dot(kind, left, right, *, preferred=None, reference=False):
+    dimensions = BOOLEAN_DOTS[kind][2]
+    if not reference:
+        return jax.lax.dot_general(left, right, dimensions, preferred_element_type=preferred)
+    if kind in ("vector", "empty"):
+        axes = (0,)
+    elif kind == "outer":
+        left, right, axes = left[:, None], right[None, :], ()
+    elif kind == "batch":
+        left, right, axes = left[:, :, :, None], right[:, None, :, :], (2,)
+    else:
+        left, right, axes = left[:, :, :, None], right.transpose(1, 0, 2)[None, :, :, :], (1, 2)
+    if preferred is None or jnp.dtype(preferred).kind == "b":
+        product = left & right
+        return jnp.any(product, axis=axes) if axes else product
+    product = left.astype(preferred) * right.astype(preferred)
+    return jnp.sum(product, axis=axes, dtype=preferred) if axes else product
+
+
+@pytest.mark.parametrize("kind", BOOLEAN_DOTS)
+@pytest.mark.parametrize("preferred", [None, jnp.float32], ids=["boolean", "count"])
+def test_boolean_dot_preserves_contraction_geometry(kind, preferred):
+    left_shape, right_shape, dimensions = BOOLEAN_DOTS[kind]
+    signatures = tuple(
+        jax.ShapeDtypeStruct(shape, jnp.bool_) for shape in (left_shape, right_shape)
+    )
+
+    def function(left, right):
+        return boolean_dot(kind, left, right, preferred=preferred).astype(jnp.float32)
+
+    def reference(left, right):
+        return boolean_dot(kind, left, right, preferred=preferred, reference=True).astype(
+            jnp.float32
+        )
+
+    for candidate, status in (
+        (reference, Status.EQUIVALENT),
+        (lambda left, right: reference(left, right) + 1, Status.INEQUIVALENT),
+    ):
+        result = compare_algebraic_jaxprs(
+            *(jax.make_jaxpr(fn)(*signatures) for fn in (function, candidate))
+        )
+        assert result.status is status
+    inputs = tuple(
+        (np.arange(np.prod(shape)).reshape(shape) % 3 == index)
+        for index, shape in enumerate((left_shape, right_shape))
+    )
+    a, b = (value.astype(np.float32) if preferred is not None else value for value in inputs)
+    expected = (
+        np.stack([np.matmul(x, y) for x, y in zip(a, b, strict=True)])
+        if kind == "batch"
+        else np.tensordot(a, b, axes=dimensions[0])
+    ).astype(np.float32)
+    np.testing.assert_array_equal(jax.jit(function)(*inputs), expected)
+    np.testing.assert_array_equal(jax.jit(reference)(*inputs), expected)
+
+
+@pytest.mark.parametrize("preferred", [None, jnp.bool_, jnp.int32, jnp.float32])
+def test_boolean_dot_accumulator_preserves_or_versus_count(preferred):
+    expected = 1 if preferred is None or jnp.dtype(preferred).kind == "b" else 4
+
+    def function(x):
+        values = jnp.ones((4,), jnp.bool_)
+        return boolean_dot("vector", values, values, preferred=preferred).astype(jnp.float32)
+
+    for number, status in ((expected, Status.EQUIVALENT), (5 - expected, Status.INEQUIVALENT)):
+        _, _, result = compare(function, lambda x, number=number: jnp.float32(number), ())
+        assert result.status is status
+    assert jax.jit(function)(jnp.float32(0)) == expected
+
+
+def test_boolean_dot_charges_contraction_before_enumerating():
+    with pytest.raises(ComparisonBudgetError, match="need 128"):
+        compare(
+            lambda x: jnp.dot(x, x).astype(jnp.float32),
+            lambda x: jnp.float32(0),
+            (128,),
+            jnp.bool_,
+            algebra_budget=32,
+        )
+
+
+def test_boolean_dot_does_not_discard_definedness_when_false():
+    with pytest.raises(MathematicalUndecidedError):
+        compare(
+            lambda x: jnp.dot(jnp.log(x) > 0, jnp.zeros_like(x, dtype=jnp.bool_)).astype(
+                jnp.float32
+            ),
+            lambda x: jnp.float32(0),
+            (4,),
+        )
+
+
+@pytest.mark.parametrize("name", BOOLEAN_SCALARS)
+def test_boolean_order_and_extrema_preserve_the_truth_table(name):
+    def function(x):
+        return boolean_scalar(name, x[0], x[1]).astype(jnp.float32)
+
+    def reference(x):
+        return boolean_scalar(name, x[0], x[1], reference=True).astype(jnp.float32)
+
+    equivalent(function, reference, (2, 4), jnp.bool_)
+    _, _, result = compare(function, lambda x: 1 + reference(x), (2, 4), jnp.bool_)
+    assert result.status is Status.INEQUIVALENT
+    inputs = np.asarray([[False, False, True, True], [False, True, False, True]])
+    oracle = {
+        "max": np.maximum,
+        "min": np.minimum,
+        "lt": np.less,
+        "le": np.less_equal,
+        "gt": np.greater,
+        "ge": np.greater_equal,
+    }[name](*inputs).astype(np.float32)
+    np.testing.assert_array_equal(jax.jit(function)(inputs), oracle)
+    np.testing.assert_array_equal(jax.jit(reference)(inputs), oracle)
+
+
+def test_boolean_extrema_simplification_keeps_operand_definedness():
+    with pytest.raises(MathematicalUndecidedError):
+        compare(
+            lambda x: jax.lax.max(jnp.ones_like(x, dtype=jnp.bool_), jnp.log(x) > 0).astype(
+                jnp.float32
+            ),
+            jnp.ones_like,
+            (4,),
+        )
+
+
+@pytest.mark.parametrize("name", ["max", "min"])
+@pytest.mark.parametrize("extent", [0, 1, 4])
+def test_boolean_extrema_reductions_keep_truth_and_empty_identity(name, extent):
+    def function(x):
+        return getattr(jax.lax, "reduce_" + name)(x, (0,)).astype(jnp.float32)
+
+    def reference(x):
+        return (jnp.any(x) if name == "max" else jnp.all(x)).astype(jnp.float32)
+
+    equivalent(function, reference, (extent,), jnp.bool_)
+    _, _, result = compare(function, lambda x: 1 + reference(x), (extent,), jnp.bool_)
+    assert result.status is Status.INEQUIVALENT
+    inputs = np.asarray([False, True, False, True][:extent], dtype=np.bool_)
+    expected = np.float32(np.any(inputs) if name == "max" else np.all(inputs))
+    np.testing.assert_array_equal(jax.jit(function)(inputs), expected)
+
+
+@pytest.mark.parametrize("layout", ["concatenate", "pad", "cond"])
+def test_boolean_layout_results_remain_boolean_operands(layout):
+    def predicate(x):
+        if layout == "concatenate":
+            return jnp.concatenate((x > 0, x < 0))
+        if layout == "pad":
+            return jnp.pad(x > 0, (1, 2), constant_values=False)
+        return jax.lax.cond(x[0] > 0, lambda: x > 1, lambda: x < -1)
+
+    def function(x):
+        value = predicate(x)
+        return jax.lax.le(jnp.zeros_like(value), value).astype(jnp.float32)
+
+    def reference(x):
+        return jnp.ones_like(predicate(x), dtype=jnp.float32)
+
+    equivalent(function, reference, (4,))
+    _, _, result = compare(function, lambda x: 1 + reference(x), (4,))
+    assert result.status is Status.INEQUIVALENT
+    inputs = np.asarray([-2, -1, 1, 2], dtype=np.float32)
+    np.testing.assert_array_equal(jax.jit(function)(inputs), reference(inputs))
+
+
+def test_boolean_piecewise_keeps_first_match_and_all_obligations():
+    x = sp.Symbol("value", real=True)
+    shared = sp.Piecewise((sp.true, x > 2), (sp.false, True), evaluate=False)
+    expression = sp.Piecewise((shared, x >= 0), (sp.true, x >= -1), (shared, True), evaluate=False)
+    domain, valid = sp.Ne(x, 42), x >= -5
+    source = Source(None, (), np.dtype("bool"), finite=True)
+    tensor = SymbolicTensor(
+        (), np.dtype("bool"), expression, domain, source=source, memory_validity=valid
+    )
+    assert tensor.defined == domain and tensor.memory_validity == valid and tensor.source is source
+    for value in (-2, -0.5, 0, 1, 3):
+        assert tensor.expression.subs(x, value) == expression.subs(x, value)
+    with pytest.raises(MathematicalUndecidedError, match="coverage"):
+        SymbolicTensor((), np.dtype("bool"), sp.Piecewise((sp.true, x > 0)))
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float16, jnp.bfloat16])

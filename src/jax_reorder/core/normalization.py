@@ -30,6 +30,7 @@ from .model import (
     PallasCallView,
     ParameterView,
     ProgramView,
+    RefType,
     ShardMapView,
     SliceIndex,
     TensorIndex,
@@ -201,8 +202,12 @@ def _simple_entry(view: ProgramView) -> bool:
 
 def _extended_local(call: PallasCallView) -> bool:
     pending = [call.kernel]
-    different_output_windows = (
-        len({(b.array.shape, b.block_shape) for b in call.blocks[call.num_inputs :]}) > 1
+    output_blocks = call.blocks[call.num_inputs :]
+    different_output_windows = len({(b.array.shape, b.block_shape) for b in output_blocks}) > 1
+    different_scratch_windows = bool(output_blocks) and any(
+        scratch.bound_array is not None
+        and scratch.bound_array.shape != output_blocks[0].block_shape
+        for scratch in call.scratch
     )
     needed = bool(
         multidimensional(call, masked=False)
@@ -210,6 +215,7 @@ def _extended_local(call: PallasCallView) -> bool:
         or call.prefetch
         or call.aliases
         or different_output_windows
+        or different_scratch_windows
         or (call.grid[0].size > 1 and call.scratch)
     )
     while pending:
@@ -224,13 +230,23 @@ def _extended_local(call: PallasCallView) -> bool:
             ) or (op.semaphore and op.semaphore.device_coordinates is not None):
                 return False
             scalar_index = False
+            partial_window = False
             if op.access and not isinstance(op.access.index, SliceIndex | TensorIndex):
                 index = op.access.index
                 typ = types[index.id] if isinstance(index, ValueRef) else index.type
                 scalar_index = isinstance(typ, ArrayType) and not typ.shape
+            if op.access and isinstance(op.access.index, SliceIndex):
+                ref_type = types[op.access.ref.id]
+                if (
+                    isinstance(ref_type, RefType)
+                    and isinstance(ref_type.inner, ArrayType)
+                    and len(ref_type.inner.shape) == 1
+                ):
+                    partial_window = op.access.index != SliceIndex(0, ref_type.inner.shape[0], 1)
             needed |= (
                 op.primitive in ("cond", "scan", "while", "jit")
                 or scalar_index
+                or partial_window
                 or bool(op.access and op.access.scalar)
             )
             pending.extend(b.region for b in op.regions)
@@ -584,7 +600,7 @@ def compare_program_views(
     if tuple(v.type for v in left.root.inputs) != tuple(v.type for v in right.root.inputs):
         raise ComparisonContractError("inputs", "input abstract contracts differ")
     witness = match_views(left, right)
-    if witness is not None:
+    if witness is not None and execution is None:
         return ViewComparison(Status.EQUIVALENT, witness, budget.used, assumptions)
     (a_call, a_boundary), (b_call, b_boundary) = _call(left), _call(right)
     if a_boundary != b_boundary:

@@ -49,14 +49,21 @@ class CoreExecutionEvidence:
     programs: tuple[CoreProgramProjection, ...]
 
 
-def validate_binding(
-    binding: CoreExecutionBinding, call: PallasCallView, budget: AnalysisBudget
-) -> None:
-    path = "local.core_execution"
+def validate_binding_shape(binding: CoreExecutionBinding) -> None:
+    """Reject malformed caller conditions before graph-specific proof work."""
     if not isinstance(binding, CoreExecutionBinding) or type(binding.programs) is not tuple:
         raise ValueError("execution must be a CoreExecutionBinding with tuple program streams")
     if not binding.programs:
         raise ValueError("execution must name at least one local core")
+    if any(type(stream) is not tuple for stream in binding.programs):
+        raise ValueError("each core program stream must be a tuple")
+
+
+def validate_binding(
+    binding: CoreExecutionBinding, call: PallasCallView, budget: AnalysisBudget
+) -> None:
+    path = "local.core_execution"
+    validate_binding_shape(binding)
     grid = tuple(g.size for g in call.grid)
     budget.spend(path + ".grid", prod(grid))
     budget.spend(path + ".cores", len(binding.programs))
@@ -66,8 +73,6 @@ def validate_binding(
     if any(g.semantics not in ("parallel", "arbitrary") for g in call.grid):
         raise UnsupportedJaxprError(path, "explicit binding requires reviewed grid semantics")
     for core, stream in enumerate(binding.programs):
-        if type(stream) is not tuple:
-            raise ValueError("each core program stream must be a tuple")
         previous = None
         for point in stream:
             budget.spend(path + ".points", max(1, len(grid)))

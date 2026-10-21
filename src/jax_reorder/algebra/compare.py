@@ -1,6 +1,7 @@
 """代数比较的编排层：结构能对上就结束，对不上再交给 SymPy。
 
-流程是：先做结构比较，结构等价就直接返回，不进入数学路径，也不加浮点警告；
+流程是：先做结构比较，结构等价且没有显式执行条件就直接返回，不进入数学路径，
+也不加浮点警告；显式执行绑定始终先检查对应协议并保留证据。
 结构不同时再核对输入输出契约、找出两侧共同且完整相同的纯 JIT 调用，把图
 冻结后交给独立 worker 判定，最后汇总成结果。数学结论只来自 worker，本模块
 不执行 JAX 数组，也不自己推导恒等式。未完成和失败都用异常报告。
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 from jax._src import core
 
 from ..core.canonical import canonicalize, compare_jaxprs
+from ..core.core_execution import CoreExecutionBinding, validate_binding_shape
 from ..core.correspondence import GraphCorrespondence, build_correspondence
 from ..errors import (
     ComparisonContractError,
@@ -109,22 +111,44 @@ def compare_algebraic_jaxprs(
     *,
     algebra_budget: int = 10000,
     algebra_timeout: float = 60.0,
+    execution: CoreExecutionBinding
+    | tuple[CoreExecutionBinding, CoreExecutionBinding]
+    | None = None,
 ) -> AlgebraComparison:
     """以可信 SymPy 比较两份完整前向 jaxpr 的数学输出。
 
-    先做结构比较：结构等价直接返回结构证据，不消耗代数预算，也不进入实数
+    先做结构比较：没有显式执行绑定时，结构等价直接返回结构证据，不消耗代数预算，也不进入实数
     解释。结构不同时先检查输入输出抽象契约；普通 JAX 识别共同纯 JIT，Pallas
     则要求中间层完成全局值投影。冻结后在可终止的独立 worker 中查询；其 True/False 是
     唯一数学结论，失败以异常报告。algebra_timeout 只覆盖 worker 内的转换
     与查询，不包含 JAX tracing 和父进程结构比较。
+
+    execution 为两侧共用的远端单 core 绑定，或分别属于左/右侧的绑定；调用方
+    必须保证实际执行遵守该顺序。显式绑定时，两侧都先完成协议投影并保留证据，
+    包括结构相同的情况；本地 Pallas 或普通 JAX 不接受该条件。
     """
     from .adapter.transport import freeze
     from .trusted import isolated_compare
 
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
+    if execution is None:
+        executions = (None, None)
+    elif isinstance(execution, CoreExecutionBinding):
+        executions = (execution, execution)
+    elif (
+        type(execution) is tuple
+        and len(execution) == 2
+        and all(isinstance(item, CoreExecutionBinding) for item in execution)
+    ):
+        executions = execution
+    else:
+        raise ValueError("execution requires one CoreExecutionBinding or a left/right binding pair")
+    for binding in executions:
+        if binding is not None:
+            validate_binding_shape(binding)
     structural = compare_jaxprs(left, right, include_derivative_rules=False)
-    if structural.status == Status.EQUIVALENT:
+    if structural.status == Status.EQUIVALENT and execution is None:
         return AlgebraComparison(
             Status.EQUIVALENT,
             rules=("structural",),
@@ -150,14 +174,31 @@ def compare_algebraic_jaxprs(
         budget = Budget(algebra_budget)
         has_pallas = contains_pallas(a), contains_pallas(b)
         normalizations = ()
-        assumptions = ASSUMPTIONS
+        assumptions = (
+            ("structural equivalence of the supplied forward jaxprs",)
+            if structural.status == Status.EQUIVALENT
+            else ASSUMPTIONS
+        )
+        if execution is not None:
+            if not all(has_pallas):
+                side = ("left", "right")[has_pallas.index(False)]
+                raise UnsupportedJaxprError(
+                    f"{side}.algebra.pallas",
+                    "execution mapping requires a remote Pallas protocol on both sides",
+                )
+            assumptions += (
+                "caller binds every device to the supplied core-0 program stream for each source; "
+                "ordinary pallas_call does not enforce this execution mapping and order",
+            )
         if any(has_pallas):
             converted, evidence = [], []
             identities = {}
-            for side, graph, present in zip(("left", "right"), (a, b), has_pallas, strict=True):
+            for side, graph, present, binding in zip(
+                ("left", "right"), (a, b), has_pallas, executions, strict=True
+            ):
                 try:
                     value, proof = (
-                        project(graph, budget)
+                        project(graph, budget, execution=binding)
                         if present
                         else (freeze(graph, common_ids=identities), None)
                     )
@@ -179,6 +220,16 @@ def compare_algebraic_jaxprs(
                     for value in proof.remote.protocol.protocol.assumptions
                 )
             )
+            if structural.status == Status.EQUIVALENT:
+                return AlgebraComparison(
+                    Status.EQUIVALENT,
+                    rules=("structural",),
+                    assumptions=assumptions,
+                    warnings=(),
+                    correspondence=structural.correspondence,
+                    work=budget.used,
+                    normalizations=normalizations,
+                )
         else:
             # 共同调用只涵盖完整相同的纯 JIT，不能将状态调用当作不透明纯函数。
             calls = CommonCalls(

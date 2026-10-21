@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax import lax
+from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu
 from jax.sharding import PartitionSpec as P
 
@@ -19,6 +20,7 @@ from jax_reorder import (
     UnsupportedJaxprError,
     compare_algebraic_jaxprs,
     compare_jaxprs,
+    compare_pallas_kernels,
 )
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.index_domain import AnalysisBudget, integer
@@ -44,6 +46,117 @@ from tests.pallas_remote_cases import (
 
 def normalized(kernel=exchange, **options):
     return normalize_view(adapt(remote_graph(kernel, **options)).view, budget=AnalysisBudget())
+
+
+def boolean_exchange(mode, *, different=False):
+    def kernel(x, y, temporary, send, receive):
+        device = lax.axis_index("d")
+        tpu.async_remote_copy(x, temporary, send, receive, (1 - device,)).wait()
+        predicate = device == int(different)
+        if mode == "cast":
+            added = predicate.astype(jnp.float32)
+        elif mode == "via_integer":
+            added = predicate.astype(jnp.int32).astype(jnp.float32)
+        else:
+            added = jnp.where(predicate, jnp.float32(1), jnp.float32(0))
+        y[:] = temporary[:] + added
+
+    return kernel
+
+
+@pytest.mark.parametrize("mode", ["cast", "via_integer"])
+@pytest.mark.parametrize("different", [False, True])
+def test_remote_boolean_cast_preserves_protocol_and_complete_values(mode, different):
+    source = remote_graph(boolean_exchange(mode, different=different), arrays=1)
+    reference = remote_graph(boolean_exchange("where"), arrays=1)
+    protocol = compare_pallas_kernels(source, reference, check_protocol=True)
+    assert protocol.status is Status.DIFFERENT
+    assert protocol.left_protocol.remote is not None
+    assert protocol.right_protocol.remote is not None
+    result = compare_algebraic_jaxprs(source, reference)
+    assert result.status is (Status.INEQUIVALENT if different else Status.EQUIVALENT)
+    x = np.arange(256, dtype=np.float32)
+    exchanged = np.concatenate((x[128:], x[:128]))
+    for graph, selected in ((source, int(different)), (reference, 0)):
+        proof = normalize_view(adapt(graph).view, budget=AnalysisBudget())
+        expected = exchanged + np.repeat(np.arange(2) == selected, 128).astype(np.float32)
+        np.testing.assert_array_equal(
+            projection_array(proof.projection.outputs[0], (x,), 256), expected
+        )
+
+
+@pytest.mark.parametrize("kind", ["float64_to_float32", "float32_to_bfloat16"])
+def test_remote_scalar_float_cast_restores_broadcast_coordinates(kind):
+    source_dtype, target_dtype = (
+        (jnp.float64, jnp.float32) if kind == "float64_to_float32" else (jnp.float32, jnp.bfloat16)
+    )
+    expected_scalar = np.asarray(1.003, dtype=source_dtype).astype(target_dtype).astype(np.float32)
+
+    def kernel(cast):
+        def body(x, y, temporary, send, receive):
+            tpu.async_remote_copy(x, temporary, send, receive, (1 - lax.axis_index("d"),)).wait()
+            value = (
+                jnp.asarray(1.003, dtype=source_dtype).astype(target_dtype).astype(jnp.float32)
+                if cast
+                else jnp.float32(expected_scalar)
+            )
+            y[:] = temporary[:] + value
+
+        return body
+
+    with jax.enable_x64():
+        source, reference = (remote_graph(kernel(cast), arrays=1) for cast in (True, False))
+        assert compare_algebraic_jaxprs(source, reference).status is Status.EQUIVALENT
+        proof = normalize_view(adapt(source).view, budget=AnalysisBudget())
+    x = np.arange(256, dtype=np.float32)
+    np.testing.assert_array_equal(
+        projection_array(proof.projection.outputs[0], (x,), 256),
+        np.concatenate((x[128:], x[:128])) + expected_scalar,
+    )
+
+
+@pytest.mark.parametrize("route", ["integer", "floating", "data", "outside"])
+def test_remote_boolean_conversion_does_not_relax_static_route_requirements(route):
+    def kernel(x, y, temporary, send, receive):
+        predicate = x[0] > 0 if route == "data" else lax.axis_index("d") == 0
+        target = (
+            predicate.astype(jnp.float32).astype(jnp.int32)
+            if route == "floating"
+            else predicate.astype(jnp.int32)
+        )
+        if route == "outside":
+            target += 2
+        tpu.async_remote_copy(x, temporary, send, receive, (target,)).wait()
+        y[:] = temporary[:]
+
+    source = remote_graph(kernel, arrays=1)
+    if route == "integer":
+        assert compare_algebraic_jaxprs(source, remote_graph()).status is Status.EQUIVALENT
+        assert (
+            compare_pallas_kernels(source, source, check_protocol=True).status is Status.EQUIVALENT
+        )
+    else:
+        message = "outside the mesh" if route == "outside" else "static integer"
+        for compare in (
+            compare_algebraic_jaxprs,
+            lambda a, b: compare_pallas_kernels(a, b, check_protocol=True),
+        ):
+            with pytest.raises(UnsupportedJaxprError, match=message):
+                compare(source, remote_graph())
+
+
+def test_remote_float_boolean_conversion_cannot_supply_semaphore_count():
+    def kernel(x, y, temporary, send, receive, semaphore):
+        device = lax.axis_index("d")
+        tpu.async_remote_copy(x, temporary, send, receive, (1 - device,)).wait()
+        count = (device >= 0).astype(jnp.float32).astype(jnp.int32)
+        pl.semaphore_signal(semaphore, count)
+        pl.semaphore_wait(semaphore, count)
+        y[:] = temporary[:]
+
+    source = remote_graph(kernel, arrays=1, regular=1)
+    with pytest.raises(UnsupportedJaxprError, match="static integer"):
+        compare_pallas_kernels(source, source, check_protocol=True)
 
 
 def test_wait_reordering_eliminates_schedule_but_retains_remote_versions():

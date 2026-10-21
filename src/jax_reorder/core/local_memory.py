@@ -30,6 +30,7 @@ from .memory import (
     MemoryProjection,
     MemoryVersion,
     Predicate,
+    ScalarType,
     Uninitialized,
     ValueExpr,
     _assemble,
@@ -44,6 +45,7 @@ from .model import (
     Operand,
     Origin,
     PallasCallView,
+    ParameterView,
     RefType,
     RegionView,
     SemaphoreType,
@@ -249,6 +251,8 @@ def _functionalize_independent_call(
     payloads: dict[int, tuple[Piece[Expression], ...]] = {}
     versions: list[MemoryVersion] = []
     origins: list[Origin] = []
+    # Keep executed control conditions alive independently of later memory writes.
+    control_guard: Expression = True
 
     def write(slot: int, span: Span, value: Expression, origin: Origin) -> int:
         if slot in readonly:
@@ -288,7 +292,7 @@ def _functionalize_independent_call(
     def evaluate(
         source: RegionView, arguments: tuple[Binding, ...], suffix: str = ""
     ) -> tuple[Binding, ...]:
-        nonlocal memories, regular, dma_state
+        nonlocal memories, regular, dma_state, control_guard
         env = dict(zip((v.id for v in source.inputs), arguments, strict=True))
         env.update((v.id, _literal(vv, source.origin.path)) for v, vv in source.constants)
         value_types = {v.id: v.type for v in source.inputs}
@@ -462,9 +466,11 @@ def _functionalize_independent_call(
                             (integer(0), selector, integer(len(op.regions) - 1)),
                         )
                     before_mem, before_counts, before_dma = memories, regular, dma_state
+                    before_guard = control_guard
                     baseline = len(dma_state.completed), len(dma_state.waits)
-                    states, branch_results = [], []
+                    states, branch_results, branch_guards = [], [], []
                     for branch in op.regions:
+                        control_guard = before_guard
                         memories, regular, dma_state = before_mem, before_counts, before_dma
                         memories, regular, dma_state = clone_memories(), regular.copy(), clone_dma()
                         branch_results.append(
@@ -477,6 +483,16 @@ def _functionalize_independent_call(
                                 loc, "dynamic branch exits with outstanding DMA"
                             )
                         states.append((memories, regular, dma_state))
+                        branch_guards.append(control_guard)
+                    # Do not fold equal guards: evaluating the selector itself
+                    # carries domain and initialization obligations. Nested
+                    # guards are checked only on their selected branch.
+                    control_guard = ValueExpr(
+                        "select_n",
+                        ScalarType("bool", False, ()),
+                        (selector, *branch_guards),
+                        parameters=(ParameterView("__control_guard", True),),
+                    )
                     if any(counts != states[0][1] for _, counts, _ in states[1:]):
                         raise UnsupportedJaxprError(
                             loc, "dynamic branches leave different counter states"
@@ -638,8 +654,14 @@ def _functionalize_independent_call(
                 continue
             if op.regions or op.call is not None:
                 raise UnsupportedJaxprError(loc, "unsupported local value region")
+            value_ranges = ranges
+            result_type = op.results[0].type
+            if isinstance(result_type, ArrayType) and result_type.shape:
+                # A temporary or scratch value can have more lanes than the
+                # output block. Its predicates must use its own complete domain.
+                value_ranges = {**ranges, "global": (0, result_type.shape[0] - 1)}
             env[op.results[0].id] = pure_value(
-                op, tuple(value(a) for a in op.operands), ranges, coordinate_values
+                op, tuple(value(a) for a in op.operands), value_ranges, coordinate_values
             )
         return tuple(read(o) for o in source.outputs)
 
@@ -653,6 +675,16 @@ def _functionalize_independent_call(
         expression(_assemble(memories[i].read(memories[i].extent, path), types[i]), path)
         for i in range(npre + call.num_inputs, count)
     )
+    if control_guard is not True:
+        outputs = tuple(
+            ValueExpr(
+                "select_n",
+                scalar_type(types[i]),
+                (control_guard, value, value),
+                parameters=(ParameterView("__control_guard", True),),
+            )
+            for i, value in zip(range(npre + call.num_inputs, count), outputs, strict=True)
+        )
     program, lane = target.inverse
     bindings = {"global": lane, "program": program}
     return MemoryProjection(

@@ -9,6 +9,7 @@ from jax._src import core
 
 from ...core.adapters.jax import adapt
 from ...core.adapters.pallas.structural import pallas_call_p
+from ...core.core_execution import CoreExecutionBinding
 from ...core.index_domain import AnalysisBudget
 from ...core.normalization import RewriteEvidence, normalize_view
 from ...core.params import parameter_view
@@ -35,7 +36,12 @@ def contains_pallas(graph: core.Jaxpr) -> bool:
     return False
 
 
-def project(graph: core.Jaxpr, budget: Budget) -> tuple[SymbolicGraph, RewriteEvidence]:
+def project(
+    graph: core.Jaxpr,
+    budget: Budget,
+    *,
+    execution: CoreExecutionBinding | None = None,
+) -> tuple[SymbolicGraph, RewriteEvidence]:
     # Adaptation admits every operation, even if its value is unused. Effects
     # disappear only after the memory/protocol consumer proves its preconditions.
     budget.spend(path="algebra.pallas.adapt")
@@ -44,7 +50,7 @@ def project(graph: core.Jaxpr, budget: Budget) -> tuple[SymbolicGraph, RewriteEv
         budget.spend(path="algebra.pallas.projection")
     analysis = AnalysisBudget(budget.limit - budget.used)
     try:
-        evidence = normalize_view(view, budget=analysis, defer_padding=True)
+        evidence = normalize_view(view, budget=analysis, defer_padding=True, execution=execution)
     except ComparisonBudgetError as error:
         raise ComparisonBudgetError(
             error.path,

@@ -55,6 +55,8 @@ CPU 的 `run_cpu` 入口与所属 case 放在一起；只有复用或独立职�
   样例仅关闭这项检测做数值对照，该次运行不能称为解释器无竞争证明。
 - 交错串并轴的 CPU interpreter 有 prefix 限制；阶段 27 同源码 native AOT 成功，两个限制回归不计数值成功。
 - 默认/IMMEDIATE 非连续重访、双缓冲 ANY、部分 Ref transpose 等源限制与本项目拒绝分别记录。
+- 有界 cast 的 4 份 float16 输出样例通过 IR 校验，但当前 TPU 后端拒绝 `tpu.pack_subelements`；
+  同批 float32/bfloat16 与闭合 cast 共 17 份编译成功，详见[验收](../../exec-plans/completed/pallas-bounded-integer-casts.md)。
 
 ## 最近验证与详细日志入口
 

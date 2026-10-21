@@ -15,9 +15,11 @@ from jax_reorder import (
     FunctionComparison,
     FunctionTrace,
     LocalKernelComparison,
+    ModeComparison,
     UnsupportedJaxprError,
     canonicalize,
     compare_algebraic_jaxprs,
+    compare_function_traces,
     compare_functions,
     compare_jaxprs,
     compare_pallas_kernels,
@@ -52,6 +54,12 @@ def graph_types(graph: core.Jaxpr) -> None:
     binding = CoreExecutionBinding((((0,),), ((1,),)))
     bound = compare_pallas_kernels(graph, graph, check_protocol=True, execution=binding)
     assert_type(bound.execution, CoreExecutionBinding | None)
+    assert_type(compare_algebraic_jaxprs(graph, graph, execution=binding), AlgebraComparison)
+    algebra = compare_algebraic_jaxprs(graph, graph, execution=(binding, binding))
+    assert_type(algebra, AlgebraComparison)
+    for proof in algebra.normalizations:
+        if proof is not None:
+            assert_type(proof.execution, CoreExecutionBinding | None)
 
 
 def function_types() -> None:
@@ -60,3 +68,9 @@ def function_types() -> None:
     assert_type(trace, FunctionTrace)
     assert_type(trace.abstract_inputs, tuple[jax.ShapeDtypeStruct, ...])
     assert_type(compare_functions(lambda x: x, lambda x: x, argument), FunctionComparison)
+    binding = CoreExecutionBinding((((0,),),))
+    assert_type(
+        compare_functions(lambda x: x, lambda x: x, argument, execution=(binding, binding)),
+        FunctionComparison,
+    )
+    assert_type(compare_function_traces(trace, trace, execution=binding), ModeComparison)

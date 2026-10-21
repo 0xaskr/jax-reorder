@@ -19,6 +19,7 @@
 - 正在读取的 DMA 源、尚未完成的目标不能被未同步访问；普通 load/store 使用与值投影一致的坐标。
   数据 mask 的协议足迹允许保守扩大，值执行必须验证实际足迹被其覆盖。
 - read 只能在证明稳定时作为控制值；不能把在途计数按某次执行结果固定。
+- 静态设备谓词转浮点属于值投影；只有已证明的整数值可作静态路由或计数，不能用浮点中转放宽准入。
 - 跨 program start/wait 继续传递在途状态，不按每个 program 隐含清空 DMA。
 - 一个 semaphore 的 Wait/Read 当前仍要求唯一有序消费流；跨流消费缺证明时拒绝。
 
@@ -46,6 +47,8 @@
 
 `normalize_view(..., execution=binding)` 保存单侧条件；
 `compare_program_views(..., execution=(left_binding, right_binding))` 可为二维/展平图分别绑定。
+显式绑定时，同图也执行协议校验并保存规范化证据；公开代数入口同样传递两侧绑定，
+函数入口的支持范围见[契约](contracts.md)。
 公共 `compare_pallas_kernels` 及证据重放同样保留条件；遗漏/伪造/错序绑定都必须拒绝。
 源码：[core_execution.py](../../../src/jax_reorder/core/core_execution.py)。
 

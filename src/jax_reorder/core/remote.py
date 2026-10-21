@@ -59,7 +59,7 @@ from .protocol import (
 )
 from .remote_coordinates import RemoteView, coordinates, localize, remote_access_view, remote_view
 from .remote_io import RemoteIOPlan, plan_remote_io
-from .tensor_domain import TensorDomain, coordinate_ranges
+from .tensor_domain import POINTWISE_PRIMITIVES, TensorDomain, coordinate_ranges
 from .tensor_values import tensor_value
 from .value_operations import pure_value
 
@@ -136,6 +136,12 @@ def _pure(
             name
         ]
     elif name == "convert_element_type" and type(args[0]) is bool:
+        if np.dtype(typ.dtype).kind == "b":
+            return args[0]
+        if np.dtype(typ.dtype).kind not in "iu":
+            # Floating values belong to the value projection, not the integer
+            # domain used for protocol routes and semaphore counts.
+            return None
         value = integer(int(args[0]))
     elif name == "clamp":
         lower, item, upper = (_constant(v, path) for v in args)
@@ -184,7 +190,11 @@ def _coordinate_value(
     typ = op.results[0].type
     if not isinstance(typ, ArrayType):
         return None
-    if not typ.shape and all(isinstance(value, IndexExpr | bool) for value in args):
+    if (
+        not typ.shape
+        and op.primitive in POINTWISE_PRIMITIVES
+        and all(isinstance(value, IndexExpr | bool) for value in args)
+    ):
         static = _pure(op, args, device, name, program=program, programs=programs)
         if static is not None:
             return static

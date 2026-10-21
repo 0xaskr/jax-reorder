@@ -18,7 +18,11 @@ from jax_reorder import (
     CorrespondenceError,
     Status,
     UnsupportedJaxprError,
+    compare_algebraic_jaxprs,
+    compare_function_traces,
+    compare_functions,
     compare_pallas_kernels,
+    trace_function,
     verify_pallas_kernel_comparison,
 )
 from jax_reorder.core.adapters.jax import adapt
@@ -33,7 +37,7 @@ from jax_reorder.core.normalization import (
 from jax_reorder.core.remote import analyze_remote_call
 from jax_reorder.core.remote_grid import plan_remote_grid
 from tests.pallas_remote_cases import projection_array
-from tests.pallas_remote_grid_cases import binding, graph
+from tests.pallas_remote_grid_cases import LOCAL_SIZE, binding, function, graph
 
 
 @pytest.fixture(scope="module")
@@ -158,6 +162,8 @@ def test_local_core_mapping_does_not_silently_bind_remote_core_routes(parallel_s
     two_cores = CoreExecutionBinding((((0, 0), (0, 1), (0, 2)), ((1, 0), (1, 1), (1, 2))))
     with pytest.raises(UnsupportedJaxprError, match="single.core|one core"):
         compare_pallas_kernels(source, source, check_protocol=True, execution=two_cores)
+    with pytest.raises(UnsupportedJaxprError, match="single.core|one core"):
+        compare_algebraic_jaxprs(source, source, execution=two_cores)
 
 
 def test_serial_remote_keeps_unconditional_default_and_accepts_explicit_single_core():
@@ -197,12 +203,18 @@ def test_remote_execution_stream_must_cover_the_exact_grid_in_order(parallel_sou
         "reversed": tuple(reversed(points)),
         "wrong_grid": binding(flat=True).programs[0],
     }[kind]
-    with pytest.raises(UnsupportedJaxprError, match="binding|grid"):
-        normalize_view(
-            adapt(parallel_sources[0]).view,
-            budget=AnalysisBudget(100000),
-            execution=CoreExecutionBinding((points,)),
-        )
+    source = parallel_sources[0]
+    view = adapt(source).view
+    condition = CoreExecutionBinding((points,))
+    for check in (
+        lambda: normalize_view(view, budget=AnalysisBudget(100000), execution=condition),
+        lambda: compare_program_views(view, view, analysis_budget=100000, execution=condition),
+        lambda: compare_algebraic_jaxprs(
+            source, source, algebra_budget=100000, execution=condition
+        ),
+    ):
+        with pytest.raises(UnsupportedJaxprError, match="binding|grid"):
+            check()
 
 
 def test_execution_mapping_and_core_count_are_mutually_exclusive(parallel_sources):
@@ -218,6 +230,124 @@ def test_comparison_rejects_malformed_execution_pairs(parallel_sources, executio
     view = adapt(parallel_sources[0]).view
     with pytest.raises(ValueError, match="binding pair"):
         compare_program_views(view, view, execution=execution)
+    with pytest.raises(ValueError, match="binding pair"):
+        compare_algebraic_jaxprs(parallel_sources[0], parallel_sources[0], execution=execution)
+
+
+@pytest.mark.parametrize("entry", ["jaxpr", "function", "trace"])
+@pytest.mark.parametrize("same_source", [False, True])
+def test_public_algebra_entries_preserve_remote_execution_proofs(entry, same_source, monkeypatch):
+    left = function(parallel=True)
+    right = left if same_source else function(flat=True, explicit=True, receive_first=True)
+    argument = jax.ShapeDtypeStruct((2 * LOCAL_SIZE,), jnp.float32)
+    executions = binding() if same_source else (binding(), binding(flat=True))
+    if same_source:
+
+        def unexpected_cas(*args, **kwargs):
+            raise AssertionError("structural equality with a checked binding needs no CAS")
+
+        monkeypatch.setattr("jax_reorder.algebra.trusted.isolated_compare", unexpected_cas)
+    options = dict(execution=executions, algebra_budget=100000)
+    if entry == "jaxpr":
+        result = compare_algebraic_jaxprs(
+            jax.make_jaxpr(left)(argument), jax.make_jaxpr(right)(argument), **options
+        )
+    elif entry == "function":
+        compared = compare_functions(left, right, argument, **options)
+        assert compared.status is Status.EQUIVALENT
+        result = compared.modes[0].algebra
+    else:
+        compared = compare_function_traces(
+            trace_function(left, argument), trace_function(right, argument), **options
+        )
+        assert compared.status is Status.EQUIVALENT
+        result = compared.algebra
+    assert result.status is Status.EQUIVALENT
+    assert result.equivalence_kind == ("structural" if same_source else "algebraic")
+    assert bool(result.warnings) is not same_source
+    assert result.work > 0
+    expected = (executions, executions) if same_source else executions
+    for proof, condition in zip(result.normalizations, expected, strict=True):
+        assert proof.execution == proof.remote.protocol.execution == condition
+        assert proof.remote.protocol.ordered_protocol is not None
+    assert any("caller binds" in value for value in result.assumptions)
+    assert any("all devices execute the exact same" in value for value in result.assumptions)
+    assert any("does not enforce" in value for value in result.assumptions)
+
+
+def test_identical_program_views_replay_explicit_execution_proofs(parallel_sources):
+    view = adapt(parallel_sources[0]).view
+    result = compare_program_views(view, view, execution=binding(), analysis_budget=100000)
+    assert result.status is Status.EQUIVALENT
+    assert result.equivalence_kind == "normalized"
+    assert result.evidence.left.execution == result.evidence.right.execution == binding()
+    verify_normalized_evidence(view, view, result.evidence, budget=AnalysisBudget(100000))
+
+
+def test_public_algebra_remote_parallel_requires_execution():
+    with pytest.raises(UnsupportedJaxprError, match="execution binding"):
+        compare_algebraic_jaxprs(
+            graph(parallel=True),
+            graph(flat=True, explicit=True, receive_first=True),
+            algebra_budget=100000,
+        )
+
+
+@pytest.mark.parametrize("execution", [binding(), (binding(), binding())])
+def test_public_algebra_rejects_wrong_grid_binding_on_the_right(execution):
+    with pytest.raises(UnsupportedJaxprError, match="right.*core binding.*grid point"):
+        compare_algebraic_jaxprs(
+            graph(parallel=True),
+            graph(flat=True, explicit=True),
+            algebra_budget=100000,
+            execution=execution,
+        )
+
+
+@pytest.mark.parametrize("programs", [[], (), ([],)])
+def test_public_algebra_rejects_malformed_binding_streams(parallel_sources, programs):
+    with pytest.raises(ValueError, match="tuple|at least one"):
+        compare_algebraic_jaxprs(
+            parallel_sources[0], parallel_sources[0], execution=CoreExecutionBinding(programs)
+        )
+
+
+@pytest.mark.parametrize("mode", ["shared_scratch", "missing_receive"])
+def test_public_algebra_structural_equality_still_checks_the_bound_protocol(mode):
+    source = graph(parallel=True, mode=mode)
+    with pytest.raises(UnsupportedJaxprError):
+        compare_algebraic_jaxprs(source, source, algebra_budget=100000, execution=binding())
+
+
+@pytest.mark.parametrize("mode", ["wrong_index_map", "self_target"])
+def test_public_algebra_execution_does_not_hide_remote_value_changes(mode):
+    result = compare_algebraic_jaxprs(
+        graph(parallel=True),
+        graph(flat=True, explicit=True, mode=mode),
+        execution=(binding(), binding(flat=True)),
+        algebra_budget=100000,
+    )
+    assert result.status is Status.INEQUIVALENT
+    assert result.backend_result is not None
+    assert len(result.normalizations) == 2
+
+
+@pytest.mark.parametrize("local_pallas", [False, True])
+def test_public_algebra_rejects_execution_without_remote_protocol(local_pallas):
+    if local_pallas:
+
+        def kernel(x, y):
+            y[:] = x[:]
+
+        source = pl.pallas_call(kernel, out_shape=jax.ShapeDtypeStruct((128,), jnp.float32))
+    else:
+
+        def source(x):
+            return x + 1
+
+    traced = jax.make_jaxpr(source)(jax.ShapeDtypeStruct((128,), jnp.float32))
+    with pytest.raises(UnsupportedJaxprError, match="requires a remote"):
+        compare_algebraic_jaxprs(traced, traced, execution=binding())
 
 
 SHAPE = (2, 2, 2)

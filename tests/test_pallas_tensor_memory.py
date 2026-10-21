@@ -14,9 +14,11 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu
 
 from jax_reorder import (
+    MathematicalUndecidedError,
     Status,
     UnsupportedJaxprError,
     compare_algebraic_jaxprs,
+    compare_functions,
     compare_pallas_kernels,
     verify_pallas_kernel_comparison,
 )
@@ -25,6 +27,290 @@ from jax_reorder.core.index_domain import AnalysisBudget, IndexExpr
 from jax_reorder.core.memory import Predicate, ValueExpr
 from jax_reorder.core.normalization import compare_program_views, normalize_view
 from tests.pallas_oracle import run_worker
+
+EMPTY_RESHAPES = (
+    ((8, 0), (8, 1, 0), None),
+    ((0, 8), (0, 1, 8), (1, 0)),
+    ((2, 0, 4), (8, 0), None),
+    ((0, 2, 0, 4), (0, 0, 8), (3, 1, 2, 0)),
+)
+
+
+def empty_reshape_call(shape, dimensions, *, reference=None, partial=False, interpret=False):
+    def kernel(x, y):
+        y[...] = x[...]
+
+    call = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
+        interpret=interpret,
+    )
+
+    def function(x, *args):
+        if reference is None:
+            view = lax.reshape(x, shape, dimensions=dimensions)
+            value = (
+                jnp.max(view, initial=False).astype(jnp.float32)
+                if x.dtype == jnp.bool_
+                else jnp.sum(view)
+            )
+        else:
+            value = jnp.float32(reference)
+        if partial:
+            value += jnp.log(args[0]) * 0
+        return call(jnp.broadcast_to(value, (8, 128)))
+
+    return function
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bool_])
+@pytest.mark.parametrize("input_shape,shape,dimensions", EMPTY_RESHAPES)
+def test_empty_reshape_preserves_empty_reduction_and_nonempty_outputs(
+    input_shape, shape, dimensions, dtype
+):
+    signature = jax.ShapeDtypeStruct(input_shape, dtype)
+    source = empty_reshape_call(shape, dimensions)
+    for value, expected in ((0, Status.EQUIVALENT), (1, Status.INEQUIVALENT)):
+        reference = empty_reshape_call(shape, dimensions, reference=value)
+        assert compare_functions(source, reference, signature).status is expected
+    actual = empty_reshape_call(shape, dimensions, interpret=True)(
+        np.empty(input_shape, dtype=dtype)
+    )
+    np.testing.assert_array_equal(np.asarray(actual), np.zeros((8, 128), dtype=np.float32))
+
+
+def test_empty_reshape_does_not_erase_a_nonempty_partial_computation():
+    source = empty_reshape_call((8, 1, 0), None, partial=True)
+    reference = empty_reshape_call((8, 1, 0), None, reference=0)
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare_functions(
+            source,
+            reference,
+            jax.ShapeDtypeStruct((8, 0), jnp.float32),
+            jax.ShapeDtypeStruct((), jnp.float32),
+        )
+    assert error.value.failure_kind == "condition_undecided"
+
+
+@pytest.mark.parametrize("invalid", ["dimensions", "size"])
+def test_empty_reshape_still_checks_the_view_contract(invalid):
+    from jax_reorder.core.model import ParameterView
+    from jax_reorder.core.tensor_values import tensor_value
+
+    view = adapt(
+        jax.make_jaxpr(lambda x: lax.reshape(x, (8, 1, 0)))(
+            jax.ShapeDtypeStruct((8, 0), jnp.float32)
+        )
+    ).view
+    (op,) = view.root.operations
+    if invalid == "dimensions":
+        op = replace(
+            op,
+            parameters=tuple(
+                ParameterView(p.name, (0, 0)) if p.name == "dimensions" else p
+                for p in op.parameters
+            ),
+        )
+    else:
+        op = replace(
+            op, results=(replace(op.results[0], type=replace(op.results[0].type, shape=(8,))),)
+        )
+    with pytest.raises(UnsupportedJaxprError, match="permutation|number of elements"):
+        tensor_value(
+            op,
+            (IndexExpr("axis", value="local:0"),),
+            (view.root.inputs[0].type,),
+            {},
+            {},
+            (),
+            AnalysisBudget(),
+        )
+
+
+def rank_one_reduction(kind, block=128, *, guarded=False, reverse=False, interpret=False):
+    size = 256
+    spec = pl.BlockSpec((block,), lambda p: (size // block - 1 - p if reverse else p,))
+
+    def kernel(x, y):
+        def body():
+            data = x[:]
+            value = {"sum": jnp.sum, "max": jnp.max, "dot": lambda v: jnp.dot(v, v)}[kind](data)
+            y[:] = jnp.broadcast_to(value, (block,))
+
+        if guarded:
+            lax.cond(pl.program_id(0) >= 0, body, body)
+        else:
+            body()
+
+    return pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((size,), jnp.float32),
+        in_specs=(spec,),
+        out_specs=spec,
+        grid=(size // block,),
+        interpret=interpret,
+    )
+
+
+def rank_one_broadcast(
+    width=1, *, placement="direct", source="iota", explicit=False, interpret=False
+):
+    size, block = 256, 128
+    spec = pl.BlockSpec((block,), lambda p: (p,))
+
+    def bias(value, extent):
+        value = (
+            jnp.arange(width, dtype=jnp.int32).astype(jnp.float32) + 3
+            if source == "iota"
+            else value
+            if source == "input"
+            else jnp.full((1,), 3, dtype=jnp.float32)
+        )
+        return jnp.broadcast_to(value, (extent,)) if explicit else value
+
+    def kernel(x, *refs):
+        def body():
+            refs[-1][:] = (
+                x[:]
+                if placement == "outer"
+                else x[:] + bias(refs[0][:] if source == "input" else None, block)
+            )
+
+        if placement == "cond":
+            lax.cond(pl.program_id(0) >= 0, body, body)
+        else:
+            body()
+
+    inputs = (
+        (spec, pl.BlockSpec((1,), lambda p: (0,)))
+        if source == "input" and placement != "outer"
+        else (spec,)
+    )
+    call = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((size,), jnp.float32),
+        in_specs=inputs,
+        out_specs=spec,
+        grid=(size // block,),
+        interpret=interpret,
+    )
+    if placement == "outer":
+        return lambda x, *args: call(x + bias(args[0] if args else None, size))
+    return call
+
+
+@pytest.mark.parametrize("source", ["iota", "input", "constant"])
+@pytest.mark.parametrize("placement", ["direct", "cond"])
+def test_rank_one_broadcast_projects_the_singleton_coordinate(source, placement):
+    inputs = (np.arange(256, dtype=np.float32),)
+    if source == "input":
+        inputs += (np.asarray([7], dtype=np.float32),)
+    expected = inputs[0] + (7 if source == "input" else 3)
+    function = rank_one_broadcast(placement=placement, source=source)
+    source_jaxpr = jax.make_jaxpr(function)(*inputs)
+    projection = normalize_view(adapt(source_jaxpr).view, budget=AnalysisBudget()).projection
+    np.testing.assert_array_equal(evaluate(projection.outputs[0], inputs, expected.shape), expected)
+    actual = rank_one_broadcast(placement=placement, source=source, interpret=True)(*inputs)
+    np.testing.assert_array_equal(np.asarray(actual), expected)
+
+
+@pytest.mark.parametrize("placement", ["direct", "cond"])
+def test_rank_one_broadcast_keeps_distinct_coordinate_projections(placement):
+    signature = jax.ShapeDtypeStruct((256,), jnp.float32)
+    views = tuple(
+        adapt(jax.make_jaxpr(rank_one_broadcast(width, placement=placement))(signature)).view
+        for width in (1, 128)
+    )
+    outputs = tuple(
+        normalize_view(view, budget=AnalysisBudget()).projection.outputs for view in views
+    )
+    assert outputs[0] != outputs[1]
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare_program_views(*views)
+    assert error.value.failure_kind == "cas_undecided"
+
+
+@pytest.mark.parametrize("kind", ["sum", "max", "dot"])
+@pytest.mark.parametrize("guarded", [False, True])
+def test_rank_one_reduction_retains_its_input_domain(kind, guarded):
+    inputs = np.arange(256, dtype=np.float32)
+    views, outputs = [], []
+    for block in (128, 256):
+        source = jax.make_jaxpr(rank_one_reduction(kind, block, guarded=guarded))(inputs)
+        view = adapt(source).view
+        views.append(view)
+        projection = normalize_view(view, budget=AnalysisBudget()).projection
+        expression = projection.outputs[0]
+        assert isinstance(expression, ValueExpr) and expression.operation.startswith("tensor.")
+        parameters = dict((p.name, p.value) for p in expression.parameters)
+        assert parameters["__input_shapes"] == ((block,),) * (2 if kind == "dot" else 1)
+        chunks = inputs.reshape(-1, block)
+        reduced = (
+            np.sum(chunks, axis=1)
+            if kind == "sum"
+            else np.max(chunks, axis=1)
+            if kind == "max"
+            else np.einsum("ij,ij->i", chunks, chunks)
+        )
+        actual = np.asarray(
+            rank_one_reduction(kind, block, guarded=guarded, interpret=True)(inputs)
+        )
+        np.testing.assert_array_equal(actual, np.repeat(reduced, block))
+        outputs.append(actual)
+    assert not np.array_equal(*outputs)
+    with pytest.raises(MathematicalUndecidedError, match="mathematical backend"):
+        compare_program_views(*views)
+
+
+@pytest.mark.parametrize("kind", ["sum", "max", "dot"])
+@pytest.mark.parametrize("guarded", [False, True])
+def test_rank_one_reduction_preserves_equivalent_program_traversals(kind, guarded):
+    signature = jax.ShapeDtypeStruct((256,), jnp.float32)
+    left, right = (
+        adapt(
+            jax.make_jaxpr(rank_one_reduction(kind, guarded=guarded, reverse=reverse))(signature)
+        ).view
+        for reverse in (False, True)
+    )
+    result = compare_program_views(left, right)
+    assert result.status is Status.EQUIVALENT and result.equivalence_kind == "normalized"
+
+
+@pytest.mark.parametrize("projector", ["straight", "control", "tensor"])
+def test_unknown_value_semantics_cannot_enter_a_pointwise_projection(projector):
+    if projector == "tensor":
+        source = trace()
+        primitive = "add"
+    else:
+        source = jax.make_jaxpr(rank_one_reduction("sum", guarded=projector == "control"))(
+            jax.ShapeDtypeStruct((256,), jnp.float32)
+        )
+        primitive = "reduce_sum"
+
+    def replace_value_rule(region):
+        return replace(
+            region,
+            operations=tuple(
+                replace(
+                    op,
+                    primitive="unreviewed_value_rule"
+                    if op.primitive == primitive
+                    else op.primitive,
+                    regions=tuple(
+                        replace(child, region=replace_value_rule(child.region))
+                        for child in op.regions
+                    ),
+                )
+                for op in region.operations
+            ),
+        )
+
+    view = adapt(source).view
+    (outer,) = view.root.operations
+    call = replace(outer.call, kernel=replace_value_rule(outer.call.kernel))
+    changed = replace(view, root=replace(view.root, operations=(replace(outer, call=call),)))
+    with pytest.raises(UnsupportedJaxprError, match="tensor coordinate rule"):
+        normalize_view(changed, budget=AnalysisBudget())
 
 
 def function(

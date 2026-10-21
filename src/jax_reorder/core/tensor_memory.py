@@ -23,6 +23,7 @@ from .memory import (
     MemoryProjection,
     MemoryVersion,
     Predicate,
+    ScalarType,
     Uninitialized,
     ValueExpr,
     _literal,
@@ -38,6 +39,7 @@ from .model import (
     OperationView,
     Origin,
     PallasCallView,
+    ParameterView,
     RefTransform,
     RefType,
     RegionView,
@@ -339,6 +341,8 @@ def _functionalize_tensor_call(
     payloads: dict[int, tuple[DmaRectangle, DmaRectangle, tuple[BoxPiece[Expression], ...]]] = {}
     versions: list[MemoryVersion] = []
     origins: list[Origin] = []
+    # Final output values retain executed control even after writes are replaced.
+    control_guard: Expression = True
 
     def expression(value: Binding, loc: str) -> Expression:
         if isinstance(value, Uninitialized):
@@ -721,7 +725,7 @@ def _functionalize_tensor_call(
             loc: str,
             origin: Origin,
         ) -> tuple[Binding, ...]:
-            nonlocal memories, regular, dma_state
+            nonlocal memories, regular, dma_state, control_guard
             if semaphore_observer is not None:
                 raise UnsupportedJaxprError(
                     loc, "explicit core protocol requires statically resolved control"
@@ -729,10 +733,12 @@ def _functionalize_tensor_call(
             if dma_state.pending:
                 raise UnsupportedJaxprError(loc, "tensor branch requires quiescent DMA at entry")
             before_mem, before_counts, before_dma = memories, regular, dma_state
+            before_guard = control_guard
             baseline = len(dma_state.completed), len(dma_state.waits)
-            states, branch_results = [], []
+            states, branch_results, branch_guards = [], [], []
             next_transfer = before_dma.next_id
             for case, action in enumerate(actions):
+                control_guard = before_guard
                 memories = {i: copy(m) for i, m in before_mem.items()}
                 for memory in memories.values():
                     memory.pieces = list(memory.pieces)
@@ -746,7 +752,16 @@ def _functionalize_tensor_call(
                 if dma_state.pending:
                     raise UnsupportedJaxprError(loc, "tensor branch exits with outstanding DMA")
                 states.append((memories, regular, dma_state))
+                branch_guards.append(control_guard)
                 next_transfer = dma_state.next_id
+            # Equal branch values may disappear, but their evaluated selector
+            # must keep its domain and initialization requirements.
+            control_guard = ValueExpr(
+                "select_n",
+                ScalarType("bool", False, ()),
+                (selector, *branch_guards),
+                parameters=(ParameterView("__control_guard", True),),
+            )
             if any(c != states[0][1] for _, c, _ in states):
                 raise UnsupportedJaxprError(loc, "tensor branches leave different counter states")
             memories, regular, dma_state = before_mem, states[0][1], before_dma
@@ -1254,8 +1269,11 @@ def _functionalize_tensor_call(
                     if (
                         isinstance(selector, ValueExpr)
                         and selector.operation == "convert_element_type"
-                        and isinstance(selector.operands[0], ValueExpr)
-                        and selector.operands[0].type.dtype == "bool"
+                        and (
+                            isinstance(selector.operands[0], Predicate | bool)
+                            or isinstance(selector.operands[0], ValueExpr)
+                            and selector.operands[0].type.dtype == "bool"
+                        )
                     ):
                         selector = selector.operands[0]
                     if not (
@@ -1677,6 +1695,13 @@ def _functionalize_tensor_call(
         result: Expression | None = None
         axes = window_axes[j]
         for key, value in reversed(tuple(windows[j].values())):
+            if control_guard is not True:
+                value = ValueExpr(
+                    "select_n",
+                    scalar_type(types[npre + call.num_inputs + j]),
+                    (control_guard, value, value),
+                    parameters=(ParameterView("__control_guard", True),),
+                )
             bindings = plan.windows[j][key[0]].inverse if plan.windows else domain.inverse
             parts = []
             if plan.windows:

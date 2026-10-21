@@ -21,7 +21,7 @@ from .model import (
     ValueRef,
     ValueType,
 )
-from .tensor_domain import coordinate, coordinate_ranges
+from .tensor_domain import coordinate, coordinate_ranges, requires_tensor_coordinates
 from .tensor_values import tensor_value
 from .value_operations import pure_value
 
@@ -176,7 +176,9 @@ def binding_value(
             continue
         seen.add(id(item))
         budget.spend("call.binding_shapes")
-        tensor |= isinstance(item.type, ArrayType) and len(item.type.shape) > 1
+        tensor |= requires_tensor_coordinates(
+            item.operation, tuple(a.type for a in item.operands), (item.type,)
+        )
         pending.extend(item.operands)
 
     def emit(v: BindingExpr) -> Expression:
@@ -238,8 +240,12 @@ def binding_value(
                     budget,
                 )
             else:
+                value_ranges = dict(ranges or {})
+                if typ.shape:
+                    # Bound this intermediate's lane, not the eventual call shape.
+                    value_ranges["global"] = (0, typ.shape[0] - 1)
                 result = pure_value(
-                    op, tuple(emit(a) for a in v.operands), ranges or {}, coordinates or {}
+                    op, tuple(emit(a) for a in v.operands), value_ranges, coordinates or {}
                 )
         cache[id(v)] = result
         return result

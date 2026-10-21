@@ -11,6 +11,7 @@ from .index_domain import IndexExpr, axis, check_integer_range, integer, integer
 from .integer_ranges import integer_value_bounds as integer_value_bounds
 from .memory import Expression, Predicate, ValueExpr, scalar_type, truth
 from .model import ArrayType, OperationView
+from .tensor_domain import POINTWISE_PRIMITIVES
 
 
 def pure_value(
@@ -38,11 +39,16 @@ def pure_value(
     if name == "iota":
         if p["dimension"] != 0 or len(typ.shape) != 1 or p["shape"] != typ.shape:
             raise UnsupportedJaxprError(path, "iota requires one vector axis")
-        return axis("global")
+        value = axis("global")
+        # A local iota can enumerate a smaller window than the surrounding block.
+        check_integer_range(value, typ.dtype, {"global": (0, typ.shape[0] - 1)}, path)
+        return value
     if name == "broadcast_in_dim":
         if p["broadcast_dimensions"] != () or len(args) != 1:
             raise UnsupportedJaxprError(path, "broadcast requires a scalar source")
         return args[0]
+    if name not in POINTWISE_PRIMITIVES:
+        raise UnsupportedJaxprError(path, "value operation requires a tensor coordinate rule")
     value: Expression
     if name in ("eq", "ne", "lt", "le", "gt", "ge") and all(isinstance(v, IndexExpr) for v in args):
         value = Predicate(name, cast(tuple[IndexExpr, ...], args))

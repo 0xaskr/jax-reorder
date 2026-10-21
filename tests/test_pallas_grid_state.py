@@ -15,12 +15,14 @@ from jax_reorder import (
     Status,
     UnsupportedJaxprError,
     compare_algebraic_jaxprs,
+    compare_functions,
     compare_pallas_kernels,
     verify_pallas_kernel_comparison,
 )
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.call_bindings import extract_call
-from jax_reorder.core.index_domain import AnalysisBudget
+from jax_reorder.core.index_domain import AnalysisBudget, axis
+from jax_reorder.core.memory import _substitute
 from jax_reorder.core.normalization import (
     compare_program_views,
     normalize_view,
@@ -159,6 +161,120 @@ def test_rank_one_scratch_reuses_the_same_serial_window_interpreter():
                 at_point(result.left_protocol.projection.outputs[0], args, (128 * i + lane,))
                 == lane + i + 1
             )
+
+
+def local_scratch_window(
+    mode,
+    *,
+    block=128,
+    extent=512,
+    start=128,
+    programs=1,
+    control="cond",
+    value_mode="where",
+    interpret=False,
+):
+    width = min(block, extent - start)
+
+    def lane_values(lanes):
+        return (
+            jnp.where(lanes < 128, jnp.float32(1), jnp.float32(2))
+            if value_mode == "where"
+            else (lanes >= 128).astype(jnp.float32) + 1
+        )
+
+    def kernel(x, y, scratch):
+        program = pl.program_id(0)
+
+        def body():
+            lanes = jnp.arange(extent, dtype=jnp.int32)
+            values = lane_values(lanes) + program
+            scratch[:] = jax.jit(lambda v: v)(values) if control == "jit" else values
+            y[:] = x[:]
+            selected = (
+                scratch[start : start + width]
+                if mode == "source"
+                else lane_values(jnp.arange(width, dtype=jnp.int32) + start)
+                + program
+                - (mode == "wrong")
+            )
+            y[:width] = selected
+
+        if control == "cond":
+            jax.lax.cond(program >= 0, body, body)
+        else:
+            body()
+
+    spec = pl.BlockSpec((block,), lambda i: (i,))
+    return pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((programs * block,), jnp.float32),
+        grid=(programs,),
+        in_specs=(spec,),
+        out_specs=spec,
+        scratch_shapes=(tpu.VMEM((extent,), jnp.float32),),
+        interpret=interpret,
+    )
+
+
+@pytest.mark.parametrize(
+    ("block", "extent", "start", "programs"),
+    [(128, 512, 128, 1), (128, 512, 128, 2), (128, 256, 64, 1), (512, 128, 0, 1)],
+)
+def test_local_value_domains_follow_scratch_windows(block, extent, start, programs):
+    options = dict(block=block, extent=extent, start=start, programs=programs)
+    signature = jax.ShapeDtypeStruct((programs * block,), jnp.float32)
+    functions = tuple(local_scratch_window(mode, **options) for mode in ("source", "same", "wrong"))
+    sources = tuple(jax.make_jaxpr(fn)(signature) for fn in functions)
+    actual_input = np.full(signature.shape, -7, np.float32)
+    expected = actual_input.copy().reshape(programs, block)
+    width = min(block, extent - start)
+    for program in range(programs):
+        expected[program, :width] = np.where(np.arange(width) + start < 128, 1, 2) + program
+    expected = expected.reshape(-1)
+    for mode in ("source", "same", "wrong"):
+        result = np.asarray(local_scratch_window(mode, **options, interpret=True)(actual_input))
+        oracle = expected.copy().reshape(programs, block)
+        if mode == "wrong":
+            oracle[:, :width] -= 1
+        np.testing.assert_array_equal(result, oracle.reshape(-1))
+    proof = normalize_view(adapt(sources[0]).view, budget=AnalysisBudget())
+    projected = _substitute(proof.projection.outputs[0], {"global": axis("output:0")})
+    for index in (0, width - 1, programs * block - 1):
+        assert at_point(projected, (actual_input,), (index,)) == expected[index]
+    for candidate, expected_status in ((1, Status.EQUIVALENT), (2, Status.INEQUIVALENT)):
+        assert compare_algebraic_jaxprs(sources[0], sources[candidate]).status is expected_status
+        assert (
+            compare_functions(functions[0], functions[candidate], signature).status
+            is expected_status
+        )
+
+
+@pytest.mark.parametrize(
+    ("block", "extent", "start"), [(128, 512, 128), (128, 128, 64), (512, 128, 0)]
+)
+def test_scratch_window_projection_does_not_require_a_jit_wrapper(block, extent, start):
+    options = dict(block=block, extent=extent, start=start, value_mode="bool")
+    signature = jax.ShapeDtypeStruct((block,), jnp.float32)
+    arguments = np.arange(block, dtype=np.float32)
+    width = min(block, extent - start)
+    expected = arguments.copy()
+    expected[:width] = np.where(np.arange(width) + start < 128, 1, 2)
+    for control in ("direct", "jit"):
+        functions = tuple(
+            local_scratch_window(mode, control=control, **options)
+            for mode in ("source", "same", "wrong")
+        )
+        np.testing.assert_array_equal(
+            local_scratch_window("source", control=control, interpret=True, **options)(arguments),
+            expected,
+        )
+        for candidate, status in ((1, Status.EQUIVALENT), (2, Status.INEQUIVALENT)):
+            assert compare_functions(functions[0], functions[candidate], signature).status is status
+    direct, wrapped = (
+        local_scratch_window("source", control=control, **options) for control in ("direct", "jit")
+    )
+    assert compare_functions(direct, wrapped, signature).status is Status.EQUIVALENT
 
 
 def test_rank_one_tensor_coordinates_do_not_use_the_legacy_scalar_witness():
@@ -382,3 +498,223 @@ def test_upstream_and_ai_variants_execute_in_official_tpu_cpu_interpreter(family
         devices=1,
         execution_timeout=60,
     )
+
+
+def conditional_domain_call(
+    mode,
+    *,
+    tensor=False,
+    domain="safe",
+    wrong=False,
+    serial=False,
+    dtype=jnp.float32,
+    interpret=False,
+):
+    """Control dependencies survive equal values and later dead stores."""
+    block = (8, 128) if tensor else (128,)
+    padded = domain == "padding"
+    shape = (8, 256) if padded else block
+    input_shape = (8, 384) if padded else (*block[:-1], block[-1] * 2) if serial else shape
+    input_block = (8, 256) if padded else block
+    first = (0,) * len(block)
+
+    def kernel(x, y, scratch):
+        constant = jnp.full(block, 0 if wrong else 1, dtype)
+        if mode == "reference":
+            y[...] = constant
+            return
+        scalar = x[first]
+        selector = (
+            jnp.sum(x[...]) > 0
+            if padded
+            else jnp.log(scalar) > 0
+            if domain == "log"
+            else scalar > 0
+        )
+
+        def write():
+            y[...] = constant
+
+        if mode == "return":
+            value = jax.lax.cond(selector, lambda: jnp.float32(1), lambda: jnp.float32(1))
+            y[...] = jnp.full(block, value)
+        elif mode == "write":
+            jax.lax.cond(selector, write, write)
+        elif mode == "scratch":
+
+            def scratch_write():
+                scratch[...] = constant
+
+            jax.lax.cond(selector, scratch_write, scratch_write)
+            y[...] = constant
+        elif mode == "overwrite":
+
+            def other():
+                y[...] = constant + 1
+
+            jax.lax.cond(selector, write, other)
+            y[...] = constant
+        elif mode == "discard":
+            jax.lax.cond(selector, lambda: jnp.float32(1), lambda: jnp.float32(1))
+            y[...] = constant
+        elif mode == "serial":
+            jax.lax.cond(pl.program_id(0) == 0, lambda: jax.lax.cond(selector, write, write), write)
+        elif mode == "nested_padding":
+            jax.lax.cond(
+                pl.program_id(0) == (1 if wrong else 0),
+                lambda: jax.lax.cond(selector, write, write),
+                write,
+            )
+        elif mode == "nested":
+
+            def positive():
+                jax.lax.cond(jnp.log(scalar) > 0, write, write)
+
+            jax.lax.cond(selector, positive, write)
+        else:
+            raise AssertionError(mode)
+
+    mapping = (lambda p: (0, p)) if tensor else (lambda p: (p,))
+    return pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct(shape, dtype),
+        grid=(2 if padded or serial else 1,),
+        in_specs=[pl.BlockSpec(input_block, mapping)],
+        out_specs=pl.BlockSpec(block, (lambda p: first) if serial else mapping),
+        scratch_shapes=[tpu.VMEM(block, dtype)],
+        interpret=interpret,
+    ), jax.ShapeDtypeStruct(input_shape, jnp.float32)
+
+
+@pytest.mark.parametrize("tensor", [False, True])
+@pytest.mark.parametrize("mode", ["return", "write", "scratch", "overwrite"])
+def test_conditional_log_selector_remains_a_control_obligation(mode, tensor):
+    source, sig = conditional_domain_call(mode, tensor=tensor, domain="log")
+    target, _ = conditional_domain_call("reference", tensor=tensor)
+    with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+        compare_functions(source, target, sig)
+
+
+@pytest.mark.parametrize("mode", ["return", "write", "scratch", "overwrite"])
+def test_conditional_padded_selector_is_not_erased_by_equal_or_later_writes(mode):
+    source, sig = conditional_domain_call(mode, tensor=True, domain="padding")
+    target, _ = conditional_domain_call("reference", tensor=True, domain="padding")
+    with pytest.raises(MathematicalUndecidedError, match="memory initialization"):
+        compare_functions(source, target, sig)
+
+
+@pytest.mark.parametrize("tensor", [False, True])
+@pytest.mark.parametrize("mode", ["return", "write", "scratch", "overwrite", "nested"])
+def test_total_and_reachable_conditional_selectors_preserve_values(mode, tensor):
+    source, sig = conditional_domain_call(mode, tensor=tensor)
+    target, _ = conditional_domain_call("reference", tensor=tensor)
+    wrong, _ = conditional_domain_call("reference", tensor=tensor, wrong=True)
+    assert compare_functions(source, target, sig).status is Status.EQUIVALENT
+    assert compare_functions(source, wrong, sig).status is Status.INEQUIVALENT
+
+
+@pytest.mark.parametrize("tensor", [False, True])
+def test_unused_pure_conditional_remains_removable(tensor):
+    source, sig = conditional_domain_call("discard", tensor=tensor, domain="log")
+    target, _ = conditional_domain_call("reference", tensor=tensor)
+    assert compare_functions(source, target, sig).status is Status.EQUIVALENT
+
+
+@pytest.mark.parametrize("tensor", [False, True])
+def test_serial_window_overwrite_retains_earlier_selector(tensor):
+    source, sig = conditional_domain_call("serial", tensor=tensor, domain="log", serial=True)
+    target, _ = conditional_domain_call("reference", tensor=tensor, serial=True)
+    with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+        compare_functions(source, target, sig)
+
+
+def test_padded_selector_is_required_only_in_its_reachable_program():
+    source, sig = conditional_domain_call("nested_padding", tensor=True, domain="padding")
+    target, _ = conditional_domain_call("reference", tensor=True, domain="padding")
+    assert compare_functions(source, target, sig).status is Status.EQUIVALENT
+    unsafe, _ = conditional_domain_call("nested_padding", tensor=True, domain="padding", wrong=True)
+    with pytest.raises(MathematicalUndecidedError, match="memory initialization"):
+        compare_functions(unsafe, target, sig)
+
+
+@pytest.mark.parametrize("tensor", [False, True])
+def test_conditional_control_does_not_replace_inputs_or_reorder_outputs(tensor):
+    shape = (8, 128) if tensor else (128,)
+    zero = (0,) * len(shape)
+    spec = pl.BlockSpec(shape, (lambda p: (0, p)) if tensor else (lambda p: (p,)))
+
+    def build(control, wrong=False):
+        def kernel(x, z, y, w):
+            def write():
+                y[...] = x[...] + (2 if wrong else 1)
+                w[...] = z[...] * 2
+
+            if control:
+                jax.lax.cond(x[zero] > 0, write, write)
+            else:
+                write()
+
+        return pl.pallas_call(
+            kernel,
+            out_shape=(jax.ShapeDtypeStruct(shape, jnp.float32),) * 2,
+            grid=(1,),
+            in_specs=[spec, spec],
+            out_specs=(spec, spec),
+        )
+
+    sig = jax.ShapeDtypeStruct(shape, jnp.float32)
+    assert compare_functions(build(True), build(False), sig, sig).status is Status.EQUIVALENT
+    assert (
+        compare_functions(build(True), build(False, True), sig, sig).status is Status.INEQUIVALENT
+    )
+
+
+@pytest.mark.parametrize("tensor", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.bool_, jnp.int32])
+def test_control_obligations_preserve_boolean_and_integer_outputs(tensor, dtype):
+    source, sig = conditional_domain_call("write", tensor=tensor, dtype=dtype)
+    target, _ = conditional_domain_call("reference", tensor=tensor, dtype=dtype)
+    wrong, _ = conditional_domain_call("reference", tensor=tensor, dtype=dtype, wrong=True)
+    assert compare_functions(source, target, sig).status is Status.EQUIVALENT
+    assert compare_functions(source, wrong, sig).status is Status.INEQUIVALENT
+    partial, _ = conditional_domain_call("write", tensor=tensor, dtype=dtype, domain="log")
+    with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+        compare_functions(partial, target, sig)
+
+
+def conditional_switch_call(*, tensor=False, dtype=jnp.float32, mode="switch", interpret=False):
+    shape = (8, 128) if tensor else (128,)
+
+    def kernel(x, y):
+        def write():
+            y[...] = jnp.full(shape, 0 if mode == "wrong" else 1, dtype)
+
+        if mode == "switch":
+            jax.lax.switch(x[(0,) * len(shape)], (write, write, write))
+        else:
+            write()
+
+    spec = pl.BlockSpec(shape, (lambda p: (0, p)) if tensor else (lambda p: (p,)))
+    return pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct(shape, dtype),
+        grid=(1,),
+        in_specs=[spec],
+        out_specs=spec,
+        interpret=interpret,
+    ), jax.ShapeDtypeStruct(shape, jnp.int32)
+
+
+@pytest.mark.parametrize("tensor", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.int32])
+def test_integer_switch_control_preserves_saturation_and_equal_outputs(tensor, dtype):
+    options = dict(tensor=tensor, dtype=dtype)
+    source, sig = conditional_switch_call(**options)
+    target, _ = conditional_switch_call(**options, mode="reference")
+    wrong, _ = conditional_switch_call(**options, mode="wrong")
+    assert compare_functions(source, target, sig).status is Status.EQUIVALENT
+    assert compare_functions(source, wrong, sig).status is Status.INEQUIVALENT
+    execute, _ = conditional_switch_call(**options, interpret=True)
+    for selector in (np.iinfo(np.int32).min, -7, 0, 1, 2, 3, np.iinfo(np.int32).max):
+        result = np.asarray(execute(np.full(sig.shape, selector, np.int32)))
+        np.testing.assert_array_equal(result, np.ones(sig.shape, dtype))

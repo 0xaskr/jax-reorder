@@ -37,7 +37,85 @@ from .model import (
     SliceIndex,
     TensorIndex,
     ValueRef,
+    ValueType,
 )
+
+# Scalarization may erase array shapes only for these reviewed lane-wise rules.
+# Cross-lane operations must retain coordinate maps and contraction domains even
+# when every array involved is rank one.
+POINTWISE_PRIMITIVES = frozenset(
+    {
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "rem",
+        "neg",
+        "sign",
+        "abs",
+        "max",
+        "min",
+        "clamp",
+        "eq",
+        "ne",
+        "lt",
+        "le",
+        "gt",
+        "ge",
+        "and",
+        "or",
+        "xor",
+        "not",
+        "select_n",
+        "sin",
+        "cos",
+        "exp",
+        "log",
+        "sqrt",
+        "rsqrt",
+        "tanh",
+        "floor",
+        "ceil",
+        "is_finite",
+        "integer_pow",
+        "convert_element_type",
+    }
+)
+TENSOR_VALUE_PRIMITIVES = frozenset(
+    {
+        "dot_general",
+        "reduce_sum",
+        "reduce_max",
+        "transpose",
+        "reshape",
+        "tile",
+        "gather",
+        "broadcast_to",
+        "reshard",
+    }
+)
+
+
+def requires_tensor_coordinates(
+    primitive: str, operands: tuple[ValueType, ...], results: tuple[ValueType, ...]
+) -> bool:
+    """Keep input coordinates whenever scalarization would erase a shape map."""
+    if primitive in TENSOR_VALUE_PRIMITIVES or any(
+        isinstance(typ, ArrayType) and len(typ.shape) > 1 for typ in operands + results
+    ):
+        return True
+    if primitive == "broadcast_in_dim":
+        return any(isinstance(typ, ArrayType) and typ.shape for typ in operands)
+    if primitive not in POINTWISE_PRIMITIVES or len(results) != 1:
+        return False
+    result = results[0]
+    if not isinstance(result, ArrayType):
+        return False
+    # Scalars need no coordinate substitution. A non-scalar singleton operand
+    # does: its lane must stay zero even when the result has many lanes.
+    return any(
+        isinstance(typ, ArrayType) and typ.shape and typ.shape != result.shape for typ in operands
+    )
 
 
 def restoring_outputs(call: PallasCallView) -> bool:
@@ -49,6 +127,7 @@ def restoring_outputs(call: PallasCallView) -> bool:
 
 
 def multidimensional(call: PallasCallView, *, masked: bool = True) -> bool:
+    """Whether memory projection needs tensor coordinates, including rank-one values."""
     if len(call.grid) != 1 or any(len(b.block_shape) != 1 or b.unbuffered for b in call.blocks):
         return True
     if (call.scratch or masked) and any(b.array.shape[0] % b.block_shape[0] for b in call.blocks):
@@ -58,9 +137,17 @@ def multidimensional(call: PallasCallView, *, masked: bool = True) -> bool:
         return True
     pending = [call.kernel]
     while pending:
-        for op in pending.pop().operations:
+        region = pending.pop()
+        types = {v.id: v.type for v in region.inputs}
+        types.update((v.id, v.type) for v, _ in region.constants)
+        for op in region.operations:
             if (
-                op.primitive in ("run_scoped", "reshard")
+                op.primitive == "run_scoped"
+                or requires_tensor_coordinates(
+                    op.primitive,
+                    tuple(types[v.id] if isinstance(v, ValueRef) else v.type for v in op.operands),
+                    tuple(v.type for v in op.results),
+                )
                 or op.access
                 and (
                     op.access.transforms
@@ -80,6 +167,7 @@ def multidimensional(call: PallasCallView, *, masked: bool = True) -> bool:
                 )
             ):
                 return True
+            types.update((v.id, v.type) for v in op.results)
             pending.extend(r.region for r in op.regions)
     return False
 

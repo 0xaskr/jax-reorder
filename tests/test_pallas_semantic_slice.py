@@ -218,7 +218,7 @@ def test_store_then_get_uses_current_version():
     [
         ("uninitialized", "uninitialized"),
         ("duplicate", "multiple writes"),
-        ("partial", "scalar or full block|partial Ref"),
+        ("partial", "uninitialized"),
         ("input_write", "read-only"),
     ],
 )

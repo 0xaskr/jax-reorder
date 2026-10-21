@@ -15,6 +15,7 @@ import sympy as sp
 from jax.typing import DTypeLike
 from numpy.typing import ArrayLike
 
+from ..errors import MathematicalUndecidedError
 from ._typing import ObjectArray, Shape
 
 if TYPE_CHECKING:
@@ -98,6 +99,61 @@ def rename_bounds(expression: sp.Basic, *, fresh: bool = False) -> sp.Basic:
     return visit(expression, {}, 0)
 
 
+def _boolean_piecewise(expression: sp.Piecewise) -> sp.Basic:
+    """Preserve ordered Boolean branches without numeric Piecewise consumers.
+
+    Piecewise construction already charges its branches to the builder budget.
+    This pass adds a linear number of shared ITE nodes, never expands a truth
+    table, and balances them to avoid making a flat constant array recursive.
+    An explicit default is required, so no uncovered position becomes defined.
+    The tensor's original shape, definedness and memory validity are unchanged.
+    """
+    converted: dict[sp.Basic, sp.Basic] = {}
+    pending = [(expression, False)]
+    while pending:
+        node, ready = pending.pop()
+        if node in converted:
+            continue
+        if not ready:
+            if node.args[-1][1] != sp.true:
+                raise MathematicalUndecidedError(
+                    "algebra.conditions", "Boolean Piecewise coverage is not established"
+                )
+            pending.append((node, True))
+            pending.extend(
+                (child, False)
+                for pair in node.args
+                for child in pair.args
+                if isinstance(child, sp.Piecewise) and child not in converted
+            )
+            continue
+        choices = []
+        for value, guard in node.args:
+            value = converted.get(value, value)
+            # Region assembly can use numeric zero as an unreachable Boolean
+            # placeholder. The tensor dtype supplies the interpretation.
+            value = sp.false if value == sp.S.Zero else sp.true if value == sp.S.One else value
+            choices.append((converted.get(guard, guard), value))
+        while len(choices) > 1:
+            merged = []
+            for index in range(0, len(choices), 2):
+                left_guard, left_value = choices[index]
+                if index + 1 == len(choices):
+                    merged.append((left_guard, left_value))
+                    continue
+                right_guard, right_value = choices[index + 1]
+                merged.append(
+                    (
+                        sp.ITE(left_guard, sp.true, right_guard, evaluate=False),
+                        sp.ITE(left_guard, left_value, right_value, evaluate=False),
+                    )
+                )
+            choices = merged
+        guard, value = choices[0]
+        converted[node] = sp.ITE(guard, value, sp.false, evaluate=False)
+    return converted[expression]
+
+
 @dataclass(frozen=True)
 class SymbolicTensor:
     """一个输出端口的元素公式及附加事实。
@@ -117,6 +173,10 @@ class SymbolicTensor:
     # Pallas allocated-but-uninitialized lanes are a total-output safety
     # obligation, separate from mathematical partial-function definedness.
     memory_validity: sp.Basic = sp.true
+
+    def __post_init__(self) -> None:
+        if np.dtype(self.dtype).kind == "b" and isinstance(self.expression, sp.Piecewise):
+            object.__setattr__(self, "expression", _boolean_piecewise(self.expression))
 
     def read(self, indices: Sequence[sp.Expr | int]) -> tuple[sp.Basic, sp.Basic]:
         """用具体或符号坐标实例化元素公式，返回 (expression, defined)。

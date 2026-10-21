@@ -7,6 +7,15 @@
 - `program_id`、`num_programs`、index_map 与局部坐标使用同一 grid 计划。
   静态串行坐标在预算内重放；parallel 轴优先保留符号批量模板，不逐 tensor 元素枚举。
 - 并行 program 轴不进入 kernel 原有 dot/reduce 的收缩轴，也不直接成为用户输出 shape。
+- 一维块的 reduce/dot 同样保留完整输入范围与绑定坐标；是否逐元素取决于运算语义，
+  不取决于数组 rank。简单、控制流和外层实参投影使用同一准入规则。
+- 广播保留每个输入的 shape，长度为 1 的输入轴固定读取坐标 0；kernel 嵌套区域与外层
+  实参共用坐标路径判定。同 shape 逐元素和标量广播继续使用原有快速路径。
+- 外层和局部一维投影从当前运算的 shape 绑定完整坐标范围；scratch 不借用输出 block
+  的范围，标量保留设备/program 作用域。不同 scratch 大小和部分 Ref 窗口按实际需求
+  选择扩展路径，不依赖 jit 包装；坐标上下界不是输入数据值的上下界。
+- 空 reshape 保留空域与来源，不构造除零坐标；归约消费者仍使用真实空形状。
+  [空域修复与条件义务验收](../../exec-plans/completed/pallas-cond-boolean-dot.md)。
 - 各输出分别根据实际 index_map 划分窗口；同窗口可继续更新，换窗口按源 staging 契约提交/失效。
   串行意味着保留实际状态依赖；是否累加由 kernel 代码决定。
 - 证明全局覆盖、逆映射及唯一 writer/owner 后才能组装输出；共享 HBM/Ref 不按 owner 克隆。
@@ -61,6 +70,9 @@ reshape/transpose/index 组合必须映回同一真实存储，保留 lane 次�
 
 | 修改什么 | 原始设计、反例及验收 |
 | --- | --- |
+| scratch 中间坐标与局部路径选择 | [修复与复审](../../exec-plans/completed/pallas-scratch-boolean-review.md) |
+| 一维 reduce/dot 范围与投影准入 | [审查修复验收](../../exec-plans/completed/pallas-review-fixes.md) |
+| 一维广播与外层坐标范围 | [坐标修复验收](../../exec-plans/completed/pallas-broadcast-coordinates.md) |
 | Grid 展开、独立输出窗口 | [阶段 19](history/stage-19.md)、[阶段 18](history/stage-18.md) |
 | 跨迭代 DMA、输出块状态 | [阶段 16](history/stage-16.md)、[阶段 17](history/stage-17.md) |
 | Ref 组合、有洞传输、尾块有效域 | [阶段 22](history/stage-22.md)、[阶段 23](history/stage-23.md) |

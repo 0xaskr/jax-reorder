@@ -32,6 +32,12 @@ verify_pallas_kernel_comparison(left, right, result)
 源码入口：[local.py](../../../src/jax_reorder/core/local.py)、
 [normalization.py](../../../src/jax_reorder/core/normalization.py)。
 
+公开数学入口 `compare_algebraic_jaxprs(..., execution=...)` 接受同一绑定或
+`(left_binding, right_binding)`；`compare_functions` / `compare_function_traces`
+在 `equivalence="auto"` 的 forward 比较中传递该条件。显式绑定先完成协议校验，
+不能因结构相同而跳过；结果的 `normalizations` 和 `assumptions` 保留执行前提。
+绑定不配置调度，不适用于普通 JAX、未接入该证明的本地 kernel 或求导模式；这些情况明确拒绝。
+
 ## 环境与来源
 
 - Python/NumPy 静态标量、精确数组实参和外层 JAX 纯运算保留其内容、端口和依赖。
@@ -49,8 +55,23 @@ verify_pallas_kernel_comparison(left, right, result)
 Graph、存储/协议分析和数学投影读取同一视图；algebra 不反向解析 GridMapping/Ref 来补语义。
 地址与初始化证明完成后才消去状态；浮点代数重排仍报告警告，不承诺逐位相同或误差很小。
 
+代数层可用已证明的输出坐标域及收缩输入域，证明整数坐标到 float16/bfloat16/float32/float64
+的 cast 在目标格式连续精确整数区间内保持值不变；任意整数输入不能从 shape 获得数据值域。
+范围不足或可能舍入时保留不透明转换与原始条件；闭合表达式含不透明函数也不能当作数值常量求值。
+闭合整数常量按可容纳值的整数存储转目标 dtype，避免 Python float 中转丢失精度；
+标量 cast 的广播恢复须保留定义条件和内存有效性，不改变目标格式自身的转换行为。
+浮点 `iota`（含一维外层输入绑定）不能充当整数坐标，语义投影明确拒绝；
+[准入修复与验证](../../exec-plans/completed/pallas-float-iota.md)按需展开。
+布尔 extrema、序关系与已支持的归约遵循 `False < True` 的逻辑规则，保留所有原始
+定义条件和内存义务；[布尔运算修复与复审](../../exec-plans/completed/pallas-scratch-boolean-review.md)。
+相同 cond 分支仍保留 selector 义务；布尔点积按 AND/OR 收缩建模，显式数值累加类型按计数建模。
+验收见[条件与点积修复](../../exec-plans/completed/pallas-cond-boolean-dot.md)。
+
 ## 按需证据
 
+- 常量舍入及远端布尔 cast：[修复验收](../../exec-plans/completed/pallas-constant-and-boolean-casts.md)。
+- 有界坐标 cast、精度边界与闭合转换：[修复验收](../../exec-plans/completed/pallas-bounded-integer-casts.md)。
+- 一维收缩范围与公开执行绑定修复：[审查修复验收](../../exec-plans/completed/pallas-review-fixes.md)。
 - 接口与外层来源正反例：[阶段 13](history/stage-13.md)。
 - 完整结构比较、effects 和真实开源候选：[阶段 8](history/stage-08.md)。
 - 纯值投影和公共 SymPy 接入：[阶段 9](history/stage-09.md)。

@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import sympy as sp
+from jax import dtypes, lax
 
-from ..core.index_domain import IndexExpr
+from ..core.index_domain import IndexExpr, axis, bounds
 from ..core.memory import Expression, MemoryProjection, Predicate, ValueExpr
 from ..errors import UnsupportedJaxprError
 from ._typing import ArrayAval, Equation
@@ -48,6 +49,24 @@ def _operation(
     value operations are reviewed reductions and dot; their original full bounds
     are used for both value formulas and the universal initialization obligation.
     """
+    shape = tuple(equation.outvars[0].aval.shape)
+    if equation.primitive.name == "convert_element_type" and values[0].shape != shape:
+        original = values[0]
+        if original.shape:
+            raise UnsupportedJaxprError("algebra.pallas.cast", "cast operand shape differs")
+        # Core scalarizes broadcasts, but a cast still reads its input at the
+        # output coordinates. Restore that view for scalar literals and bools.
+        broadcast = cast(
+            Equation,
+            SimpleNamespace(
+                primitive=lax.broadcast_in_dim_p,
+                params={"shape": shape, "broadcast_dimensions": ()},
+                invars=(),
+                outvars=(SimpleNamespace(aval=SimpleNamespace(shape=shape, dtype=original.dtype)),),
+            ),
+        )
+        (expanded,) = builder.operation(broadcast, [replace(original, memory_validity=sp.true)], 0)
+        values = [replace(expanded, memory_validity=original.memory_validity)]
     (result,) = builder.operation(
         equation, [replace(v, memory_validity=sp.true) for v in values], 0
     )
@@ -125,16 +144,86 @@ def projected_outputs(
             sp.Dummy("output", integer=True, nonnegative=True) for _ in shape
         )
         bindings = {f"output:{i}": v for i, v in enumerate(output_coordinates)}
+        ranges = {f"output:{i}": (0, n - 1) for i, n in enumerate(shape)}
         if len(shape) == 1:
             bindings["global"] = output_coordinates[0]
+            ranges["global"] = ranges["output:0"]
 
         def scalar(value: Any, dtype: Any) -> SymbolicTensor:
             return builder.constant(value, cast(ArrayAval, SimpleNamespace(shape=(), dtype=dtype)))
 
         def emitter(
-            shape: tuple[int, ...], bindings: dict[str, sp.Expr]
+            shape: tuple[int, ...],
+            bindings: dict[str, sp.Expr],
+            ranges: dict[str, tuple[int, int]],
         ) -> Callable[[Expression], SymbolicTensor]:
             cache: dict[int, SymbolicTensor] = {}
+            range_cache: dict[int, tuple[int, int] | None] = {}
+
+            def coordinate_bounds(value: IndexExpr) -> tuple[int, int] | None:
+                if id(value) in range_cache:
+                    return range_cache[id(value)]
+                builder.budget.spend(1 + len(value.args), path="algebra.pallas.cast_bounds")
+                # Reuse the core interval rules one node at a time. Passing
+                # cached child intervals avoids recursively revisiting a DAG.
+                children = [coordinate_bounds(child) for child in value.args]
+                if any(limit is None for limit in children):
+                    result = None
+                elif value.args:
+                    names = tuple(f"operand:{i}" for i in range(len(children)))
+                    try:
+                        result = bounds(
+                            replace(value, args=tuple(axis(name) for name in names)),
+                            {
+                                name: limit
+                                for name, limit in zip(names, children, strict=True)
+                                if limit is not None
+                            },
+                        )
+                    except UnsupportedJaxprError:
+                        # A guarded lookup may be valid on fewer lanes than
+                        # this emitter's full domain; leave its cast opaque.
+                        result = None
+                elif value.kind == "axis" and str(value.value) not in ranges:
+                    result = None
+                else:
+                    result = bounds(value, ranges)
+                range_cache[id(value)] = result
+                return result
+
+            def emit_control_selector(
+                value: Expression,
+            ) -> tuple[SymbolicTensor, tuple[int, int] | None]:
+                # switch clips its scalar integer selector before branching;
+                # core may add a second clip. This is exact bounded selection,
+                # not permission to interpret general fixed-width arithmetic.
+                if isinstance(value, ValueExpr) and value.operation == "clamp":
+                    dtype = np.dtype(value.type.dtype)
+                    if dtype.kind in "iu" and len(value.operands) == 3:
+                        low, high = (emit(value.operands[i]) for i in (0, 2))
+                        if low.expression.is_Integer and high.expression.is_Integer:
+                            lo, hi = int(low.expression), int(high.expression)
+                            limits = np.iinfo(dtype)
+                            if limits.min <= lo <= hi <= limits.max:
+                                item, _ = emit_control_selector(value.operands[1])
+                                if np.dtype(item.dtype) == dtype:
+                                    builder.budget.spend(path="algebra.pallas.control_selector")
+                                    args = (low, item, high)
+                                    values = [builder.broadcast(v, shape) for v in args]
+                                    return (
+                                        SymbolicTensor(
+                                            shape,
+                                            dtype,
+                                            sp.Min(sp.Max(values[1][0], lo), hi),
+                                            sp.And(*(d for _, d in values)),
+                                            finite=all(v.finite for v in args),
+                                            memory_validity=sp.And(
+                                                *(_memory_broadcast(v, shape) for v in args)
+                                            ),
+                                        ),
+                                        (lo, hi),
+                                    )
+                return emit(value), None
 
             def emit(value: Expression) -> SymbolicTensor:
                 nonlocal has_padding
@@ -237,6 +326,66 @@ def projected_outputs(
                             memory_validity=_memory_read(source, addresses),
                             source=Source(None, shape, source.dtype, finite=source.finite),
                         )
+                    elif value.operation == "select_n" and any(
+                        p.name == "__control_guard" and p.value is True for p in value.parameters
+                    ):
+                        # These internal selects retain the conditions of
+                        # executed control independently of mutable storage.
+                        # Evaluate branches lazily, including nested controls.
+                        selector, selector_range = emit_control_selector(value.operands[0])
+                        args = [selector] + [emit(v) for v in value.operands[1:]]
+                        pred, dp = builder.broadcast(args[0], shape)
+                        branches = [builder.broadcast(v, shape) for v in args[1:]]
+                        guards = [
+                            (sp.Not(pred) if i == 0 else pred)
+                            if np.dtype(args[0].dtype).kind == "b"
+                            else sp.Eq(pred, i)
+                            for i in range(len(branches))
+                        ]
+                        complete = np.dtype(args[0].dtype).kind == "b"
+                        if selector_range is not None and 0 <= selector_range[0] <= selector_range[
+                            1
+                        ] < len(branches):
+                            # The checked integer interval proves exactly one
+                            # branch exists. Spell the last case as the disjoint
+                            # complement so CAS need not rediscover that proof.
+                            guards[-1] = sp.Not(sp.Or(*guards[:-1]))
+                            complete = True
+
+                        def select_part(items: Sequence[sp.Basic], *, boolean: bool) -> sp.Basic:
+                            # This removes only a common branch part. The
+                            # selector's own domain/validity is kept below.
+                            if complete and all(v == items[0] for v in items[1:]):
+                                return items[0]
+                            if boolean:
+                                return sp.Or(
+                                    *(sp.And(g, v) for g, v in zip(guards, items, strict=True))
+                                )
+                            return sp.Piecewise(
+                                *((v, g) for g, v in zip(guards, items, strict=True)),
+                                (sp.S.Zero, True),
+                            )
+
+                        result = SymbolicTensor(
+                            shape,
+                            dtype,
+                            select_part([v for v, _ in branches], boolean=dtype.kind == "b"),
+                            sp.And(dp, select_part([d for _, d in branches], boolean=True)),
+                            finite=all(v.finite for v in args[1:]),
+                            source=(
+                                args[1].source
+                                if args[1].shape == shape
+                                and all(v is value.operands[1] for v in value.operands[2:])
+                                else None
+                            ),
+                            memory_validity=sp.And(
+                                _memory_broadcast(args[0], shape),
+                                select_part(
+                                    [_memory_broadcast(v, shape) for v in args[1:]], boolean=True
+                                ),
+                            ),
+                        )
+                        builder.rules.add("pallas.control-conditions:v1")
                     elif (
                         value.operation == "select_n"
                         and dtype.kind in "biu"
@@ -291,9 +440,30 @@ def projected_outputs(
                                 sp.Dummy("tensor", integer=True, nonnegative=True) for _ in names
                             )
                             local = emitter(
-                                input_shape, {**bindings, **dict(zip(names, axes, strict=True))}
+                                input_shape,
+                                {**bindings, **dict(zip(names, axes, strict=True))},
+                                {
+                                    **ranges,
+                                    **{
+                                        name: (0, n - 1)
+                                        for name, n in zip(names, input_shape, strict=True)
+                                    },
+                                },
                             )(body)
                             rename = dict(zip(axes, coordinates(input_shape), strict=True))
+                            source = local.source
+                            if source is not None and not source.shape and input_shape:
+                                # Core folds constant broadcast bodies to a
+                                # scalar; restore its tensor view for consumers
+                                # that inspect Source axes (not only values).
+                                source = Source(
+                                    lax.broadcast_in_dim_p,
+                                    input_shape,
+                                    np.dtype(input_dtype),
+                                    (source,),
+                                    {"shape": input_shape, "broadcast_dimensions": ()},
+                                    finite=source.finite,
+                                )
                             args.append(
                                 replace(
                                     local,
@@ -302,6 +472,7 @@ def projected_outputs(
                                     expression=local.expression.xreplace(rename),
                                     defined=local.defined.xreplace(rename),
                                     memory_validity=local.memory_validity.xreplace(rename),
+                                    source=source,
                                 )
                             )
                         params = {}
@@ -375,7 +546,37 @@ def projected_outputs(
                                 ),
                             ),
                         )
-                        result = _operation(builder, eq, args)
+                        limits = None
+                        if (
+                            value.operation == "convert_element_type"
+                            and len(value.operands) == 1
+                            and isinstance(value.operands[0], IndexExpr)
+                            and str(dtype) in {"float16", "bfloat16", "float32", "float64"}
+                        ):
+                            limits = coordinate_bounds(value.operands[0])
+                        exact_limit = 2 ** (dtypes.finfo(dtype).nmant + 1) if limits else 0
+                        if (
+                            limits is not None
+                            and -exact_limit <= limits[0] <= limits[1] <= exact_limit
+                        ):
+                            # Only checked integer coordinates acquire this
+                            # identity. Array shape never bounds input data.
+                            source = args[0]
+                            result = replace(
+                                source,
+                                dtype=dtype,
+                                source=Source(
+                                    lax.convert_element_type_p,
+                                    shape,
+                                    dtype,
+                                    (source.source,) if source.source is not None else (),
+                                    params,
+                                    finite=source.finite,
+                                ),
+                            )
+                            builder.rules.add("pallas.bounded-integer-cast:v1")
+                        else:
+                            result = _operation(builder, eq, args)
                 else:
                     raise UnsupportedJaxprError("algebra.pallas", "unknown projected value")
                 cache[id(value)] = result
@@ -383,7 +584,7 @@ def projected_outputs(
 
             return emit
 
-        result = emitter(shape, bindings)(root)
+        result = emitter(shape, bindings, ranges)(root)
         expr, defined = builder.broadcast(result, shape)
         rename = dict(zip(output_coordinates, coordinates(shape), strict=True))
         expr, defined = expr.xreplace(rename), defined.xreplace(rename)

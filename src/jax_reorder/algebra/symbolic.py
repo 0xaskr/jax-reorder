@@ -253,15 +253,18 @@ class SymbolicBuilder:
         else:
             # 具体常量保留字面值，不引入新的自由符号身份。
             indices = coordinates(array.shape)
-            expression = sp.Piecewise(
-                *[
-                    (
-                        exact[index],
-                        sp.And(*(sp.Eq(i, j) for i, j in zip(indices, index, strict=True))),
-                    )
-                    for index in np.ndindex(array.shape)
-                ]
-            )
+            branches = [
+                (
+                    exact[index],
+                    sp.And(*(sp.Eq(i, j) for i, j in zip(indices, index, strict=True))),
+                )
+                for index in np.ndindex(array.shape)
+            ]
+            if dtype_kind(aval.dtype) == "b":
+                # All valid array coordinates are covered above. An explicit
+                # shape-external placeholder makes Boolean conversion total.
+                branches.append((sp.false, sp.true))
+            expression = sp.Piecewise(*branches)
         finite = bool(np.all(np.isfinite(array)))
         if not finite:
             self.rules.add("negative_infinity_constant")
@@ -471,6 +474,25 @@ class SymbolicBuilder:
             )
         return sp.Eq(sp.Product(sp.Piecewise((1, condition), (0, True)), *limits), 1)
 
+    def finite_reduction(
+        self,
+        function: Callable[..., sp.Basic],
+        expression: sp.Basic,
+        limits: Sequence[Limit],
+        path: str,
+    ) -> sp.Basic:
+        """Enumerate finite extrema/Boolean contractions after charging work."""
+        count = prod(int(stop - start + 1) for _, start, stop in limits)
+        self.budget.spend(count, path=path)
+        return function(
+            *(
+                expression.xreplace(dict(zip((lim[0] for lim in limits), point, strict=True)))
+                for point in product(
+                    *(range(int(start), int(stop) + 1) for _, start, stop in limits)
+                )
+            )
+        )
+
     def summation(
         self, expression: sp.Basic, limits: Sequence[Limit], defined: sp.Basic = sp.true
     ) -> sp.Basic:
@@ -603,13 +625,14 @@ class SymbolicBuilder:
         if name == "reduce_sum" and all(values[0].shape[axis] == 1 for axis in eq.params["axes"]):
             # 单位轴求和等于恒等，不产生新值。
             layouts.add(name)
+        # 闭合归约仍可含不透明函数；没有自由符号不等于可数值求值的常量。
         narrowing = (
             name == "convert_element_type"
             and values
             and values[0].finite
             and not sources[0].finite
             and dtype_kind(values[0].dtype) == dtype_kind(eq.outvars[0].aval.dtype) == "f"
-            and bool(values[0].expression.free_symbols)
+            and (bool(values[0].expression.free_symbols) or values[0].expression.has(AppliedUndef))
         )
         if narrowing:
             # 浮点窄化 cast 可能把有限输入变成 inf；不能用实数恒等式表示，
@@ -675,7 +698,13 @@ class SymbolicBuilder:
                 or (
                     name == "convert_element_type"
                     and values[0].expression.has(AppliedUndef)
-                    and dtype_kind(eq.outvars[0].aval.dtype) in "iu"
+                    and (
+                        dtype_kind(eq.outvars[0].aval.dtype) in "iu"
+                        or (
+                            values[0].dtype != eq.outvars[0].aval.dtype
+                            and not values[0].expression.free_symbols
+                        )
+                    )
                 )
             )
         ):
@@ -832,7 +861,23 @@ class SymbolicBuilder:
             elif name == "atan2":
                 domain &= sp.Or(sp.Ne(args[0], 0), sp.Ne(args[1], 0))
             scalar_args = (*args, params["y"]) if name == "integer_pow" else args
-            expression = sp.sympify(SCALAR[name](*scalar_args))
+            # Boolean order is False < True. SymPy's real extrema and order
+            # relations cannot consume Boolean predicates; retain their truth
+            # tables explicitly, while keeping every operand's domain above.
+            boolean_scalar = {
+                "max": sp.Or,
+                "min": sp.And,
+                "lt": lambda a, b: sp.And(sp.Not(a), b),
+                "le": lambda a, b: sp.Or(sp.Not(a), b),
+                "gt": lambda a, b: sp.And(a, sp.Not(b)),
+                "ge": lambda a, b: sp.Or(a, sp.Not(b)),
+            }
+            function = (
+                boolean_scalar.get(name, SCALAR[name])
+                if all(dtype_kind(v.dtype) == "b" for v in values)
+                else SCALAR[name]
+            )
+            expression = sp.sympify(function(*scalar_args))
             if dtype_kind(aval.dtype) in "iu" and not expression.free_symbols:
                 # 常量整数运算按 dtype 值域检查；溢出值没有可表示的数学结果。
                 limits = np.iinfo(aval.dtype)
@@ -853,8 +898,27 @@ class SymbolicBuilder:
             if np.dtype(value.dtype).kind == "b":
                 return result(sp.Piecewise((1, expression), (0, True)), domain)
             if not expression.free_symbols:
-                # 常量转换交给 NumPy 按目标 dtype 舍入，再取精确值。
-                converted = np.asarray(float(expression), dtype=aval.dtype)
+                # 整数先保存在足够宽的整型中；Python float 会先舍入成 float64，
+                # 再转 float32 时可能二次舍入。Pallas 坐标的 dtype 是适配标签，
+                # 未必容纳其已验证的整数值，因此不能盲目按 value.dtype 重建。
+                if dtype_kind(value.dtype) in "iu":
+                    if not isinstance(expression, sp.Integer):
+                        # 闭合整数归约先在现有预算内精确求值，不能经 float 猜测。
+                        expression = simplify(expression, self.budget)
+                    if not isinstance(expression, sp.Integer):
+                        raise UnsupportedJaxprError(
+                            path, "integer constant cast requires an exact integer"
+                        )
+                    number = int(expression)
+                    storage = np.int64 if number < 0 else np.uint64
+                    limits = np.iinfo(storage)
+                    if not limits.min <= number <= limits.max:
+                        raise UnsupportedJaxprError(
+                            path, "integer constant cast exceeds the supported 64-bit range"
+                        )
+                    converted = np.asarray(number, dtype=storage).astype(aval.dtype)
+                else:
+                    converted = np.asarray(float(expression), dtype=aval.dtype)
                 return result(_exact_array(converted).item(), domain)
             if dtype_kind(value.dtype) == dtype_kind(aval.dtype) == "f":
                 # 不同浮点格式之间的舍入没有实数恒等式，只能逐元素保留为不透明函数。
@@ -974,6 +1038,10 @@ class SymbolicBuilder:
             "reduce_and",
         ):
             original = values[0]
+            if dtype_kind(original.dtype) == "b" and name in ("reduce_max", "reduce_min"):
+                # Boolean extrema have the same truth table and empty-domain
+                # identities as Or/And, rather than real-valued +/- infinity.
+                name = "reduce_or" if name == "reduce_max" else "reduce_and"
             limits = [self.bound(original.shape[axis]) for axis in params["axes"]]
             reductions = dict(zip(params["axes"], limits, strict=True))
             free = iter(axes)
@@ -1005,20 +1073,16 @@ class SymbolicBuilder:
                     else function(expression, *limits),
                     self.universal(domain, limits),
                 )
-            # 有限域上的 max/min/布尔归约逐点展开；展开成本先扣预算。
-            count = prod(stop + 1 for _, _, stop in limits)
-            self.budget.spend(count, path=path)
-            terms = [
-                expression.xreplace(dict(zip((lim[0] for lim in limits), point, strict=True)))
-                for point in product(*(range(stop + 1) for _, _, stop in limits))
-            ]
             function = {
                 "reduce_max": maximum,
                 "reduce_min": minimum,
                 "reduce_or": sp.Or,
                 "reduce_and": sp.And,
             }[name]
-            return result(function(*terms), self.universal(domain, limits))
+            return result(
+                self.finite_reduction(function, expression, limits, path),
+                self.universal(domain, limits),
+            )
         if name == "dot_general":
             if params.get("precision") not in (None, (None, None)):
                 # 显式精度属于浮点执行细节，不在理想实数适配的契约内。
@@ -1042,12 +1106,29 @@ class SymbolicBuilder:
                 ia[a] = ib[b] = limit[0]
             a, da = left.read(ia)
             b, db = right.read(ib)
+            boolean = dtype_kind(aval.dtype) == "b"
             if any(left.shape[axis] == 0 for axis in ca):
-                # 空收缩维求和是零。
-                return result(0)
+                return result(sp.false if boolean else 0)
+            domain = sp.And(da, db)
+            if boolean:
+                # A Boolean dot is OR of pairwise AND, including pointwise AND
+                # when there are no contraction axes. Every original operand's
+                # definedness is still required across the full input domain.
+                expression = sp.And(a, b)
+                return result(
+                    self.finite_reduction(sp.Or, expression, limits, path)
+                    if limits
+                    else expression,
+                    self.universal(domain, limits),
+                )
+            if dtype_kind(left.dtype) == dtype_kind(right.dtype) == "b":
+                # An explicit numeric preferred_element_type counts matching
+                # Boolean pairs; it must not inherit the Boolean OR reduction.
+                a = sp.Piecewise((1, a), (0, True))
+                b = sp.Piecewise((1, b), (0, True))
             return result(
-                self.summation(a * b, limits, sp.And(da, db)),
-                self.universal(sp.And(da, db), limits),
+                self.summation(a * b, limits, domain),
+                self.universal(domain, limits),
             )
         if name == "select_n":
             pred, pred_domain = self.broadcast(values[0], shape)
