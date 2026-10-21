@@ -40,7 +40,7 @@ from functools import reduce
 from itertools import product
 from math import prod
 from operator import add, mul, neg, sub, truediv
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import sympy as sp
@@ -52,6 +52,7 @@ from ..errors import UnsupportedJaxprError
 from ._typing import ArrayAtom, ArrayAval, ArrayLiteral, Equation, Shape, SymbolicGraph
 from .budget import Budget
 from .expression import SymbolicTensor, _exact_array, coordinates, rename_bounds
+from .extrema import maximum, minimum
 from .finiteness import Finiteness, Source
 from .indices import Index
 from .regions import region
@@ -168,8 +169,8 @@ SCALAR: dict[str, Callable[..., sp.Basic]] = {
     "not": sp.Not,
     "and": sp.And,
     "or": sp.Or,
-    "max": sp.Max,
-    "min": sp.Min,
+    "max": maximum,
+    "min": minimum,
     "logaddexp": lambda a, b: sp.log(sp.exp(a) + sp.exp(b)),
     "atan2": sp.atan2,
     "add_any": lambda *args: reduce(add, args),
@@ -183,6 +184,8 @@ class SymbolicBuilder:
     （恒等、化简、分支合并）都交给可信 SymPy。遇到无法完整表达的语义就抛出
     UnsupportedJaxprError，不用近似或丢弃条件换取转换成功。
     """
+
+    pointwise_primitives: ClassVar[frozenset[str]] = frozenset(SCALAR)
 
     def __init__(self, budget: Budget | int = 10000) -> None:
         """budget 可以是 Budget 或正整数上限；同一构造器内共享扣减。"""
@@ -539,6 +542,18 @@ class SymbolicBuilder:
         from sympy.core.function import AppliedUndef
 
         name = eq.primitive.name
+        if name == "pallas_global_values":
+            from .pallas import projected_outputs
+
+            return projected_outputs(self, eq, values)
+        # Partial memory values are emitted only through the Pallas adapter,
+        # which propagates their separate validity channel. Never let an outer
+        # ordinary-JAX/opaque/region consumer silently reset that obligation.
+        if any(v.memory_validity != sp.true for v in values):
+            raise UnsupportedJaxprError(
+                "algebra.pallas.initialization",
+                "unresolved memory validity at an ordinary JAX boundary",
+            )
         # 区域原语由 algebra.regions 统一绑定，这里不对内部逐点展开。
         region = name in (
             "jit",
@@ -998,8 +1013,8 @@ class SymbolicBuilder:
                 for point in product(*(range(stop + 1) for _, _, stop in limits))
             ]
             function = {
-                "reduce_max": sp.Max,
-                "reduce_min": sp.Min,
+                "reduce_max": maximum,
+                "reduce_min": minimum,
                 "reduce_or": sp.Or,
                 "reduce_and": sp.And,
             }[name]

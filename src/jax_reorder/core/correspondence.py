@@ -18,6 +18,8 @@ from jax import lax
 from jax._src import core, pjit, shard_map
 
 from ..errors import CorrespondenceError
+from .adapters.pallas.structural import capture_bindings, pallas_call_p, run_scoped_p
+from .adapters.pallas.structural import ordered as pallas_ordered
 from .params import parameter_view
 from .semantics import Encoder, encoded_equal
 from .support import supported_primitive_identities
@@ -300,7 +302,7 @@ def verify_correspondence(
                     continue
                 visited.add(id(value))
                 if isinstance(value, core.JaxprEqn):
-                    if value.primitive.name in {"rng_uniform", "dce_sink"}:
+                    if value.primitive.name in {"rng_uniform", "dce_sink"} or pallas_ordered(value):
                         positions.append(index)
                         break
                     work.extend(value.params.values())
@@ -313,12 +315,12 @@ def verify_correspondence(
         return positions
 
     # root 标记控制外部输入输出是否必须保持恒等映射；内部置换由父节点约束。
-    pending = [(left, right, correspondence, "correspondence", True)]
+    pending = [(left, right, correspondence, "correspondence", True, False)]
     seen = set()
     while pending:
-        a, b, mapping, path, root = pending.pop()
+        a, b, mapping, path, root, captures = pending.pop()
         # 共享区域可重复引用，同一个区域在不同捕获绑定下仍由父节点逐次核对。
-        identity = (id(a), id(b), id(mapping), root)
+        identity = (id(a), id(b), id(mapping), root, captures)
         if identity in seen:
             continue
         seen.add(identity)
@@ -424,7 +426,8 @@ def verify_correspondence(
         )
         for i, j in enumerate(mapping.constants):
             require(
-                encoded_equal(ae.encode(a.consts[i], path), be.encode(b.consts[j], path)),
+                captures
+                or encoded_equal(ae.encode(a.consts[i], path), be.encode(b.consts[j], path)),
                 path,
                 "constant content differs",
             )
@@ -455,6 +458,9 @@ def verify_correspondence(
                 require("params.jaxpr" in children, where, "missing call child correspondence")
                 input_order = children["params.jaxpr"].inputs
                 permutation(input_order, len(equation.invars), len(other.invars), where)
+            if equation.primitive in (pallas_call_p, run_scoped_p):
+                require("params.jaxpr" in children, where, "missing Pallas body correspondence")
+                input_order = children["params.jaxpr"].inputs
             # 规则区域内部不再展开更高阶规则；其余区域按调用方传入的范围复核，
             # 与规范化时使用的 include_derivative_rules 保持一致。
             include = False if ".params.rules[" in where else include_derivative_rules
@@ -571,6 +577,36 @@ def verify_correspondence(
                         where,
                         "while feedback binding differs",
                     )
+            elif equation.primitive in (pallas_call_p, run_scoped_p):
+                child = children["params.jaxpr"]
+                if equation.primitive is run_scoped_p:
+                    permutation(child.constants, len(equation.invars), len(other.invars), where)
+                    for ai, bi in enumerate(child.constants):
+                        same_value(equation.invars[ai], other.invars[bi], where)
+                    # Captured payloads are rebound by run_scoped. The mapping
+                    # is checked here against actual parent operands.
+                    fixed = 0
+                else:
+                    for av, bv in zip(equation.invars, other.invars, strict=True):
+                        same_value(av, bv, where)
+                    fixed = len(child.inputs) - len(equation.params["grid_mapping"].scratch_avals)
+                require(
+                    all(j == i if i < fixed else j >= fixed for i, j in enumerate(child.inputs)),
+                    where,
+                    "Pallas external resource role changed",
+                )
+                for key, region in children.items():
+                    require(
+                        region.outputs == tuple(range(len(region.outputs))),
+                        where,
+                        "Pallas result binding changed",
+                    )
+                    if key != "params.jaxpr":
+                        require(
+                            region.inputs == tuple(range(len(region.inputs))),
+                            where,
+                            "Pallas index-map input binding changed",
+                        )
             else:
                 # 未专门适配的接口坚持逐操作数比较，不推断交换律或任意子图端口换序。
                 for av, bv in zip(equation.invars, other.invars, strict=True):
@@ -586,6 +622,22 @@ def verify_correspondence(
                         where,
                         "unsupported internal output permutation",
                     )
+            bound_a, bound_b = capture_bindings(equation), capture_bindings(other)
+            require(bound_a.keys() == bound_b.keys(), where, "captured region roles differ")
             for key, child in children.items():
                 # 父子接口已核对，入栈后再检查该区域内部全部定义、操作及绑定。
-                pending.append((ac[key], bc[key], child, f"{where}.{key}", False))
+                if key in bound_a:
+                    require(key in bound_b, where, "captured region role differs")
+                    permutation(child.constants, len(bound_a[key]), len(bound_b[key]), where)
+                    for ai, bi in enumerate(child.constants):
+                        same_value(bound_a[key][ai], bound_b[key][bi], where)
+                pending.append(
+                    (
+                        ac[key],
+                        bc[key],
+                        child,
+                        f"{where}.{key}",
+                        False,
+                        key in bound_a,
+                    )
+                )

@@ -9,7 +9,7 @@ from jax._src import config, core, shard_map
 from jax._src import mesh as mesh_lib
 from jax.sharding import NamedSharding, PartitionSpec
 
-from ..model import DeviceView, MeshView, RegionView, ShardingView, ShardMapView
+from ..model import AxisEffectView, DeviceView, MeshView, RegionView, ShardingView, ShardMapView
 from .attributes import attribute, require
 
 if TYPE_CHECKING:
@@ -149,7 +149,11 @@ def adapt_shard_map(eq: Any, adapter: JaxAdapter, path: str) -> tuple[ShardMapVi
             path,
             "shard output abstract binding mismatch",
         )
-    require(not child.effects, path, "effectful shard_map region is not yet admitted")
+    require(
+        all(isinstance(e, AxisEffectView) and e.name in names for e in child.effects),
+        path,
+        "effectful shard_map region is not yet admitted",
+    )
     return ShardMapView(
         mesh, ins, outs, p["check_vma"], tuple(sorted(p["newly_manual_axes"]))
     ), child

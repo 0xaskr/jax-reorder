@@ -13,6 +13,7 @@
 """
 
 from functools import partial
+from itertools import permutations
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +23,9 @@ from jax import lax
 from jax._src import core
 
 from jax_reorder import ComparisonBudgetError, Status, canonicalize, compare_jaxprs
+from jax_reorder.core.canonical import Graph, Node
 from jax_reorder.core.correspondence import verify_correspondence
+from jax_reorder.core.unrooted import canonical_order, reorder_form
 
 
 def diamond(x, y):
@@ -32,6 +35,43 @@ def diamond(x, y):
     c = a - b
     _ = c * a
     return result
+
+
+def test_twin_pruning_preserves_hidden_parameter_reference_topology():
+    """Ref effects carry references outside normal operands; retain those edges."""
+    pure = Node(lax.sin_p, (("input", 0),), ("f32",), (), (), ())
+
+    def consumer(target):
+        return Node(
+            lax.cos_p,
+            (("input", 0),),
+            ("f32",),
+            (("ref", ("variable", ("result", target, 0))),),
+            (),
+            (),
+        )
+
+    def normalized(graph, budget=100):
+        order, constants = canonical_order(graph, 0, 0, budget=budget)
+        return reorder_form(graph, order, constants)
+
+    def graph(nodes):
+        return Graph(("f32",), (), (), nodes, (), False)
+
+    distinct = graph((pure, pure, consumer(0), consumer(1)))
+    shared = graph((pure, pure, consumer(0), consumer(0)))
+    expected = normalized(distinct)
+    assert expected != normalized(shared)
+    for order in permutations(range(4)):
+        assert normalized(reorder_form(distinct, order, ())) == expected
+
+    # Referenced targets stay distinct, while eight unrelated identical nodes
+    # must not exhaust a budget by enumerating their 8! interchangeable orders.
+    unrelated = Node(lax.exp_p, (("input", 0),), ("f32",), (), (), ())
+    duplicated = graph((*distinct.nodes, *((unrelated,) * 8)))
+    assert normalized(duplicated, 30) == normalized(
+        reorder_form(duplicated, tuple(reversed(range(12))), ()), 30
+    )
 
 
 def diamond_reordered(x, y):

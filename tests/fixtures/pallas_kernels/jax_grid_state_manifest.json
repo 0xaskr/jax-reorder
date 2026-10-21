@@ -1,0 +1,14 @@
+{
+  "repository": "jax-ml/jax",
+  "revision": "32544801e26115ac1794926d027148abf3baf009",
+  "version": "0.11.2",
+  "files": [
+    {
+      "path": "tests/pallas/tpu_pallas_test.py",
+      "fixture": "jax_tpu_state_test.py.txt",
+      "sha256": "71daad98d75dca67e16c91ac867c1ddbc96061d68d900be10acb045fe1bcdbef",
+      "git_blob": "6352ed39662b1b6b1e998db29ed7f9b8590cd779",
+      "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/tests/pallas/tpu_pallas_test.py"
+    }
+  ]
+}

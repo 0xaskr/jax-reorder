@@ -34,18 +34,55 @@ def _terminate(process, reader):
         reader.join(timeout=2)
 
 
-def run_oracle(case, mode, *, execution_timeout=30, devices=2):
+def run_worker(
+    module,
+    *args,
+    expected,
+    entry=None,
+    kwargs=None,
+    devices=2,
+    startup_timeout=90,
+    execution_timeout=30,
+):
+    """Run a module CLI or named entry (JSON arguments) with isolated CPU settings."""
+    if entry is None:
+        if kwargs is not None:
+            raise ValueError("keyword arguments require a named worker entry")
+        command = ["-m", module, *args]
+    else:
+        command = [
+            "-c",
+            "import importlib, json, sys; "
+            "getattr(importlib.import_module(sys.argv[1]), sys.argv[2])"
+            "(*json.loads(sys.argv[3]), **json.loads(sys.argv[4]))",
+            module,
+            entry,
+            json.dumps(args),
+            json.dumps(kwargs or {}),
+        ]
     env = {
         **os.environ,
         "JAX_PLATFORMS": "cpu",
         "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices}",
     }
     return _run_worker(
-        [sys.executable, "-u", "-m", "tests.pallas_communication_worker", case, mode],
-        {"case": case, "mode": mode, "status": "ok", "races": False},
+        [sys.executable, "-u", *command],
+        expected,
         cwd=Path(__file__).resolve().parents[1],
         env=env,
+        startup_timeout=startup_timeout,
         execution_timeout=execution_timeout,
+    )
+
+
+def run_oracle(case, mode, *, execution_timeout=30, devices=2):
+    return run_worker(
+        "tests.pallas_communication_worker",
+        case,
+        mode,
+        expected={"case": case, "mode": mode, "status": "ok", "races": False},
+        execution_timeout=execution_timeout,
+        devices=devices,
     )
 
 

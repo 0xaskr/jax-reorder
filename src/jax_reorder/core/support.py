@@ -13,6 +13,7 @@ from jax._src import ad_util, pjit, shard_map
 from jax._src import core as jax_core
 from jax.extend import core
 
+from .adapters.pallas.structural import TPU_PRIMITIVES
 from .derivatives import CUSTOM_PRIMITIVES
 
 
@@ -58,5 +59,6 @@ def supported_primitive_identities() -> frozenset[core.Primitive]:
     result.add(ad_util.add_jaxvals_p)
     # 自定义求导调用由 derivatives 模块展开规则，其 Python callable 不按名称比较。
     result.update(CUSTOM_PRIMITIVES)
+    result.update(TPU_PRIMITIVES)
     # 返回不可变快照，使一次规范化期间的身份集合不受调用方修改影响。
     return frozenset(result)

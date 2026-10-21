@@ -2,9 +2,9 @@
 
 verify_derivatives 对四类层首个 FP32 配置跟踪 forward/JVP/VJP（argnums=(1,)），
 VJP 预期图不同但数值一致；verify_indexer 验证未参与输出的索引器仍属完整图；
-verify_boundaries 记录 Pallas/absorbed 路径的 unknown 与 CPU compile/trace
+verify_boundaries 记录 Pallas/absorbed 路径的结构比较与 CPU compile/trace
 拒绝。supplemental_report 汇总为 runner --supplemental 报告；这些证据不
-并入主 cases 的等价计数，unknown 与拒绝不能算作通过。
+并入主 cases 的等价计数，自比较与拒绝不能算作候选通过。
 """
 
 from dataclasses import replace
@@ -19,7 +19,6 @@ from examples.sglang_layers.runner import close
 from examples.sglang_layers.upstream import REVISION
 from jax_reorder import (
     Status,
-    UnsupportedJaxprError,
     canonicalize,
     compare_functions,
     compare_jaxprs,
@@ -180,22 +179,14 @@ def verify_indexer(profile):
 
 
 def _pallas_boundary(fn, args, *, layer, configuration, executable=False):
-    """记录一条硬件路径的实际拒绝点，不认证任何候选。
+    """分别记录原图自比较与硬件执行边界，不认证任何候选。
 
-    fn 为原始 absorbed/MLA/USP/GMM 调用；先确认比较器以 pallas_call 拒绝，
-    再按 executable 选择：CPU interpret 可执行时用独立参照核对，否则要求
-    CPU 编译给出 “Only interpret mode is supported on CPU”。返回边界记录；
-    任何预期拒绝消失都会抛出断言，提示重新审核。
+    GLM5/USP/GMM 均可完成结构自比较，仍不等于认证改写候选。
+    CPU interpret 可执行时用独立参照核对，否则要求 CPU 编译明确拒绝。
     """
     graph = jax.make_jaxpr(fn)(*args)
-    try:
-        compare_jaxprs(graph, graph)
-    except UnsupportedJaxprError as error:
-        # 只接受明确的 pallas_call 不支持；其他异常不能被当作边界证据。
-        assert "unsupported primitive pallas_call" in error.reason
-        failure = {"type": type(error).__name__, "path": error.path, "reason": error.reason}
-    else:
-        raise AssertionError("Pallas comparison boundary changed; review its semantics")
+    report = compare_jaxprs(graph, graph)
+    assert report.status == Status.EQUIVALENT
     compilation = "executed" if executable else "cpu_compile_rejected"
     rejection = None
     if executable:
@@ -212,7 +203,7 @@ def _pallas_boundary(fn, args, *, layer, configuration, executable=False):
     return {
         "layer": layer,
         "configuration": configuration,
-        "error": failure,
+        "actual": "equivalent",
         "comparison_scope": "original against itself; no candidate certified",
         "cpu": compilation,
         "compile_rejection": rejection,
@@ -224,9 +215,8 @@ def _pallas_boundary(fn, args, *, layer, configuration, executable=False):
 def verify_boundaries():
     """逐项重放 Pallas/absorbed/CPU 编译与原始追踪拒绝路径。
 
-    返回边界记录列表：除最后两行 trace_rejected 外，其余是 unknown 图探测
-    （含 EPMoE 的 CPU interpret 执行证据）。这些行不计入等价通过数，只用于
-    说明当前环境实际拒绝位置。
+    返回六条结构自比较和两条 trace_rejected，另记录 EPMoE
+    的 CPU interpret 执行证据。自比较不计入候选等价通过数。
     """
     mesh = cpu_mesh()
     rows = []

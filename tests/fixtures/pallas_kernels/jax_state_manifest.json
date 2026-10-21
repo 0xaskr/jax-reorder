@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "repository": "jax-ml/jax",
+      "revision": "32544801e26115ac1794926d027148abf3baf009",
+      "version": "0.11.2",
+      "module": "jax.experimental.pallas.ops.tpu.matmul",
+      "path": "jax/experimental/pallas/ops/tpu/matmul.py",
+      "sha256": "6bb1c481b2fc2c6a100c6258de368c9c5ae9ce8b9f26159811a97e7b92f064da",
+      "git_blob": "8084c637c386a409bff42f18d7ceacccad841cc3",
+      "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/experimental/pallas/ops/tpu/matmul.py"
+    },
+    {
+      "repository": "jax-ml/jax",
+      "revision": "32544801e26115ac1794926d027148abf3baf009",
+      "version": "0.11.2",
+      "module": "jax.experimental.pallas.ops.tpu.flash_attention",
+      "path": "jax/experimental/pallas/ops/tpu/flash_attention.py",
+      "sha256": "7315cba9aa7bf9e0e9f9246f4b5e786e770fed48b1ae8e8f8ca3d682e3602c63",
+      "git_blob": "1dba573080e2abcd8e8295fcc82a89c29d98341f",
+      "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/experimental/pallas/ops/tpu/flash_attention.py"
+    }
+  ]
+}

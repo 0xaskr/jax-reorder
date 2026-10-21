@@ -68,9 +68,9 @@ def test_structural_diagnostic_does_not_claim_mathematical_inequality():
     assert compare_algebraic_jaxprs(left, right).status == Status.EQUIVALENT
 
 
-def test_unrecognized_effect_raises_before_the_structural_fast_path():
+def test_unsupported_callback_raises_before_the_structural_fast_path():
     def function(x):
-        jax.debug.print("{}", x)
+        jax.debug.callback(lambda value: None, x)
         return x
 
     graph = jax.make_jaxpr(function)(jax.ShapeDtypeStruct((), jnp.float32))

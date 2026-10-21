@@ -39,13 +39,21 @@ from ..errors import (
 )
 from ..status import Status
 from ._typing import EncodedRegion, Parameters, ValueReference
+from .adapters.pallas.structural import (
+    captures_child,
+    effect_supported,
+    emit_pipeline_p,
+    pallas_call_p,
+    run_scoped_p,
+)
+from .adapters.pallas.structural import ordered as pallas_ordered
 from .correspondence import GraphCorrespondence, build_correspondence, verify_correspondence
 from .params import semantic_parameters
 from .semantics import Encoder, Frozen, replace_nested
 from .support import supported_primitive_identities
 from .unrooted import DEFAULT_SEARCH_BUDGET, canonical_order, order_key, reorder_form
 
-type NormalizationTask[T] = Generator[tuple[core.Jaxpr, str], Canonicalized, T]
+type NormalizationTask[T] = Generator[tuple[core.Jaxpr, str, bool], Canonicalized, T]
 
 
 # 阅读主线：compare_jaxprs → canonicalize → _Normalizer.normalize → _normalize。
@@ -100,7 +108,7 @@ def ordered_equation(equation: core.JaxprEqn) -> bool:
             continue
         seen.add(id(value))
         if isinstance(value, core.JaxprEqn):
-            if value.primitive.name in {"rng_uniform", "dce_sink"}:
+            if value.primitive.name in {"rng_uniform", "dce_sink"} or pallas_ordered(value):
                 return True
             pending.extend(value.params.values())
         elif isinstance(value, core.Jaxpr):
@@ -255,7 +263,7 @@ class _Normalizer:
         # 同步置换会创建临时分支图。缓存持有图对象，避免释放后 id 被其他图复用。
         self.cache: dict[core.Jaxpr, Canonicalized] = {}
         # 同一子图按“是否物化求导规则”不同而结果不同，必须分开缓存。
-        self.scoped_cache: dict[tuple[core.Jaxpr, bool], Canonicalized] = {}
+        self.scoped_cache: dict[tuple[core.Jaxpr, bool, bool], Canonicalized] = {}
         self.semantic_views: dict[core.JaxprEqn, Parameters] = {}
         self.include_derivative_rules = include_derivative_rules
         self.search_budget = search_budget
@@ -288,7 +296,7 @@ class _Normalizer:
         """显式驱动区域生成器栈；子区域完成后将结果送回父区域。"""
         stack = []
 
-        def push(child: core.Jaxpr, child_path: str) -> None:
+        def push(child: core.Jaxpr, child_path: str, captures: bool = False) -> None:
             """登记当前路径并压入区域任务；共享子图可缓存，祖先回边则是环。"""
             if not isinstance(child, core.Jaxpr):
                 raise InvalidJaxprError(
@@ -297,7 +305,9 @@ class _Normalizer:
             if child in self.active:
                 raise InvalidJaxprError(child_path, "cyclic nested jaxpr")
             self.active.add(child)
-            stack.append((child, child_path, self._normalize(child, child_path)))
+            stack.append(
+                (child, child_path, captures, self._normalize(child, child_path, captures))
+            )
 
         push(graph, path)
         value = None
@@ -305,16 +315,16 @@ class _Normalizer:
             # 子生成器 yield（子图，路径）提出请求，return 交回 Canonicalized。
             # send 把子图结果送回父生成器；显式栈使深层 cond 不占用 Python 调用栈。
             while stack:
-                current, current_path, worker = stack[-1]
+                current, current_path, captures, worker = stack[-1]
                 try:
-                    child, child_path = worker.send(value)
+                    child, child_path, child_captures = worker.send(value)
                 except StopIteration as finished:
                     result = finished.value
                     self.cache[current] = self.cache[result.jaxpr] = result
                     # 原图与返回图均指向同一次结果，后续同步换序会继续引用这些对象。
                     include = self._include_derivative_rules(current_path)
-                    self.scoped_cache[(current, include)] = result
-                    self.scoped_cache[(result.jaxpr, include)] = result
+                    self.scoped_cache[(current, include, captures)] = result
+                    self.scoped_cache[(result.jaxpr, include, captures)] = result
                     self.active.remove(current)
                     stack.pop()
                     value = result
@@ -322,14 +332,14 @@ class _Normalizer:
                 if child in self.active:
                     raise InvalidJaxprError(child_path, "cyclic nested jaxpr")
                 # 同一对象进入不同求导范围时不可共用结果，避免漏比或多比规则。
-                key = (child, self._include_derivative_rules(child_path))
+                key = (child, self._include_derivative_rules(child_path), child_captures)
                 value = self.scoped_cache.get(key)
                 if value is None:
-                    push(child, child_path)
+                    push(child, child_path, child_captures)
             return cast(Canonicalized, value)
         finally:
             # 逆序关闭生成器，恢复跨 yield 保持的 mesh/轴配置上下文。
-            for _, _, worker in reversed(stack):
+            for _, _, _, worker in reversed(stack):
                 worker.close()
             self.active.clear()
 
@@ -402,7 +412,7 @@ class _Normalizer:
         # 先由调用结果的使用位置固定子图输出，再从子图内部使用位置确定输入顺序。
         # 父图实参、子图形参及逐端口元数据必须采用同一置换，才能保持调用语义。
         child = self._rebind_outputs(child, output_order)
-        normalized = yield child, f"{path}.params.jaxpr"
+        normalized = yield child, f"{path}.params.jaxpr", False
         input_order = self._capture_order(normalized, len(eq.invars), path)
         params["jaxpr"] = self._rebind_inputs(normalized.jaxpr, input_order)
         for name in ("in_shardings", "in_layouts", "donated_invars"):
@@ -433,13 +443,75 @@ class _Normalizer:
         return (*slots, *self._free_slots(unused, path))
 
     def _output_order(
-        self, eq: core.JaxprEqn, ports: Sequence[int], uses: Mapping[core.Var, _UsePath], path: str
+        self,
+        eq: core.JaxprEqn,
+        ports: Sequence[int],
+        uses: Mapping[core.Var, _UsePath],
+        path: str,
+        *,
+        feedback: Sequence[tuple[core.Jaxpr, int]] = (),
     ) -> tuple[int, ...]:
         """按父图最短使用路径排列已使用结果，把无锚点结果留给槽位搜索。"""
         used = [i for i in ports if eq.outvars[i] in uses]
         used.sort(key=lambda i: uses[eq.outvars[i]])
         unused = [i for i in ports if eq.outvars[i] not in uses]
-        return (*used, *self._free_slots(unused, path))
+        if not unused:
+            return tuple(used)
+        # Types and the consumer multiset of each feedback input move with its
+        # output port. Refine before enumerating: eight ports need not cost 8!
+        # merely because two outputs have the same immediate producer.
+        # Operand positions at private calls can move, so the refinement uses
+        # only consumer primitive multiplicity, never their raw port numbers.
+        consumers = []
+        for region, offset in feedback:
+            counts: dict[core.Var, list[tuple[Any, ...]]] = {}
+            for operation in region.eqns:
+                key = order_key(operation.primitive)
+                for value in operation.invars:
+                    if isinstance(value, core.Var):
+                        counts.setdefault(value, []).append(key)
+            consumers.append(
+                {i: tuple(sorted(counts.get(region.invars[offset + i], ()))) for i in unused}
+            )
+        children = (
+            eq.params["branches"]
+            if eq.primitive is lax.cond_p
+            else (eq.params["body_jaxpr"],)
+            if eq.primitive is lax.while_p
+            else (eq.params["jaxpr"],)
+        )
+        categories = []
+        encoder = Encoder(
+            lambda child, loc: cast(EncodedRegion, SimpleNamespace(graph=("unrefined_region",))),
+            lambda var: ("unrefined_variable",),
+        )
+        for child in children:
+            producers = {v: e.primitive for e in child.eqns for v in e.outvars}
+            categories.append(
+                [
+                    ("literal",)
+                    if isinstance(v, core.Literal)
+                    else ("producer", producers[v])
+                    if v in producers
+                    else ("input",)
+                    if v in child.invars
+                    else ("constant",)
+                    for v in child.outvars
+                ]
+            )
+        groups: dict[Any, list[int]] = {}
+        for i in unused:
+            key = order_key(
+                (
+                    tuple(category[i] for category in categories),
+                    tuple(
+                        encoder.encode(child.outvars[i].aval, f"{path}.type") for child in children
+                    ),
+                    tuple(consumer[i] for consumer in consumers),
+                )
+            )
+            groups.setdefault(key, []).append(i)
+        return (*used, *(i for key in sorted(groups) for i in self._free_slots(groups[key], path)))
 
     def _shard_bindings(
         self, eq: core.JaxprEqn, output_order: Sequence[int], path: str
@@ -466,7 +538,7 @@ class _Normalizer:
             shard_map._extend_axis_env(params["mesh"], params["newly_manual_axes"]),
             config._check_vma(params["check_vma"]),
         ):
-            normalized = yield child, f"{path}.params.jaxpr"
+            normalized = yield child, f"{path}.params.jaxpr", False
         inputs = self._capture_order(normalized, len(eq.invars), path)
         params["jaxpr"] = self._rebind_inputs(normalized.jaxpr, inputs)
         params["in_specs"] = tuple(params["in_specs"][i] for i in inputs)
@@ -476,6 +548,57 @@ class _Normalizer:
             outvars=[eq.outvars[i] for i in output_order],
             params=params,
         )
+
+    def _pallas_bindings(self, eq: core.JaxprEqn, path: str) -> NormalizationTask[core.JaxprEqn]:
+        """Rename private allocations and scoped captures together with their bindings."""
+        params = dict(semantic_parameters(eq))
+        child = params["jaxpr"]
+        captured = eq.primitive is run_scoped_p
+        if captured and len(child.constvars) != len(eq.invars):
+            raise InvalidJaxprError(path, "invalid scoped capture count")
+        with ExitStack() as scope:
+            if not captured:
+                scope.enter_context(params["grid_mapping"].trace_env())
+            result = yield child, f"{path}.params.jaxpr", captured
+        start = 0 if captured else len(child.invars) - len(params["grid_mapping"].scratch_avals)
+        if start < 0:
+            raise InvalidJaxprError(path, "invalid scratch allocation count")
+        resources = self._capture_order(result, len(child.invars) - start, path, start)
+        rebound = self._rebind_inputs(result.jaxpr, (*range(start), *resources))
+        executable = dict(eq.params)
+        if not captured:
+            executable["grid_mapping"] = dataclasses.replace(
+                params["grid_mapping"],
+                scratch_avals=tuple(
+                    params["grid_mapping"].scratch_avals[i - start] for i in resources
+                ),
+            )
+            executable["jaxpr"] = rebound
+            return eq.replace(params=executable)
+        # run_scoped's constvars are operand ports, not stored constant values.
+        # Follow rooted uses; genuinely unanchored captures use the same bounded
+        # interface search as private JAX call inputs.
+        original = {result.value_references[v][1]: i for i, v in enumerate(child.constvars)}
+        slots: dict[int, None] = {}
+        for ref in (
+            *result.graph.outputs,
+            *(r for n in result.graph.nodes[: len(result.bfs_order)] for r in n.inputs),
+        ):
+            if ref[0] == "constant":
+                slots.setdefault(original[ref[1]], None)
+        constants = (
+            *slots,
+            *self._free_slots((i for i in range(len(child.constvars)) if i not in slots), path),
+        )
+        if constants != tuple(range(len(child.constvars))):
+            rebound = rebound.replace(
+                constvars=[child.constvars[i] for i in constants],
+                consts=[child.consts[i] for i in constants],
+            )
+            self.lineage[rebound] = self.lineage[result.jaxpr]
+        executable["jaxpr"] = rebound
+        executable["ref_transforms"] = tuple(params["ref_transforms"][i] for i in resources)
+        return eq.replace(invars=[eq.invars[i] for i in constants], params=executable)
 
     def _loop_bindings(
         self, eq: core.JaxprEqn, path: str, uses: Mapping[core.Var, _UsePath]
@@ -520,7 +643,9 @@ class _Normalizer:
             nc, nk = len(constants), len(carry)
             # scan 输入为 [捕获常量, carry, xs]，输出为 [新 carry, ys]。
             # carry 的输入、输出构成跨迭代反馈边；换序时两端必须一起移动。
-            carry_order = self._output_order(eq, range(nk), uses, f"{path}.carry")
+            carry_order = self._output_order(
+                eq, range(nk), uses, f"{path}.carry", feedback=((body, nc),)
+            )
             ys_order = self._output_order(eq, range(nk, len(eq.outvars)), uses, f"{path}.ys")
             out_order = (*carry_order, *ys_order)
             initial_order = (
@@ -529,7 +654,7 @@ class _Normalizer:
                 *range(nc + nk, len(eq.invars)),
             )
             body = self._rebind_outputs(self._rebind_inputs(body, initial_order), out_order)
-            normalized = yield body, f"{path}.params.jaxpr"
+            normalized = yield body, f"{path}.params.jaxpr", False
             captures = self._capture_order(normalized, nc, path)
             xs_order = self._capture_order(
                 normalized, len(eq.invars) - nc - nk, path, start=nc + nk
@@ -566,12 +691,18 @@ class _Normalizer:
             or len(body.outvars) != carry_count
         ):
             raise InvalidJaxprError(path, "invalid while regions or operand count")
-        carry_order = self._output_order(eq, range(carry_count), uses, f"{path}.carry")
+        carry_order = self._output_order(
+            eq,
+            range(carry_count),
+            uses,
+            f"{path}.carry",
+            feedback=((body, nb), (condition, nc)),
+        )
         condition = self._rebind_inputs(condition, (*range(nc), *(nc + i for i in carry_order)))
         body = self._rebind_inputs(body, (*range(nb), *(nb + i for i in carry_order)))
         body = self._rebind_outputs(body, carry_order)
-        normalized_cond = yield condition, f"{path}.params.cond_jaxpr"
-        normalized_body = yield body, f"{path}.params.body_jaxpr"
+        normalized_cond = yield condition, f"{path}.params.cond_jaxpr", False
+        normalized_body = yield body, f"{path}.params.body_jaxpr", False
         cond_order = self._capture_order(normalized_cond, nc, f"{path}.condition")
         body_order = self._capture_order(normalized_body, nb, f"{path}.body")
         params["cond_jaxpr"] = self._rebind_inputs(
@@ -622,6 +753,7 @@ class _Normalizer:
             result = yield (
                 self._rebind_outputs(branch, output_order),
                 f"{path}.params.branches[{i}]",
+                False,
             )
             normalized.append(result)
         slots: dict[int, None] = {}
@@ -686,7 +818,9 @@ class _Normalizer:
             encoded_params.append((name, encoded))
         return encoded_params
 
-    def _normalize(self, graph: core.Jaxpr, path: str) -> NormalizationTask[Canonicalized]:
+    def _normalize(
+        self, graph: core.Jaxpr, path: str, captures: bool
+    ) -> NormalizationTask[Canonicalized]:
         """构造规范比较表示和可执行重排结果；输入图不被修改。
 
         先做 SSA 检查与值来源索引，沿有序根计算最短使用路径并同步重绑已适配的
@@ -713,11 +847,13 @@ class _Normalizer:
         previous_ordered: int | None = None
 
         # named-axis effect 表示所需的轴环境，NoDCEEffect 对应保留计算的标记。
-        # 这里只接受已适配的这两类；未知 effect 即使出现在未使用分支也要拒绝。
+        # Pallas/Ref effects 由源适配器列出；未知 effect 在未使用分支也要拒绝。
         def check_effects(effects: Iterable[object], where: str) -> None:
             """在当前图及每个方程上检查 effect 类型，未知 effect 不能按纯计算处理。"""
             for effect in effects:
-                if type(effect) not in (core.NamedAxisEffect, NoDCEEffect):
+                if type(effect) not in (core.NamedAxisEffect, NoDCEEffect) and not effect_supported(
+                    effect
+                ):
                     raise UnsupportedJaxprError(
                         where, f"unsupported effect {type(effect).__qualname__}"
                     )
@@ -729,7 +865,7 @@ class _Normalizer:
                     f"{path}.eqns[{i}]", f"unsupported primitive {eq.primitive.name}"
                 )
             check_effects(eq.effects, f"{path}.eqns[{i}].effects")
-            # rng_uniform、dce_sink 及包含它们的嵌套调用不能视作可任意换序的纯节点。
+            # 状态操作及包含它们的嵌套调用不能视作可任意换序的纯节点。
             # 给相邻的有序节点增加前驱边，同时作为额外根，避免输出回溯漏掉它们。
             if ordered_equation(eq):
                 effect_roots.append(i)
@@ -772,6 +908,8 @@ class _Normalizer:
                     eq = yield from self._cond_bindings(eq, f"{path}.eqns[{i}]", output_order)
             elif eq.primitive in (lax.scan_p, lax.while_p):
                 eq = yield from self._loop_bindings(eq, f"{path}.eqns[{i}]", uses)
+            elif eq.primitive in (pallas_call_p, run_scoped_p):
+                eq = yield from self._pallas_bindings(eq, f"{path}.eqns[{i}]")
             equations[i] = eq
             if i in node_paths:
                 parent_path = node_paths[i]
@@ -845,7 +983,9 @@ class _Normalizer:
 
         def nested(child: core.Jaxpr, child_path: str) -> Canonicalized:
             """在子图边界内独立规范化；子图结果直接参与当前区域的编码。"""
-            return self.scoped_cache[(child, self._include_derivative_rules(child_path))]
+            return self.scoped_cache[
+                (child, self._include_derivative_rules(child_path), captures_child(eq, child_path))
+            ]
 
         encoder = Encoder(nested, reference)
         frozen_params = []
@@ -864,6 +1004,10 @@ class _Normalizer:
                         )
                     )
                     scope.enter_context(config._check_vma(eq.params["check_vma"]))
+                if eq.primitive in (pallas_call_p, emit_pipeline_p):
+                    # Grid names and scalar-prefetch index maps use the call's
+                    # tracing environment, not the ambient CPU axis context.
+                    scope.enter_context(eq.params["grid_mapping"].trace_env())
                 children = []
 
                 def discover_child(
@@ -880,24 +1024,34 @@ class _Normalizer:
                 self._params(eq, eq_path, Encoder(discover_child, reference), graph)
                 # 驱动器会 send 回处理结果，list 迭代器不支持 send，不能用 yield from。
                 for child, child_path in children:  # noqa: UP028
-                    yield child, child_path
+                    yield child, child_path, captures_child(eq, child_path)
                 encoded_params = self._params(eq, eq_path, encoder, graph)
             frozen_params.append(tuple(encoded_params))
             # 子图已由工作栈处理；此处只把参数中的子图替换成对应的新 jaxpr。
             # 没有需要替换的子图时，复用原方程对象，不修改原输入图。
             # 同一方程里的所有子图沿用同一范围；rules 内部固定只看前向。
             include_rules = self._include_derivative_rules(eq_path)
+            capture_modes = {}
+            for child, child_path in children:
+                mode = captures_child(eq, child_path)
+                if child in capture_modes and capture_modes[child] != mode:
+                    raise UnsupportedJaxprError(eq_path, "shared region has mixed capture roles")
+                capture_modes[child] = mode
             params = replace_nested(
                 eq.params,
-                lambda child, include=include_rules: self.scoped_cache[(child, include)].jaxpr,
+                lambda child, include=include_rules, modes=capture_modes: (
+                    self.scoped_cache[(child, include, modes[child])].jaxpr
+                ),
             )
             new_eq = eq if params is eq.params else eq.replace(params=params)
             new_equations.append(new_eq)
             self.semantic_views[new_eq] = {
                 key: replace_nested(
                     value,
-                    lambda child, key=key, include=include_rules: (
-                        self.scoped_cache[(child, False if key == "rules" else include)].jaxpr
+                    lambda child, key=key, include=include_rules, modes=capture_modes: (
+                        self.scoped_cache[
+                            (child, False if key == "rules" else include, modes[child])
+                        ].jaxpr
                     ),
                 )
                 for key, value in self.semantic_views[eq].items()
@@ -941,7 +1095,7 @@ class _Normalizer:
             tuple(
                 (
                     encoder.encode(graph.constvars[i].aval, path),
-                    encoder.encode(graph.consts[i], path),
+                    ("captured_operand", i) if captures else encoder.encode(graph.consts[i], path),
                 )
                 for i in constant_ids
             ),
@@ -995,7 +1149,7 @@ def canonicalize(
     include_derivative_rules: bool = True,
     search_budget: int = DEFAULT_SEARCH_BUDGET,
 ) -> Canonicalized:
-    """规范化一个包含常量绑定的 CPU jaxpr，保留操作及其依赖关系。
+    """规范化包含常量绑定的 JAX/Pallas jaxpr，保留操作及其依赖关系。
 
     返回 Canonicalized，可分别查看可执行图、规范结构、编号和未完成原因。
     输入图不被修改；未使用纯分支参与完整比较。非法图抛出 InvalidJaxprError，

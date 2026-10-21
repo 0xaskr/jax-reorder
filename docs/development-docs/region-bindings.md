@@ -18,6 +18,14 @@ JAX 0.11.2 的 scan 参数为 reverse、length、jaxpr、ft_in、ft_out、unroll
 
 搜索仍受 `search_budget` 限制，阶乘候选过多时返回 `unknown`。不得用任意顺序兜底，也不能删除无根节点。回归已覆盖 jit、cond、循环角色及 shard_map 的同步置换、错误绑定/共享/位置元数据、原图不变、规范化幂等、独立对应证据与预算拒绝；实施记录见[审查修复计划](../exec-plans/completed/review-correctness-fixes.md)。
 
+2026-10-20 补充无根结果的搜索细化：在已有生产者种类之外，使用完整抽象类型，
+以及 carry 对应 body/condition 输入的消费者原语多重集分组。这些标签随合法的
+反馈槽位置换一起移动，不能使用原始变量编号、方程次序或私有调用的操作数槽号。
+每组内部仍完整枚举并重做全部图比较；同色不是等价证明。预算按实际残余组计算，
+不再因为两个结果尚有歧义就对全部无根结果估算阶乘。固定正反例见
+[接口细化回归](../../tests/test_interface_refinement.py)，包含 8 槽位不同类型/连接、
+jit/cond/scan/while 换序、错误反馈、幂等与真正对称组的预算拒绝。
+
 ## 调用结果与循环反馈
 
 沿父图反向拓扑传播到有序根的最短使用路径，据此排列内部调用结果。jit 的输入/输出 sharding、layout、donation，shard_map 的 in_specs/out_specs，cond 的全部分支结果同步置换。普通算子的结果端口固定，外部函数输出顺序固定。

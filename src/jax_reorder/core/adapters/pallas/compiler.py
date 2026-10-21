@@ -137,12 +137,22 @@ def adapt_compiler(
         )
         for name in sorted(COMPILER_FIELDS)
     )
-    standard = all(
-        (
-            not source.flags
-            if name == "flags"
-            else attribute(getattr(source, name), path) == attribute(getattr(defaults, name), path)
+
+    def matches_defaults(excluded: set[str]) -> bool:
+        return all(
+            (
+                not source.flags
+                if name == "flags"
+                else attribute(getattr(source, name), path)
+                == attribute(getattr(defaults, name), path)
+            )
+            for name in COMPILER_FIELDS - excluded
         )
-        for name in COMPILER_FIELDS - {"dimension_semantics"}
+
+    standard = matches_defaults({"dimension_semantics"})
+    reviewed_layout = (
+        source.needs_layout_passes is False or source.fuse_transposed_lhs_in_matmul is True
+    ) and matches_defaults(
+        {"dimension_semantics", "needs_layout_passes", "fuse_transposed_lhs_in_matmul"}
     )
-    return CompilerView(explicit, "mosaic_tpu", parameters, standard), semantics
+    return CompilerView(explicit, "mosaic_tpu", parameters, standard, reviewed_layout), semantics

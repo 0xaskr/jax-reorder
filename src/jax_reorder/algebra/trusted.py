@@ -22,6 +22,7 @@ from itertools import islice, product
 from math import prod
 from typing import cast
 
+import numpy as np
 import sympy as sp
 
 from ..errors import (
@@ -38,7 +39,14 @@ from ._typing import SymbolicGraph
 from .budget import validate_timeout
 from .expression import coordinates
 from .symbolic import SymbolicBuilder
-from .sympy_ops import domain_condition, equal, explicit_symbols, finite_expansion
+from .sympy_ops import (
+    boolean_piecewise,
+    domain_condition,
+    equal,
+    explicit_symbols,
+    finite_expansion,
+    simplify,
+)
 
 
 @dataclass(frozen=True)
@@ -167,11 +175,35 @@ def compare_symbolic(
             if prod(x.shape) == 0:
                 # 空输出没有元素可比较；shape/dtype 已在上方核对。
                 continue
+            # coordinates 已声明为非负整数；定义条件和值都只比较合法输出坐标。
+            bounds = sp.And(*(i < n for i, n in zip(coordinates(x.shape), x.shape, strict=True)))
+            # Memory initialization must hold everywhere in each output,
+            # independently of matching partial real-function domains. Two
+            # identical undefined lanes are never a mathematical proof.
+            for side, value in (("left", x), ("right", y)):
+                valid = domain_condition(value.memory_validity, builder.budget)
+                if valid == sp.true:
+                    continue
+                answer = query(
+                    output,
+                    f"{side}_memory_initialization",
+                    sp.And(bounds, boolean_piecewise(valid, builder.budget)),
+                    bounds,
+                )
+                if answer is not True:
+                    raise MathematicalUndecidedError(
+                        "algebra.pallas.initialization",
+                        "complete output memory initialization is not proved",
+                    )
             if x.defined == y.defined:
                 da, db = x.defined, y.defined
             else:
                 da = domain_condition(x.defined, builder.budget)
                 db = domain_condition(y.defined, builder.budget)
+            if da != db:
+                # 拼接等构造可显式携带坐标上界；域外的条件差异没有输出语义。
+                # 对两侧同时限制坐标，仍保留各自对输入值的定义条件。
+                da, db = (sp.And(bounds, boolean_piecewise(d, builder.budget)) for d in (da, db))
             same_domain = query(output, "definedness", da, db)
             if same_domain is not True and prod(x.shape) <= 64:
                 # 抽象条件可能因绑定名或分段形式不同而无法整体化简；小输出域
@@ -193,8 +225,6 @@ def compare_symbolic(
                 # 输出处处无定义时没有可比较的值，也不能据此判等价。
                 domain_unknown = True
                 continue
-            # 给符号查询补上合法输出坐标范围，供 ArrayExpr/refine 使用。
-            bounds = sp.And(*(i < n for i, n in zip(coordinates(x.shape), x.shape, strict=True)))
             answer = query(
                 output,
                 "symbolic_output",
@@ -209,10 +239,16 @@ def compare_symbolic(
             # 仍保持符号，再在具体坐标上构造反例。
             concrete_answers = []
             fully_enumerated = prod(x.shape) <= 64
-            # 完整枚举上限 64 个点；大输出域每轴只取前 2 个点、最多 16 个，
-            # 只用于寻找反例，不能作为“全部输出通过”的依据。
+            # 完整枚举上限 64 个点；大输出域取端点和中点、最多 16 个。
+            # 分块计数等差异可能在前两个坐标尚未出现。这些点只用于找反例，
+            # 不能作为“全部输出通过”的依据，输入值仍保持符号形式。
             points = product(
-                *(range(size if fully_enumerated else min(size, 2)) for size in x.shape)
+                *(
+                    range(size)
+                    if fully_enumerated
+                    else sorted({0, min(1, size - 1), size // 2, size - 1})
+                    for size in x.shape
+                )
             )
             for point in islice(points, 64 if fully_enumerated else 16):
                 indices = tuple(map(sp.Integer, point))
@@ -226,12 +262,46 @@ def compare_symbolic(
                 if not (
                     finite_expansion(ex, builder.budget) and finite_expansion(ey, builder.budget)
                 ):
+                    # Compare the complete output difference before expanding
+                    # two overlapping contractions. Prefix sums may cancel,
+                    # leaving a small, exactly expandable counterexample.
+                    if (
+                        x.finite
+                        and y.finite
+                        and dx == dy == sp.true
+                        and np.dtype(x.dtype).kind == "f"
+                    ):
+                        residual = simplify(ex - ey, builder.budget, expand=False)
+                        if finite_expansion(residual, builder.budget):
+                            explicit = explicit_symbols(residual.doit(), sp.S.Zero)
+                            if explicit is not None:
+                                methods = ["complete-output residual"]
+                                decision = equal(*explicit, builder.budget, methods=methods)
+                                records.append(
+                                    SympyQuery(
+                                        output,
+                                        f"output_coordinate={point}",
+                                        decision,
+                                        " -> ".join(methods),
+                                        str(ex),
+                                        str(ey),
+                                    )
+                                )
+                                if decision is False:
+                                    return report(
+                                        "inequivalent",
+                                        tuple(records),
+                                        output=output,
+                                        work=builder.budget.used,
+                                        rules=tuple(sorted(builder.rules)),
+                                        elapsed_seconds=time.monotonic() - started,
+                                    )
                     # 显式展开超出预算时保持惰性，不调用会隐式 doit 的查询。
                     concrete_answers.append(None)
                     continue
                 ex, ey = ex.doit(), ey.doit()
-                explicit = explicit_symbols(ex, ey)
                 methods = []
+                explicit = explicit_symbols(ex, ey, methods=methods)
                 if explicit is None:
                     # 不透明调用/cast 只有同余正结论可靠；泛化 False 不算反例。
                     decision = (
@@ -321,7 +391,7 @@ def compare_symbolic(
 
 
 def isolated_compare(
-    left: SymbolicGraph, right: SymbolicGraph, *, algebra_budget: int = 10000, timeout: float = 10.0
+    left: SymbolicGraph, right: SymbolicGraph, *, algebra_budget: int = 10000, timeout: float = 60.0
 ) -> SympyResult:
     """在独立解释器进程中调用 compare_symbolic，并用墙钟上限兜底无界化简。
 

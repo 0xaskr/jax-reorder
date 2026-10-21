@@ -4,10 +4,10 @@
 
 | 主题 | 文档 |
 | --- | --- |
-| JAX / Pallas 等价比较：范围、共享语义层、接口与验证记录 | [pallas-jax-equivalence.md](pallas-jax-equivalence.md) |
+| JAX / Pallas：先读短入口，再按契约、grid/内存、通信、验证选择一个专题；历史按需加载 | [pallas-jax-equivalence.md](pallas-jax-equivalence.md) |
 | 核心库类型边界、异常枚举与持续类型检查 | [type-annotations.md](type-annotations.md) |
 | BFS 计算图规范化、比较接口与验证 | [bfs-reordering.md](bfs-reordering.md) |
-| 可信 SymPy 数学判等、定义条件与结果接口 | [algebraic-equivalence.md](algebraic-equivalence.md) |
+| 可信 SymPy 数学判等、定义条件、纯死代码删减决定与结果接口 | [algebraic-equivalence.md](algebraic-equivalence.md) |
 | 开源数学等价后端的并行评估与符号探针 | [open-source-equivalence-backends.md](open-source-equivalence-backends.md) |
 | 符号计算与代码等价研究概览及论文入口 | [2026-10-16 research](equivalence-backends/symbolic-code-equivalence-research-2026-10-16.md) |
 | 可修改的 JAX 转换器、符号张量与 Nerva 成套公式资产 | [architecture-reuse.md](equivalence-backends/architecture-reuse.md) |
@@ -15,7 +15,7 @@
 | DeepSeek-V4.1-Flash 原始 mHC 层的代数改写与验证 | [deepseek-v41-layer.md](deepseek-v41-layer.md) |
 | GLM-5.2 纯 JAX decode DSA/MLA 核心的 jaxpr 对比与能力缺口 | [glm52-decode-dsa-mla.md](glm52-decode-dsa-mla.md) |
 | cond 闭包捕获与实参/形参同步规范化 | [cond-bindings.md](cond-bindings.md) |
-| 循环与调用区域的接口绑定规范化 | [region-bindings.md](region-bindings.md) |
+| 循环与调用区域的接口绑定、无根结果不变量细化 | [region-bindings.md](region-bindings.md) |
 | 原始图对应证据、独立校验与同构论证 | [original-correspondence.md](original-correspondence.md) |
 | 函数契约、自定义求导及模式范围 | [function-and-derivative-contract.md](function-and-derivative-contract.md) |
 | 完整图、对称接口与深度压力 | [complete-graph.md](complete-graph.md) |
@@ -35,4 +35,4 @@
 - 验证：正例、反例、失败案例、环境版本、复现命令与结果。
 - 证据与进展：假设、已确认结论、未解决问题及对应计划。
 
-新增文档时在此添加入口；实现废弃时同步归档或删除文档，并更新调用方链接。
+新增主题在此添加入口；同一主题的细分文档由其入口导航，不逐项展开到本索引。默认只读任务相关专题，历史/日志按需取证；实现废弃时同步归档并更新调用方链接。

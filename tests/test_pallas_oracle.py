@@ -1,16 +1,61 @@
 """Timeouts must terminate isolated workers and the descendants holding their pipes."""
 
+import json
 import os
 import sys
 from pathlib import Path
 
 import pytest
 
-from tests.pallas_oracle import _run_worker
+from tests.pallas_oracle import _run_worker, run_worker
 
 
 def run_script(script, **options):
     return _run_worker([sys.executable, "-u", "-c", script], {"ok": True}, **options)
+
+
+def report_worker_inputs(*args, **kwargs):
+    print("READY", flush=True)
+    print(
+        "RESULT "
+        + json.dumps(
+            dict(
+                args=args,
+                kwargs=kwargs,
+                platform=os.environ["JAX_PLATFORMS"],
+                flags=os.environ["XLA_FLAGS"],
+                cwd=os.getcwd(),
+            )
+        ),
+        flush=True,
+    )
+
+
+def test_named_worker_preserves_arguments_and_isolates_cpu_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("JAX_PLATFORMS", "tpu")
+    monkeypatch.setenv("XLA_FLAGS", "parent flags")
+    monkeypatch.chdir(tmp_path)
+    expected = dict(
+        args=[None, True, 128, "quoted ' value", {"nested": [1, False]}],
+        kwargs={"mode": "eager"},
+        platform="cpu",
+        flags="--xla_force_host_platform_device_count=3",
+        cwd=str(Path(__file__).resolve().parents[1]),
+    )
+    assert (
+        run_worker(
+            "tests.test_pallas_oracle",
+            *expected["args"],
+            entry="report_worker_inputs",
+            kwargs=expected["kwargs"],
+            expected=expected,
+            devices=3,
+        )
+        == expected
+    )
+    assert os.environ["JAX_PLATFORMS"] == "tpu"
+    assert os.environ["XLA_FLAGS"] == "parent flags"
+    assert Path.cwd() == tmp_path
 
 
 def test_worker_requires_a_successful_exit_and_matching_result():

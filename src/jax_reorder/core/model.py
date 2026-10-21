@@ -117,7 +117,12 @@ class AxisEffectView:
     name: str
 
 
-type Effect = EffectView | AxisEffectView
+@dataclass(frozen=True)
+class GlobalEffectView:
+    kind: Literal["semaphore", "communication"]
+
+
+type Effect = EffectView | AxisEffectView | GlobalEffectView
 
 
 @dataclass(frozen=True)
@@ -128,12 +133,35 @@ class SliceIndex:
 
 
 @dataclass(frozen=True)
+class DynamicSliceIndex:
+    start: Operand
+    size: int
+    stride: int
+
+
+@dataclass(frozen=True)
+class TensorIndex:
+    indices: tuple[SliceIndex | DynamicSliceIndex | Operand, ...]
+    shape: tuple[int, ...]
+    integer_shape: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class RefTransform:
+    kind: Literal["reshape", "transpose", "index"]
+    dimensions: tuple[int, ...]
+    indices: tuple[SliceIndex | DynamicSliceIndex | int | Operand, ...] = ()
+
+
+@dataclass(frozen=True)
 class MemoryAccess:
     ref: ValueRef
-    index: SliceIndex | Operand
+    index: SliceIndex | TensorIndex | Operand
     value: Operand | None = None
     mask: Operand | None = None
     other: Operand | None = None
+    scalar: bool = False
+    transforms: tuple[RefTransform, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,6 +181,14 @@ class DmaView:
     # Raw source tree positions, including the intentional swap on wait_send.
     source_semaphore: ValueRef | None = None
     device_coordinates: tuple[Operand, ...] | None = None
+    source_tensor_slice: TensorIndex | None = None
+    destination_tensor_slice: TensorIndex | None = None
+    semaphore_index: TensorIndex | None = None
+    source_semaphore_index: TensorIndex | None = None
+    source_identity_views: tuple[tuple[int, ...], ...] = ()
+    destination_identity_views: tuple[tuple[int, ...], ...] = ()
+    source_transforms: tuple[RefTransform, ...] = ()
+    destination_transforms: tuple[RefTransform, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -163,6 +199,16 @@ class ScratchView:
     # A VMEM allocation is local to this kernel invocation. Preserve its raw
     # descriptor above as well as its type after binding the local mesh.
     bound_array: ArrayType | None = None
+
+
+@dataclass(frozen=True)
+class SemaphoreView:
+    phase: Literal["signal", "wait", "read"]
+    semaphore: ValueRef
+    amount: Operand | None = None
+    device_coordinates: tuple[Operand, ...] | None = None
+    core_index: Operand | None = None
+    index: TensorIndex | None = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +234,8 @@ class OperationView:
     regions: tuple[RegionBinding, ...] = ()
     shard_map: ShardMapView | None = None
     dma: DmaView | None = None
+    semaphore: SemaphoreView | None = None
+    allocations: tuple[ScratchView, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -202,12 +250,22 @@ class RegionView:
 
 
 @dataclass(frozen=True)
+class PipelineModeView:
+    buffer_count: int
+    use_lookahead: bool
+    revisit: str | None
+    prefetched_count: int
+
+
+@dataclass(frozen=True)
 class BlockMappingView:
     block_shape: tuple[int, ...]
     array: ArrayType
     ref: RefType
     index_map: RegionView
     origin: Origin = field(compare=False)
+    unbuffered: bool = False
+    pipeline_mode: PipelineModeView | None = None
 
 
 @dataclass(frozen=True)
@@ -224,6 +282,9 @@ class CompilerView:
     parameters: tuple[ParameterView, ...]
     # Exact equality to the reviewed defaults, excluding dimension_semantics.
     default_execution_options: bool
+    # Reviewed TensorCore layout/codegen hints preserve logical coordinates and
+    # dot dimensions. Exact options remain in parameters and call signatures.
+    reviewed_layout_options: bool = False
 
 
 @dataclass(frozen=True)
@@ -239,6 +300,8 @@ class PallasCallView:
     compiler: CompilerView | None = None
     kernel_argument_policy: str = "identity"
     scratch: tuple[ScratchView, ...] = ()
+    prefetch: tuple[RefType, ...] = ()
+    cost_estimate: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)

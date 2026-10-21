@@ -24,6 +24,8 @@ from jax._src.random.prng import KeyTy, PRNGKeyArray
 
 from ..errors import UnsupportedJaxprError
 from ._typing import Device, EncodedRegion, TreeDef
+from .adapters.pallas.structural import encode as encode_pallas
+from .adapters.pallas.structural import replace_descriptor
 
 # 编码结果主要由带标签的元组、frozenset、字节串以及已适配的描述符组成。
 # Any 避免为不同参数类型建立庞大的联合类型，不表示允许任意未知对象原样透传。
@@ -193,6 +195,9 @@ class Encoder:
         for known in exact_types:
             if isinstance(value, known) and type(value) is not known:
                 raise UnsupportedJaxprError(path, f"unreviewed descriptor subclass {type(value)}")
+        handled, encoded = encode_pallas(value, path, self)
+        if handled:
+            return encoded
         # 图、变量、原语不能按字符串比较：分别使用规范子图、规范引用和原语身份。
         if isinstance(value, core.Jaxpr):
             return ("jaxpr", self.nested(value, path).graph)
@@ -241,8 +246,13 @@ class Encoder:
                 self.encode(jax.random.key_data(value), path),
             )
         if isinstance(value, (np.ndarray, np.generic, jax.Array)):
-            if isinstance(value, jax.Array) and any(d.platform != "cpu" for d in value.devices()):
-                raise UnsupportedJaxprError(path, "only CPU arrays are currently supported")
+            if isinstance(value, jax.Array) and (
+                not value.is_fully_addressable
+                or any(d.platform not in {"cpu", "tpu"} for d in value.devices())
+            ):
+                raise UnsupportedJaxprError(
+                    path, "only fully addressable CPU/TPU arrays are supported"
+                )
             array = np.asarray(value)
             if array.dtype.hasobject:
                 raise UnsupportedJaxprError(path, "object arrays have opaque element semantics")
@@ -320,9 +330,19 @@ class Encoder:
             )
         if isinstance(value, jax.Device):
             device = cast(Device, value)
-            if device.platform != "cpu":
-                raise UnsupportedJaxprError(path, "only CPU device placement is supported")
-            return ("device", device.platform, device.process_index, device.id, device.device_kind)
+            if device.platform not in {"cpu", "tpu"}:
+                raise UnsupportedJaxprError(path, "only CPU/TPU device placement is supported")
+            return (
+                "device",
+                device.platform,
+                device.process_index,
+                device.id,
+                device.device_kind,
+                tuple(
+                    (name, self.encode(getattr(device, name, None), path))
+                    for name in ("coords", "core_on_chip", "slice_index")
+                ),
+            )
         if isinstance(value, jax.sharding.NamedSharding):
             # mesh、分区规则、内存种类和逻辑设备顺序共同决定分片描述。
             return self.fields(value, ("mesh", "spec", "memory_kind", "_logical_device_ids"), path)
@@ -380,7 +400,7 @@ class Encoder:
 def replace_nested(value: Any, replace: Callable[[core.Jaxpr], core.Jaxpr]) -> Any:
     """替换参数容器里的子 jaxpr，保留容器类型及其余对象。
 
-    迭代处理 tuple/namedtuple、list 和 dict 中的值，其他描述符原样保留。
+    迭代处理 tuple/namedtuple、list、dict 和已编码数据类中的值。
     调用前须先完成语义编码和环检查；本函数只负责重建必要的运行时参数容器。
     """
     # 先展开再回填，避免深层参数递归；只替换已编码检查过的子图，不重新解释语义。
@@ -389,8 +409,21 @@ def replace_nested(value: Any, replace: Callable[[core.Jaxpr], core.Jaxpr]) -> A
         ready, item = pending.pop()
         if isinstance(item, core.Jaxpr):
             values.append(replace(item))
-        elif isinstance(item, tuple) or type(item) in (list, dict):
-            children = tuple(item.values()) if type(item) is dict else tuple(item)
+        elif (
+            isinstance(item, tuple)
+            or type(item) in (list, dict)
+            or (dataclasses.is_dataclass(item) and not isinstance(item, type))
+        ):
+            descriptor = dataclasses.is_dataclass(item) and not isinstance(item, type)
+            item = cast(Any, item)
+            names = tuple(f.name for f in dataclasses.fields(item)) if descriptor else ()
+            children = (
+                tuple(getattr(item, name) for name in names)
+                if descriptor
+                else tuple(item.values())
+                if type(item) is dict
+                else tuple(item)
+            )
             if not ready:
                 pending.append((True, item))
                 pending.extend((False, child) for child in reversed(children))
@@ -402,6 +435,8 @@ def replace_nested(value: Any, replace: Callable[[core.Jaxpr], core.Jaxpr]) -> A
             # 子项均未替换时保留原容器身份，避免制造无意义的新参数和方程对象。
             if all(a is b for a, b in zip(children, changed, strict=True)):
                 result = item
+            elif descriptor:
+                result = replace_descriptor(item, dict(zip(names, changed, strict=True)))
             elif type(item) is dict:
                 result = dict(zip(item, changed, strict=True))
             elif hasattr(item, "_fields"):

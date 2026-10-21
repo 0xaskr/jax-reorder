@@ -1,9 +1,9 @@
-"""Finite remote DMA progress and interval ordering, without source objects.
+"""Finite counter progress and necessary interval ordering, without source objects.
 
 This component does not establish value equivalence or allocation safety. Its
 caller must establish the storage/route types, entry synchronization, initialized
-values and output coverage. Each semaphore has one zero-initialized generation,
-one consumer and a whole-count wait; no schedule search is used in production.
+values and output coverage. Each semaphore has one ordered consumer stream.
+DMA credits may arrive incrementally; no producer identity is assigned to a wait.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from heapq import heappop, heappush
 from typing import Literal
 
 from ..errors import UnsupportedJaxprError
-from .communication import MAX_DMA_BYTES
-from .index_domain import AnalysisBudget
+from .communication import DMA_PROGRESS_ASSUMPTION, MAX_DMA_BYTES
+from .index_domain import AnalysisBudget, IndexExpr
 from .model import Origin
 from .storage import Span
 
@@ -35,6 +35,7 @@ class Instance:
 class Semaphore:
     instance: Instance
     initial: int
+    kind: Literal["dma", "regular"] = "dma"
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,20 @@ class Transfer:
     destination: Instance
     source_span: Span
     destination_span: Span
-    send: Instance
+    send: Instance | None
     receive: Instance
     logical_bytes: int
+    source_footprint: tuple[Span, ...] = ()
+    destination_footprint: tuple[Span, ...] = ()
+    destination_to_source: IndexExpr | None = None
+
+    @property
+    def source_spans(self) -> tuple[Span, ...]:
+        return self.source_footprint or (self.source_span,)
+
+    @property
+    def destination_spans(self) -> tuple[Span, ...]:
+        return self.destination_footprint or (self.destination_span,)
 
 
 @dataclass(frozen=True)
@@ -57,7 +69,7 @@ class Start:
 @dataclass(frozen=True)
 class Wait:
     semaphore: Instance
-    kind: Literal["send", "receive"]
+    kind: Literal["send", "receive", "local", "regular"]
     logical_bytes: int
     origin: Origin
 
@@ -68,15 +80,36 @@ class Access:
     span: Span
     write: bool
     origin: Origin
+    footprint: tuple[Span, ...] = ()
+
+    @property
+    def spans(self) -> tuple[Span, ...]:
+        return self.footprint or (self.span,)
 
 
-type Command = Start | Wait | Access
+@dataclass(frozen=True)
+class Signal:
+    semaphore: Instance
+    amount: int
+    origin: Origin
+
+
+@dataclass(frozen=True)
+class Read:
+    semaphore: Instance
+    origin: Origin
+
+
+type Command = Start | Wait | Access | Signal | Read
 
 
 @dataclass(frozen=True)
 class DeviceProgram:
     device: int
     commands: tuple[Command, ...]
+    # Program order applies only inside this stream. Storage and semaphores
+    # remain device instances shared by all streams on the same device.
+    stream: int = 0
 
 
 @dataclass(frozen=True)
@@ -86,6 +119,7 @@ class Event:
     kind: str
     command: int
     origin: Origin
+    stream: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,8 +129,30 @@ class CounterEvidence:
     producers: tuple[tuple[int, int], ...]
     consumer: int
     logical_bytes: int
+    # Whole-instance entry/exit invariant, not the count just before/after this wait.
     initial: int = 0
     final: int = 0
+    consumed_before: int = 0
+    threshold: int = 0
+    excluded: tuple[int, ...] = ()
+    required_completions: tuple[int, ...] = ()
+    required_issues: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class Producer:
+    semaphore: Instance
+    issue: int
+    complete: int
+    amount: int
+    kind: str
+
+
+@dataclass(frozen=True)
+class CounterObservation:
+    event: int
+    semaphore: Instance
+    value: int
 
 
 @dataclass(frozen=True)
@@ -120,6 +176,8 @@ class ProtocolEvidence:
     # justifies every conflicting pair's order under all allowed schedules.
     ancestors: tuple[int, ...]
     assumptions: tuple[str, ...] = REMOTE_PROGRESS_ASSUMPTIONS
+    producers: tuple[Producer, ...] = ()
+    observations: tuple[CounterObservation, ...] = ()
 
     def precedes(self, first: int, second: int) -> bool:
         return bool(self.ancestors[second] & (1 << first))
@@ -131,36 +189,55 @@ def analyze_protocol(
     *,
     budget: AnalysisBudget,
 ) -> ProtocolEvidence:
-    """Check whole-count progress and all-schedule conflict ordering only."""
+    """Prove monotone progress, necessary causality and all-schedule access order.
+
+    Nonnegative production and a single ordered consumer per instance make
+    cumulative thresholds monotone. A complete saturation witnesses progress;
+    necessary edges are inferred separately, without assuming atomic DMA credits.
+    """
     path = "protocol"
     devices = {p.device for p in programs}
-    if not devices or len(devices) != len(programs) or any(d < 0 for d in devices):
-        raise UnsupportedJaxprError(path, "invalid or duplicate device program")
+    if (
+        not devices
+        or any(d < 0 for d in devices)
+        or any(type(p.stream) is not int or p.stream < 0 for p in programs)
+        or len({(p.device, p.stream) for p in programs}) != len(programs)
+    ):
+        raise UnsupportedJaxprError(path, "invalid or duplicate device program stream")
     sems = {s.instance: s for s in semaphores}
     if len(sems) != len(semaphores) or any(
-        s.initial != 0 or s.instance.device not in devices for s in semaphores
+        s.initial != 0 or s.instance.device not in devices or s.kind not in ("dma", "regular")
+        for s in semaphores
     ):
         raise UnsupportedJaxprError(path, "semaphore instances require known zero initial state")
     events: list[Event] = []
     edges: set[tuple[int, int]] = set()
     accesses: list[AccessInterval] = []
-    producers: dict[Instance, list[tuple[int, int, str]]] = {}
-    consumers: dict[Instance, tuple[int, Wait]] = {}
+    producers: list[Producer] = []
+    waits: dict[int, tuple[Wait, int, int]] = {}
+    reads: dict[int, tuple[Read, int]] = {}
+    consumed: dict[Instance, int] = {}
+    observers: dict[Instance, tuple[int, int]] = {}
 
-    def node(device: int, kind: str, command: int, origin: Origin) -> int:
+    def node(device: int, kind: str, command: int, origin: Origin, stream: int) -> int:
         budget.spend(origin.path)
-        event = Event(len(events), device, kind, command, origin)
+        event = Event(len(events), device, kind, command, origin, stream)
         events.append(event)
         return event.id
 
     def edge(before: int, after: int) -> None:
-        budget.spend(path)
-        edges.add((before, after))
+        if (before, after) not in edges:
+            budget.spend(path)
+            edges.add((before, after))
 
-    def produce(sem: Instance, event: int, count: int, kind: str, origin: Origin) -> None:
+    def produce(sem: Instance, issue: int, complete: int, count: int, kind: str) -> None:
         if sem not in sems:
-            raise UnsupportedJaxprError(origin.path, "unknown semaphore instance")
-        producers.setdefault(sem, []).append((event, count, kind))
+            raise UnsupportedJaxprError(path, "unknown semaphore instance")
+        expected = "regular" if kind == "signal" else "dma"
+        if sems[sem].kind != expected:
+            raise UnsupportedJaxprError(path, "incompatible semaphore counter kind")
+        if count:
+            producers.append(Producer(sem, issue, complete, count, kind))
 
     def access(
         storage: Instance, span: Span, write: bool, begin: int, end: int, origin: Origin
@@ -169,10 +246,12 @@ def analyze_protocol(
             raise UnsupportedJaxprError(origin.path, "invalid protocol storage access")
         accesses.append(AccessInterval(storage, span, write, begin, end, origin))
 
-    for program in sorted(programs, key=lambda p: p.device):
+    for program in sorted(programs, key=lambda p: (p.device, p.stream)):
         previous = None
         for i, command in enumerate(program.commands):
-            event = node(program.device, type(command).__name__.lower(), i, command.origin)
+            event = node(
+                program.device, type(command).__name__.lower(), i, command.origin, program.stream
+            )
             if previous is not None:
                 edge(previous, event)
             previous = event
@@ -180,91 +259,260 @@ def analyze_protocol(
                 t = command.transfer
                 if (
                     t.source.device != program.device
-                    or t.send.device != program.device
+                    or (t.send is not None and t.send.device != program.device)
+                    or (t.send is None and t.destination.device != program.device)
                     or t.destination.device not in devices
                     or t.receive.device != t.destination.device
                     or t.send == t.receive
-                    or t.source_span.size != t.destination_span.size
+                    or sum(s.size for s in t.source_spans)
+                    != sum(s.size for s in t.destination_spans)
                     or not 0 < t.logical_bytes <= MAX_DMA_BYTES
                 ):
                     raise UnsupportedJaxprError(
                         command.origin.path, "invalid transfer endpoints/count"
                     )
-                sent = node(program.device, "send_complete", i, command.origin)
-                received = node(t.destination.device, "receive_complete", i, command.origin)
+                sent = node(program.device, "send_complete", i, command.origin, program.stream)
+                received = node(
+                    t.destination.device, "receive_complete", i, command.origin, program.stream
+                )
                 edge(event, sent)
                 edge(sent, received)
-                produce(t.send, sent, t.logical_bytes, "send", command.origin)
-                produce(t.receive, received, t.logical_bytes, "receive", command.origin)
-                access(t.source, t.source_span, False, event, sent, command.origin)
-                access(t.destination, t.destination_span, True, event, received, command.origin)
-            elif isinstance(command, Wait):
-                if (
-                    command.semaphore not in sems
-                    or command.semaphore.device != program.device
-                    or command.kind not in ("send", "receive")
-                    or not 0 < command.logical_bytes <= MAX_DMA_BYTES
+                if t.send is not None:
+                    produce(t.send, event, sent, t.logical_bytes, "send")
+                produce(t.receive, event, received, t.logical_bytes, "receive")
+                for storage, spans, bound, writing, end in (
+                    (t.source, t.source_spans, t.source_span, False, sent),
+                    (t.destination, t.destination_spans, t.destination_span, True, received),
                 ):
-                    raise UnsupportedJaxprError(command.origin.path, "invalid wait instance/count")
-                if command.semaphore in consumers:
+                    budget.spend(command.origin.path, len(spans))
+                    if (
+                        bound.start < 0
+                        or bound.size <= 0
+                        or any(
+                            s.size <= 0 or s.start < bound.start or s.stop > bound.stop
+                            for s in spans
+                        )
+                        or any(a.stop > b.start for a, b in zip(spans, spans[1:], strict=False))
+                    ):
+                        raise UnsupportedJaxprError(
+                            command.origin.path, "invalid transfer footprint"
+                        )
+                    for selected in spans:
+                        access(storage, selected, writing, event, end, command.origin)
+            elif isinstance(command, Signal):
+                if command.semaphore not in sems or not 0 <= command.amount <= MAX_DMA_BYTES:
+                    raise UnsupportedJaxprError(
+                        command.origin.path, "invalid signal instance/count"
+                    )
+                complete = event
+                if command.semaphore.device != program.device:
+                    complete = node(
+                        command.semaphore.device,
+                        "signal_complete",
+                        i,
+                        command.origin,
+                        program.stream,
+                    )
+                    edge(event, complete)
+                produce(command.semaphore, event, complete, command.amount, "signal")
+            elif isinstance(command, Wait | Read):
+                sem = command.semaphore
+                if sem not in sems or sem.device != program.device:
+                    raise UnsupportedJaxprError(
+                        command.origin.path, "invalid local semaphore instance"
+                    )
+                stream = (program.device, program.stream)
+                if observers.setdefault(sem, stream) != stream:
                     raise UnsupportedJaxprError(
                         command.origin.path,
-                        "partial waits or multiple consumers require another rule",
+                        "semaphore consumption and reads require one ordered stream",
                     )
-                consumers[command.semaphore] = (event, command)
+                before = consumed.get(sem, 0)
+                if isinstance(command, Read):
+                    reads[event] = (command, before)
+                    continue
+                expected = "regular" if command.kind == "regular" else "dma"
+                if (
+                    command.kind not in ("send", "receive", "local", "regular")
+                    or sems[sem].kind != expected
+                    or not 0 <= command.logical_bytes <= MAX_DMA_BYTES
+                ):
+                    raise UnsupportedJaxprError(command.origin.path, "invalid wait instance/count")
+                threshold = before + command.logical_bytes
+                waits[event] = (command, before, threshold)
+                consumed[sem] = threshold
             else:
                 if command.storage.device != program.device:
                     raise UnsupportedJaxprError(command.origin.path, "ordinary access is not local")
-                access(command.storage, command.span, command.write, event, event, command.origin)
+                budget.spend(command.origin.path, len(command.spans))
+                if (
+                    command.span.start < 0
+                    or command.span.size <= 0
+                    or any(s.size <= 0 or not command.span.contains(s) for s in command.spans)
+                    or any(
+                        a.stop > b.start
+                        for a, b in zip(command.spans, command.spans[1:], strict=False)
+                    )
+                ):
+                    raise UnsupportedJaxprError(
+                        command.origin.path, "invalid ordinary access footprint"
+                    )
+                for selected in command.spans:
+                    access(command.storage, selected, command.write, event, event, command.origin)
 
-    counters = []
-    for sem in sorted(producers.keys() | consumers.keys()):
-        produced, consumer = producers.get(sem, []), consumers.get(sem)
-        if not produced or consumer is None:
-            raise UnsupportedJaxprError(path, "semaphore count has no producer or no consumer")
-        event, wait = consumer
-        total = sum(count for _, count, _ in produced)
-        if total != wait.logical_bytes or total > MAX_DMA_BYTES:
-            raise UnsupportedJaxprError(wait.origin.path, "semaphore count is not conserved")
-        if any(kind != wait.kind for _, _, kind in produced):
+    by_sem: dict[Instance, list[Producer]] = {sem: [] for sem in sems}
+    for producer in producers:
+        by_sem[producer.semaphore].append(producer)
+    for sem, ps in by_sem.items():
+        total = sum(p.amount for p in ps)
+        if total and sem not in consumed:
+            raise UnsupportedJaxprError(path, "semaphore count has no consumer")
+        if total != consumed.get(sem, 0):
+            raise UnsupportedJaxprError(path, "semaphore count is not conserved")
+
+    def closure() -> tuple[int, ...]:
+        successors: list[list[int]] = [[] for _ in events]
+        incoming = [0] * len(events)
+        for before, after in sorted(edges):
+            successors[before].append(after)
+            incoming[after] += 1
+        ready = [e.id for e in events if not incoming[e.id]]
+        ancestors = [0] * len(events)
+        done = 0
+        while ready:
+            current = heappop(ready)
+            done += 1
+            for successor in successors[current]:
+                budget.spend(events[successor].origin.path)
+                ancestors[successor] |= ancestors[current] | (1 << current)
+                incoming[successor] -= 1
+                if incoming[successor] == 0:
+                    heappush(ready, successor)
+        if done != len(events):
             raise UnsupportedJaxprError(
-                wait.origin.path, "mixed send/receive semaphore consumption"
+                path,
+                "protocol has a wait dependency cycle",
+                blocked=tuple(events[i].origin.path for i, n in enumerate(incoming) if n),
             )
-        for producer, _, _ in produced:
-            edge(producer, event)
-        counters.append(
-            CounterEvidence(
-                sem, wait.kind, tuple((p, count) for p, count, _ in produced), event, total
-            )
-        )
+        return tuple(ancestors)
 
-    successors: list[list[int]] = [[] for _ in events]
-    incoming = [0] * len(events)
-    for before, after in sorted(edges):
-        successors[before].append(after)
-        incoming[after] += 1
-    ready = [e.id for e in events if not incoming[e.id]]
+    counters: list[CounterEvidence] = []
+    while True:
+        ancestors = closure()
+        before_edges = len(edges)
+        counters = []
+        for event, (wait, before, threshold) in waits.items():
+            ps = by_sem[wait.semaphore]
+            budget.spend(wait.origin.path, len(ps))
+            eligible = tuple(p for p in ps if not ancestors[p.issue] & (1 << event))
+            total = sum(p.amount for p in eligible)
+            if threshold > total:
+                raise UnsupportedJaxprError(
+                    wait.origin.path,
+                    "protocol has a wait dependency cycle",
+                    blocked=(wait.origin.path,),
+                )
+            # A partial contribution proves issue, never full DMA completion.
+            completions = (
+                tuple(p.complete for p in eligible) if threshold and threshold == total else ()
+            )
+            issues = tuple(
+                p.issue for p in eligible if p.kind == "signal" and threshold > total - p.amount
+            )
+            for required in (*completions, *issues):
+                edge(required, event)
+            counters.append(
+                CounterEvidence(
+                    wait.semaphore,
+                    wait.kind,
+                    tuple((p.complete, p.amount) for p in eligible),
+                    event,
+                    wait.logical_bytes,
+                    consumed_before=before,
+                    threshold=threshold,
+                    excluded=tuple(p.complete for p in ps if ancestors[p.issue] & (1 << event)),
+                    required_completions=completions,
+                    required_issues=issues,
+                )
+            )
+        if len(edges) == before_edges:
+            break
+
+    # Bound the counter in every interval between its ordered consumptions. The
+    # cumulative total may exceed the hardware range over several safe generations.
+    for counter in counters:
+        if sum(n for _, n in counter.producers) - counter.consumed_before > MAX_DMA_BYTES:
+            raise UnsupportedJaxprError(path, "semaphore live count may overflow")
+
+    # This witness respects actual credits. A topo sort of only the necessary
+    # edges can place a partial wait before any sufficient producer combination.
+    available: dict[Instance, int] = {}
+    completed = 0
     order: list[int] = []
-    ancestors = [0] * len(events)
-    while ready:
-        current = heappop(ready)
-        order.append(current)
-        for successor in successors[current]:
-            budget.spend(events[successor].origin.path)
-            ancestors[successor] |= ancestors[current] | (1 << current)
-            incoming[successor] -= 1
-            if incoming[successor] == 0:
-                heappush(ready, successor)
-    if len(order) != len(events):
-        blocked = tuple(events[i].origin.path for i, degree in enumerate(incoming) if degree)
-        raise UnsupportedJaxprError(path, "protocol has a wait dependency cycle", blocked=blocked)
+    completion = {p.complete: p for p in producers}
+    pending = set(range(len(events)))
+    while pending:
+        advanced = False
+        for event in sorted(pending):
+            budget.spend(events[event].origin.path)
+            if ancestors[event] & ~completed:
+                continue
+            if event in waits:
+                wait, _, threshold = waits[event]
+                if available.get(wait.semaphore, 0) < threshold:
+                    continue
+            if event in completion:
+                producer = completion[event]
+                available[producer.semaphore] = (
+                    available.get(producer.semaphore, 0) + producer.amount
+                )
+            order.append(event)
+            completed |= 1 << event
+            pending.remove(event)
+            advanced = True
+        if not advanced:
+            raise UnsupportedJaxprError(
+                path,
+                "protocol has a wait dependency cycle",
+                blocked=tuple(events[e].origin.path for e in sorted(pending)),
+            )
+
+    observations = []
+    for event, (read, before) in reads.items():
+        arrived = 0
+        for p in by_sem[read.semaphore]:
+            budget.spend(read.origin.path)
+            if ancestors[event] & (1 << p.complete):
+                arrived += p.amount
+            elif not ancestors[p.issue] & (1 << event):
+                raise UnsupportedJaxprError(
+                    read.origin.path, "semaphore read depends on scheduling"
+                )
+        value = arrived - before
+        if value < 0 or (sems[read.semaphore].kind == "dma" and value != 0):
+            raise UnsupportedJaxprError(
+                read.origin.path, "DMA counter observation requires stable zero"
+            )
+        observations.append(CounterObservation(event, read.semaphore, value))
+    assumptions = REMOTE_PROGRESS_ASSUMPTIONS[:2]
+    if any(
+        isinstance(c, Start) and c.transfer.send is not None for p in programs for c in p.commands
+    ):
+        assumptions += REMOTE_PROGRESS_ASSUMPTIONS[2:]
+    if any(isinstance(c, Start) and c.transfer.send is None for p in programs for c in p.commands):
+        assumptions += (DMA_PROGRESS_ASSUMPTION,)
+    if any(e.kind == "signal_complete" for e in events):
+        assumptions += ("the TPU runtime eventually delivers each issued, valid remote signal",)
     evidence = ProtocolEvidence(
         tuple(events),
         tuple(sorted(edges)),
         tuple(counters),
         tuple(accesses),
         tuple(order),
-        tuple(ancestors),
+        ancestors,
+        assumptions,
+        tuple(producers),
+        tuple(observations),
     )
     by_storage: dict[Instance, list[AccessInterval]] = {}
     for current in accesses:

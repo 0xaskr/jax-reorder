@@ -1,7 +1,7 @@
 """原始硬件路径的可重放边界探测；拒绝结果不计入等价通过数。
 
 针对 Pallas absorbed MLA、Wan USP/Flash cross attention 与 megablox GMM
-EPMoE，加载未经改写的原内核与后端，记录比较器的 unknown 原因以及 CPU 的
+EPMoE，加载未经改写的原内核与后端，分别记录结构比较、搜索预算以及 CPU 的
 实际编译/追踪拒绝点。这里不启用替代 interpret（EPMoE 的 interpret 是原
 源码的 CPU 分支），也不把“可执行”当作“可比较”。入口由
 evidence.verify_boundaries 调用，最终经 runner --supplemental 报告。
@@ -296,8 +296,8 @@ def cross_attention(mesh):
 def original_moe(mesh):
     """加载 megablox GMM 与原始 EPMoE，构造 2 专家、top-1 的 CPU 路径。
 
-    CPU 上原后端自动使用 interpret 分支，因此该路径可执行但仍因
-    pallas_call 无法比较。上下文产出 (run, args)；权重与输入使用固定
+    CPU 上原后端自动使用 interpret 分支，该路径可以结构自比较。
+    上下文产出 (run, args)；权重与输入使用固定
     非对称值，便于 oracles.moe 逐专家独立核对。退出时恢复模块表。
     """
     paths = (

@@ -27,6 +27,7 @@ EXPECTED_PUBLIC = {
     "ComparisonTimeoutError",
     "CompilationError",
     "CorrespondenceError",
+    "CoreExecutionBinding",
     "EquationCorrespondence",
     "FunctionComparison",
     "FunctionSignature",
@@ -34,6 +35,8 @@ EXPECTED_PUBLIC = {
     "GraphCorrespondence",
     "InvalidJaxprError",
     "JaxprError",
+    "LocalKernelComparison",
+    "LocalKernelEvidence",
     "MathematicalUndecidedError",
     "ModeComparison",
     "Status",
@@ -44,8 +47,10 @@ EXPECTED_PUBLIC = {
     "compare_function_traces",
     "compare_functions",
     "compare_jaxprs",
+    "compare_pallas_kernels",
     "trace_function",
     "verify_correspondence",
+    "verify_pallas_kernel_comparison",
 }
 
 

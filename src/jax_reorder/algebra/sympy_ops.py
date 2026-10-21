@@ -13,8 +13,10 @@ from math import comb, prod
 
 import sympy as sp
 
+from ..errors import MathematicalUndecidedError
 from .budget import Budget
 from .expression import rename_bounds
+from .extrema import distinct_extrema, maximum, minimum
 
 
 def finite_expansion(expression: sp.Basic, budget: Budget) -> bool:
@@ -60,6 +62,55 @@ def finite_expansion(expression: sp.Basic, budget: Budget) -> bool:
     return True
 
 
+def compact_sums(expression: sp.Basic, budget: Budget) -> sp.Basic:
+    """Combine overlapping finite intervals without adding any summand points.
+
+    Only rational linear combinations of identical one-variable summands qualify.
+    Cuts are exact integer endpoints; cancellation occurs before finite expansion.
+    """
+
+    def combine(node: sp.Basic) -> sp.Basic:
+        groups: dict[sp.Basic, list[tuple[sp.Rational, int, int]]] = {}
+        other = []
+        budget.spend(len(node.args), path="algebra.sympy.sum_intervals")
+        for term in node.args:
+            coefficient, summation = term.as_coeff_Mul()
+            if (
+                not coefficient.is_Rational
+                or not isinstance(summation, sp.Sum)
+                or len(summation.limits) != 1
+            ):
+                other.append(term)
+                continue
+            variable, start, stop = summation.limits[0]
+            if not start.is_Integer or not stop.is_Integer or stop < start:
+                other.append(term)
+                continue
+            key = sp.Sum(summation.function, (variable, 0, 0))
+            groups.setdefault(key, []).append((coefficient, int(start), int(stop) + 1))
+        for key, intervals in groups.items():
+            changes: dict[int, sp.Basic] = {}
+            budget.spend(2 * len(intervals), path="algebra.sympy.sum_intervals")
+            for coefficient, start, stop in intervals:
+                changes[start] = changes.get(start, sp.S.Zero) + coefficient
+                changes[stop] = changes.get(stop, sp.S.Zero) - coefficient
+            cuts = sorted(changes)
+            coefficient = sp.S.Zero
+            variable = key.limits[0][0]
+            for start, stop in zip(cuts[:-1], cuts[1:], strict=True):
+                coefficient += changes[start]
+                if coefficient:
+                    value = (
+                        key.function.xreplace({variable: sp.Integer(start)})
+                        if stop == start + 1
+                        else sp.Sum(key.function, (variable, start, stop - 1))
+                    )
+                    other.append(coefficient * value)
+        return sp.Add(*other)
+
+    return rename_bounds(expression).replace(lambda node: node.is_Add, combine)
+
+
 def simplify(
     expression: sp.Basic, budget: Budget, *, assumptions: sp.Basic = sp.true, expand: bool = True
 ) -> sp.Basic:
@@ -94,6 +145,8 @@ def simplify(
     expression = rename_bounds(
         expression.expand() if expand and isinstance(expression, sp.Expr) else expression
     )
+    if expression.has(sp.Sum):
+        expression = compact_sums(expression, budget)
     if expression.has(AppliedUndef) and expression.has(sp.Max, sp.Min):
         # 含不透明函数的离散索引条件缺少实数不等式模型，保持原样。
         return expression
@@ -104,6 +157,8 @@ def simplify(
         expression = sp.piecewise_exclusive(
             sp.piecewise_fold(expression.rewrite(sp.Piecewise)), deep=True
         )
+        if expression.has(sp.Sum):
+            expression = compact_sums(expression, budget)
     if assumptions != sp.true:
         expression = sp.refine(expression, assumptions)
     # 上面的显式有限展开已经计费；simplify 默认的 doit 会绕过该限制，并让等价
@@ -150,6 +205,31 @@ def array_compatible(expression: sp.Basic, indices: Sequence[sp.Expr]) -> bool:
     return supported(expression)
 
 
+def boolean_piecewise(
+    expression: sp.Basic, budget: Budget, methods: list[str] | None = None
+) -> sp.Basic:
+    """把逻辑值分支的 Piecewise 转成 ITE，允许它参与布尔组合和比较。"""
+    # SymPy 的 simplify 可把定义条件变成 Piecewise；它继承 Expr，
+    # 但布尔分支不能相减，也不能直接作为 And 的操作数。
+    if isinstance(expression, sp.Piecewise) and all(
+        isinstance(branch, sp.logic.boolalg.Boolean) and not isinstance(branch, sp.Expr)
+        for branch, _ in expression.args
+    ):
+        budget.spend(len(expression.args), path="algebra.sympy.logic")
+        if methods is not None:
+            methods.append("Piecewise.rewrite(ITE)")
+        try:
+            return expression.rewrite(sp.ITE)
+        except (NotImplementedError, ValueError) as error:
+            # SymPy cannot always prove coverage of periodic or multivariate
+            # guards. Never invent a missing default branch or label this CAS
+            # limitation as an internal implementation failure.
+            raise MathematicalUndecidedError(
+                "algebra.conditions", "Boolean Piecewise coverage is not established"
+            ) from error
+    return expression
+
+
 def equal(
     left: sp.Basic,
     right: sp.Basic,
@@ -176,20 +256,52 @@ def equal(
         steps.append("identity")
         return True
 
-    def boolean_piecewise(expression: sp.Basic) -> sp.Basic:
-        """把全部分支都是逻辑值的 Piecewise 转成 ITE，交给布尔比较。"""
-        # SymPy 的 simplify 可把定义条件变成 Piecewise；它继承 Expr，
-        # 但布尔分支不能相减。只把全部分支均为逻辑值的情况交给 ITE。
-        if isinstance(expression, sp.Piecewise) and all(
-            isinstance(branch, sp.logic.boolalg.Boolean) and not isinstance(branch, sp.Expr)
-            for branch, _ in expression.args
-        ):
-            budget.spend(len(expression.args), path="algebra.sympy.logic")
-            steps.append("Piecewise.rewrite(ITE)")
-            return expression.rewrite(sp.ITE)
-        return expression
+    extrema = left.atoms(sp.Max, sp.Min) | right.atoms(sp.Max, sp.Min)
+    if any(len(node.args) > 32 for node in extrema):
+        # Congruence only: identical exact operand sets may be represented by a
+        # shared real atom. A negative answer for independent atoms says nothing
+        # about the actual extrema, so it must remain undecided.
+        budget.spend(sum(len(node.args) for node in extrema), path="algebra.sympy.extrema")
+        contexts = (sp.Derivative, sp.Integral, sp.Limit, sp.Subs, sp.Lambda)
+        if left.has(*contexts) or right.has(*contexts):
+            # These contexts transform or bind a variable-dependent term; a
+            # constant atom does not preserve their semantics. They are not
+            # generated by current JAX lowering, so keep the helper conservative.
+            steps.append("non-pointwise extrema context")
+            return None
+        bound_variables = {
+            limit[0]
+            for expression in (left, right)
+            for contraction in expression.atoms(sp.Sum, sp.Product)
+            for limit in contraction.limits
+        }
+        if any(node.free_symbols & bound_variables for node in extrema):
+            # A Max depending on a contraction index is a function of that
+            # index, never a constant atom shared by different intervals.
+            steps.append("bound-dependent extrema")
+            return None
+        if assumptions == sp.true and distinct_extrema(left, right):
+            steps.append("exact rational extremum witness")
+            return False
+        canonical_atoms = {}
+        atoms = {}
+        for node in extrema:
+            canonical = (maximum if isinstance(node, sp.Max) else minimum)(*node.args)
+            if canonical not in canonical_atoms:
+                canonical_atoms[canonical] = sp.Dummy("extremum", real=True)
+            atoms[node] = canonical_atoms[canonical]
+        steps.append("finite extrema congruence")
+        answer = equal(
+            left.xreplace(atoms),
+            right.xreplace(atoms),
+            budget,
+            indices=indices,
+            assumptions=assumptions,
+            methods=steps,
+        )
+        return True if answer is True else None
 
-    left, right = boolean_piecewise(left), boolean_piecewise(right)
+    left, right = (boolean_piecewise(x, budget, steps) for x in (left, right))
     if (
         indices is not None
         and (left.has(sp.Sum, sp.Indexed) or right.has(sp.Sum, sp.Indexed))
@@ -267,21 +379,28 @@ def domain_condition(condition: sp.Basic, budget: Budget) -> sp.Basic:
     return simplify(condition, budget)
 
 
-def explicit_symbols(left: sp.Basic, right: sp.Basic) -> tuple[sp.Basic, sp.Basic] | None:
+def explicit_symbols(
+    left: sp.Basic, right: sp.Basic, *, methods: list[str] | None = None
+) -> tuple[sp.Basic, sp.Basic] | None:
     """把具体下标读取替换成两侧共享的独立入口符号，用于构造坐标级反例。
 
     抽象坐标下的 False 不构成合法输出反例；这里只接受常量下标且不越界的读取，
     并让左右两侧对应项共享同一个符号身份，从而把“存在某组输入元素使两侧不同”
-    落实为可用 SymPy 判定的命题。含不透明函数或无界整数符号时返回 None。
+    落实为可用 SymPy 判定的命题。纯整数读取用可表示的 0/1 见证；含不透明函数
+    或其他无界整数符号时返回 None。
     """
     from sympy.core.function import AppliedUndef
 
     if left.has(AppliedUndef) or right.has(AppliedUndef):
         # 不透明函数只能提供同余正结论，不能给出一般反例。
         return None
-    if any(
-        isinstance(symbol, sp.Symbol) and symbol.is_integer
-        for symbol in left.free_symbols | right.free_symbols
+    integer_reads = all(isinstance(v, sp.Indexed) and v.is_integer for v in (left, right))
+    if (
+        any(
+            isinstance(symbol, sp.Symbol) and symbol.is_integer
+            for symbol in left.free_symbols | right.free_symbols
+        )
+        and not integer_reads
     ):
         # 无界 SymPy 整数可以取到源整数 dtype 之外的值；同余仍有用，但 False
         # 不能当作源程序的反例。
@@ -300,5 +419,11 @@ def explicit_symbols(left: sp.Basic, right: sp.Basic) -> tuple[sp.Basic, sp.Basi
         assumptions = {"real": True} if read.is_real else {}
         if read.is_integer:
             assumptions = {"integer": True}
-        replacements[read] = sp.Symbol(f"entry_{position}", **assumptions)
+        # 两侧都只是入口整数元素读取时，最多涉及两个元素。使用各整数 dtype
+        # 都能表示的 0/1 构造具体见证；不把这条规则推广到整数算术或不透明值。
+        replacements[read] = (
+            sp.Integer(position) if integer_reads else sp.Symbol(f"entry_{position}", **assumptions)
+        )
+    if integer_reads and methods is not None:
+        methods.append(f"bounded integer read witness: {replacements}")
     return left.xreplace(replacements), right.xreplace(replacements)

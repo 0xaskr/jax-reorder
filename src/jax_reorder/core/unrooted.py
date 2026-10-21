@@ -165,6 +165,7 @@ def canonical_order(
     # 输入端口和字面量保留在标签里，不能像内部顶点一样自由重新编号。
     labels, outgoing, incoming = [], [[] for _ in range(n + nc)], [[] for _ in range(n + nc)]
     has_parameter_references = False
+    parameter_targets: set[int] = set()
 
     def anonymous(ref: ValueReference) -> tuple[Any, ...]:
         """从初始标签去掉可重编号的目标索引，同时保留引用种类和结果端口。"""
@@ -172,6 +173,7 @@ def canonical_order(
         if ref[0] in {"result", "constant"}:
             # 初始标签去掉临时编号；完整候选生成后仍会核对参数内引用的真实连接。
             has_parameter_references = True
+            parameter_targets.add(ref[1] if ref[0] == "result" else n + ref[1])
             return (ref[0], "unbound", *ref[2:])
         return ref
 
@@ -213,7 +215,10 @@ def canonical_order(
         for i, value in enumerate(graph.constants)
     )
     # 完整标签相同才分到同一初始颜色；哈希集合用于去重，不把摘要当证据。
-    keys = tuple(order_key(label) for label in labels)
+    # Nested region keys are immutable throughout this search. Reuse them
+    # across labels and candidates; only current-region references are renamed.
+    key_cache: dict[int, tuple[object, tuple[Any, ...]]] = {}
+    keys = tuple(order_key(label, cache=key_cache) for label in labels)
     ranks = {key: rank for rank, key in enumerate(sorted(set(keys)))}
     initial = tuple(ranks[key] for key in keys)
 
@@ -274,9 +279,13 @@ def canonical_order(
 
             parameter_keys = {}
             if has_parameter_references:
+                parameter_cache = dict(key_cache)
                 for i, node in enumerate(graph.nodes):
                     parameter_keys[i] = order_key(
-                        _variables((node.outputs, node.params, node.effects, node.context), renamed)
+                        _variables(
+                            (node.outputs, node.params, node.effects, node.context), renamed
+                        ),
+                        cache=parameter_cache,
                     )
             # 证书包含初始语义标签、全部依赖和参数内引用；颜色相同本身不是证据。
             certificate = tuple(
@@ -293,11 +302,16 @@ def canonical_order(
         # 完全相同的邻接表对应可直接交换的孪生顶点，只需探索一个代表。
         twins = set()
         for chosen in ambiguous:
-            twin = (tuple(sorted(outgoing[chosen])), tuple(sorted(incoming[chosen])))
-            # 参数中存在变量引用时，邻接表没有表达全部连接，因此禁用孪生剪枝。
-            if twin in twins and not has_parameter_references:
+            # A reference elsewhere only blocks swapping its actual targets.
+            # Keep this vertex's full parameter bindings too: anonymous labels
+            # alone cannot distinguish references to different third vertices.
+            node = graph.nodes[chosen] if chosen < n else None
+            bindings = (node.outputs, node.params, node.effects, node.context) if node else ()
+            twin = (tuple(sorted(outgoing[chosen])), tuple(sorted(incoming[chosen])), bindings)
+            if chosen not in parameter_targets and twin in twins:
                 continue
-            twins.add(twin)
+            if chosen not in parameter_targets:
+                twins.add(twin)
             # 逐个尝试将同色类中的一个顶点单独分出，再继续细化与搜索。
             split = tuple((color, int(i != chosen)) for i, color in enumerate(colors))
             ranks = {sig: rank for rank, sig in enumerate(sorted(set(split)))}

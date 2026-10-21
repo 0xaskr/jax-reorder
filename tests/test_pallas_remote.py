@@ -40,8 +40,9 @@ def test_exchange_keeps_mesh_coordinates_and_raw_send_wait_swap():
     assert send.is_wait_send is send.insert_dummy_device is True
     assert receive.is_wait_send is receive.insert_dummy_device is False
     assert match_views(view, view).kind == "structural"
-    with pytest.raises(UnsupportedJaxprError):
-        normalize_view(view, budget=AnalysisBudget())
+    normalized = normalize_view(view, budget=AnalysisBudget())
+    assert normalized.remote is not None
+    assert len(normalized.remote.transfers) == 2
 
 
 def test_conditional_ref_bindings_and_both_device_branches_survive_adaptation():
@@ -118,7 +119,7 @@ def test_constant_remote_target_cannot_fall_through_local_functionalization():
         pltpu.async_remote_copy(x, y, send, receive, (jnp.int32(0),)).wait()
 
     view = adapt(remote_graph(kernel)).view
-    with pytest.raises(UnsupportedJaxprError, match="remote DMA needs global"):
+    with pytest.raises(UnsupportedJaxprError, match="count is not conserved|no producer"):
         normalize_view(view, budget=AnalysisBudget())
 
 

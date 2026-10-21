@@ -1,7 +1,7 @@
 """Exact bounded integer expressions and symbolic blocked-domain certificates.
 
 No source objects, element enumeration, SymPy, or floating-point arithmetic are
-used here. Unsupported relations fail instead of falling back to enumeration.
+used here. Finite index-map tables are separately budgeted by the tensor domain.
 """
 
 from __future__ import annotations
@@ -100,6 +100,8 @@ def divide(value: IndexExpr, divisor: int) -> IndexExpr:
         return integer(int(value.value) // divisor)
     if divisor == 1:
         return value
+    if value.kind == "div":
+        return divide(value.args[0], int(value.value) * divisor)
     return IndexExpr("div", (value,), divisor)
 
 
@@ -111,6 +113,27 @@ def modulo(value: IndexExpr, divisor: int) -> IndexExpr:
     if divisor == 1:
         return integer(0)
     return IndexExpr("mod", (value,), divisor)
+
+
+def lookup(selector: IndexExpr, values: tuple[IndexExpr, ...]) -> IndexExpr:
+    """An exact finite coordinate table, with conservative composition rules."""
+    if not values:
+        raise ValueError("index table must not be empty")
+    if selector.kind == "constant":
+        position = int(selector.value)
+        if not 0 <= position < len(values):
+            raise UnsupportedJaxprError("index.lookup", "coordinate outside its table")
+        return values[position]
+    if all(v == values[0] for v in values[1:]):
+        return values[0]
+    if selector.kind == "lookup" and all(v.kind == "constant" for v in selector.args[1:]):
+        return lookup(selector.args[0], tuple(lookup(v, values) for v in selector.args[1:]))
+    if all(v.kind == "constant" for v in values):
+        start = int(values[0].value)
+        step = int(values[1].value) - start
+        if all(int(v.value) == start + i * step for i, v in enumerate(values)):
+            return add(integer(start), scale(selector, step))
+    return IndexExpr("lookup", (selector, *values))
 
 
 def substitute(expr: IndexExpr, bindings: dict[str, IndexExpr]) -> IndexExpr:
@@ -125,6 +148,8 @@ def substitute(expr: IndexExpr, bindings: dict[str, IndexExpr]) -> IndexExpr:
         return divide(args[0], int(expr.value))
     if expr.kind == "mod":
         return modulo(args[0], int(expr.value))
+    if expr.kind == "lookup":
+        return lookup(args[0], args[1:])
     return expr
 
 
@@ -137,6 +162,11 @@ def bounds(expr: IndexExpr, ranges: dict[str, tuple[int, int]]) -> tuple[int, in
     if expr.kind == "sum":
         return sum(x[0] for x in limits), sum(x[1] for x in limits)
     lo, hi = limits[0]
+    if expr.kind == "lookup":
+        if not 0 <= lo <= hi < len(expr.args) - 1:
+            raise UnsupportedJaxprError("lane.lookup", "lane address outside its table")
+        selected = limits[lo + 1 : hi + 2]
+        return min(x[0] for x in selected), max(x[1] for x in selected)
     k = int(expr.value)
     if expr.kind == "scale":
         return min(lo * k, hi * k), max(lo * k, hi * k)
@@ -190,7 +220,7 @@ def integer_operation(
 
 def evaluate_index_map(region: RegionView, programs: int, budget: AnalysisBudget) -> IndexExpr:
     path = region.origin.path
-    if len(region.inputs) != 1 or len(region.outputs) != 1 or region.effects:
+    if not region.inputs or len(region.outputs) != 1 or region.effects:
         raise UnsupportedJaxprError(path, "expected a scalar pure index map")
     env = {region.inputs[0].id: axis("program")}
     ranges = {"program": (0, programs - 1)}
@@ -202,6 +232,8 @@ def evaluate_index_map(region: RegionView, programs: int, budget: AnalysisBudget
         env[var.id] = literal_integer(value, path)
 
     def read(operand: Operand) -> IndexExpr:
+        if isinstance(operand, ValueRef) and operand.id not in env:
+            raise UnsupportedJaxprError(path, "index map depends on prefetched data")
         return env[operand.id] if isinstance(operand, ValueRef) else literal_integer(operand, path)
 
     for op in region.operations:
@@ -233,6 +265,10 @@ class BlockDomain:
 
     @property
     def inverse(self) -> tuple[IndexExpr, IndexExpr]:
+        if self.programs == 1:
+            # The valid output domain is contained in this sole block. Its
+            # program coordinate is zero, including a masked partial tail.
+            return integer(0), axis("global")
         group = divide(axis("global"), self.block)
         program = add(integer(self.programs - 1), scale(group, -1)) if self.reverse else group
         return program, modulo(axis("global"), self.block)
@@ -243,6 +279,10 @@ def prove_block_domain(
 ) -> BlockDomain:
     """Prove a blocked permutation and its inverse, in constant space in N."""
     budget.spend(block.origin.path)
+    if len(block.array.shape) != 1 or len(block.block_shape) != 1:
+        raise UnsupportedJaxprError(
+            block.origin.path, "rank-one domain rule cannot interpret tensor blocks"
+        )
     size, width = block.array.shape[0], block.block_shape[0]
     if programs != (size + width - 1) // width:
         raise UnsupportedJaxprError(

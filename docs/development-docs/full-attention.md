@@ -31,14 +31,21 @@ GLM5 另验证 prefill FP32、decode BF16 的原 `GlmDsaIndexer`，固定 `_INDE
 
 | 原始路径 | 图状态 | CPU 结果 |
 | --- | --- | --- |
-| GLM5 absorbed MQA，prefill/decode | unknown：`pallas_call` | 原正常 lowering 拒绝：CPU 只支持 interpret |
-| `Glm5DecoderLayer`，absorbed attention + norm/残差/dense MLP，prefill/decode | unknown：`pallas_call` | 同上，完整 Decoder 未算作通过 |
-| `WanT2VCrossAttention` → 原 USP/Flash Attention | unknown：`pallas_call` | 同上，没有替换核心 |
-| `EPMoE`，2 experts、top-1、原 GMM | unknown：`pallas_call` | 原后端在 CPU 自动使用 interpret，执行并通过逐专家 NumPy 参照；可执行不等于可比较 |
+| GLM5 absorbed MQA，prefill/decode | 两次追踪的原图结构比较 equivalent；接口搜索预算为 1 | 原正常 lowering 拒绝：CPU 只支持 interpret |
+| `Glm5DecoderLayer`，absorbed attention + norm/残差/dense MLP，prefill/decode | 同上；完整原 Decoder 图进入结构比较，不认证改写候选 | 同上，没有执行完整 Decoder |
+| `WanT2VCrossAttention` → 原 USP/Flash Attention | 原图结构自比较 equivalent；未认证候选 | 同上，没有替换核心 |
+| `EPMoE`，2 experts、top-1、原 GMM | 原图结构自比较 equivalent；未认证候选 | 原后端在 CPU 自动使用 interpret，执行并通过逐专家 NumPy 参照 |
 | `FluxSingleTransformerBlock` | 未得到可比较原图 | 锁定 JAX 的 Explicit mesh 不接受原 `with_sharding_constraint`；原追踪拒绝 |
 | GLM5 MHA 单 head 配置 | 未得到可比较原图 | 原 reshape 后的显式 sharding 不一致，原追踪拒绝 |
 
-前五行共 6 份 unknown 图探测，最后两行共 2 份 trace_rejected。GLM5 Pallas 配置只显式给定原后端允许的 block/VMEM 参数以避免依赖 TPU 自动调参，没有启用替代 interpret。EPMoE 的 interpret 是原源码自身的 CPU 分支。
+2026-10-19 公共 Pallas 结构入口接入后，初始结果为 4 份预算异常、2 份原图自比较、
+2 份 trace_rejected。2026-10-20 使用[接口不变量细化](region-bindings.md)消除 GLM5
+8 槽位的阶乘搜索，四个原配置均通过 `search_budget=1` 的完整比较与对应证据复核，
+单例约 71–93 秒，组合 4 passed / 322.26 秒。没有提高预算或删除未使用计算；
+小图另验证合法槽位置换、错误反馈、幂等与剩余对称组的预算拒绝。
+运行器现在报告 6 份原图结构比较、2 份 trace_rejected；原图比较与候选等价分开统计。
+GLM5 Pallas 配置只显式给定原后端允许的 block/VMEM 参数以避免依赖 TPU 自动调参，
+没有启用替代 interpret。EPMoE 的 interpret 是原源码自身的 CPU 分支。
 
 稀疏 DSA 后端、完整 MoE Decoder、其他配置、权重求导、高阶模式、多主机及 GPU/TPU 尚未验证。Flux 完整 block 已保存的候选也未通过原图前置检查，不能计入等价覆盖。
 

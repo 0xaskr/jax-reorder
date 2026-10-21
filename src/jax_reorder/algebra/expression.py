@@ -114,6 +114,9 @@ class SymbolicTensor:
     defined: sp.Basic = sp.true
     finite: bool = True
     source: Source | None = None
+    # Pallas allocated-but-uninitialized lanes are a total-output safety
+    # obligation, separate from mathematical partial-function definedness.
+    memory_validity: sp.Basic = sp.true
 
     def read(self, indices: Sequence[sp.Expr | int]) -> tuple[sp.Basic, sp.Basic]:
         """用具体或符号坐标实例化元素公式，返回 (expression, defined)。

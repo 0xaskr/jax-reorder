@@ -9,6 +9,7 @@ semantic_parameters 处理自定义求导调用的参数，需要时物化一阶
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,6 +21,8 @@ from jax._src import custom_derivatives as cd
 
 from ..errors import ComparisonError, InvalidJaxprError, UnsupportedJaxprError
 from ._typing import EncodedRegion, Parameters
+from .adapters.pallas.structural import pallas_call_p, run_scoped_p
+from .adapters.pallas.structural import parameters as pallas_parameters
 from .derivatives import CUSTOM_PRIMITIVES, _check_rule_order, _jvp_rules, _vjp_rules
 from .semantics import Encoder, Frozen
 
@@ -63,6 +66,13 @@ def parameter_view(
     )
     value: Any
     for key, value in sorted(params.items()):
+        if equation.primitive is pallas_call_p and key == "grid_mapping" and inputs is not None:
+            start = len(inputs) - len(value.scratch_avals)
+            value = dataclasses.replace(
+                value, scratch_avals=tuple(value.scratch_avals[i - start] for i in inputs[start:])
+            )
+        if equation.primitive is run_scoped_p and key == "ref_transforms" and inputs is not None:
+            value = tuple(value[i] for i in inputs)
         if equation.primitive is pjit.jit_p and key == "name":
             continue
         # 逐位置元数据必须随槽位置换同步投影；inputs/outputs 为 None 时不做
@@ -113,7 +123,7 @@ def semantic_parameters(
     为 True 时再附加物化的一阶 rules；参数模式变化时明确拒绝。
     """
     if equation.primitive not in CUSTOM_PRIMITIVES:
-        return equation.params
+        return pallas_parameters(equation)
     if jax.__version__ != "0.11.2":
         raise UnsupportedJaxprError("derivative", "custom derivative adapter requires JAX 0.11.2")
     p = equation.params

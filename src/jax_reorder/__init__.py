@@ -26,7 +26,14 @@ verify_correspondence 可以单独复核，不必重跑规范化。
 
 from .algebra import AlgebraComparison, compare_algebraic_jaxprs
 from .core.canonical import Canonicalized, Comparison, canonicalize, compare_jaxprs
+from .core.core_execution import CoreExecutionBinding
 from .core.correspondence import EquationCorrespondence, GraphCorrespondence, verify_correspondence
+from .core.local import (
+    LocalKernelComparison,
+    LocalKernelEvidence,
+    compare_pallas_kernels,
+    verify_pallas_kernel_comparison,
+)
 from .errors import (
     ComparisonBudgetError,
     ComparisonContractError,
@@ -59,11 +66,14 @@ __all__ = [
     "AlgebraComparison",  # 数学结论、假设、警告、结构对应或 SymPy 查询记录。
     "Canonicalized",  # 单图规范化结果：重排 jaxpr、比较结构、BFS/执行顺序、深度和变量映射。
     "Comparison",  # 双图比较报告：状态、差异或问题、两侧规范化结果以及原图对应证据。
+    "CoreExecutionBinding",  # 调用方提供的精确 core/program 顺序条件，不配置原生调度。
     "EquationCorrespondence",  # 单个左侧方程对应的右侧方程索引、结果端口映射及子图证据。
     "FunctionComparison",  # 函数比较总报告：各模式结论、未检查模式和 CPU 编译检查结果。
     "FunctionSignature",  # 函数契约：输入输出 pytree、静态参数、可微叶子及变换顺序。
     "FunctionTrace",  # 单模式追踪产物：函数契约、环境、物化 jaxpr 和动态输入抽象签名。
     "GraphCorrespondence",  # 整张原图的对应证据：输入、常量、方程及输出的左到右双射。
+    "LocalKernelComparison",
+    "LocalKernelEvidence",
     "ModeComparison",  # 单个 forward/JVP/VJP 模式的报告，保留图比较与追踪结果。
     "Status",  # equivalent、inequivalent；different 只用于显式结构诊断。
     "ComparisonError",
@@ -83,10 +93,12 @@ __all__ = [
     "canonicalize",  # 规范化一个 jaxpr，返回 Canonicalized；不支持或非法输入会抛出异常。
     "compare_algebraic_jaxprs",  # 结构检查后，用 SymPy 比较完整输出及定义条件。
     "compare_jaxprs",  # 规范化并比较两张图，再复核等价证据；图处理失败直接抛出异常。
+    "compare_pallas_kernels",  # 设备局部图及输入/轴绑定；可单独请求资源与通信检查。
     "compare_function_traces",  # 核对两份追踪的模式、环境、契约及图，返回 ModeComparison。
     "compare_functions",  # 按给定签名逐模式追踪并比较两个函数，返回 FunctionComparison。
     "trace_function",  # 按输入签名及指定 forward/JVP/VJP 模式追踪一个函数，返回 FunctionTrace。
     "verify_correspondence",  # 直接核对原图及给定映射；校验通过返回 None，失败抛出异常。
+    "verify_pallas_kernel_comparison",
 ]
 
 # 包自身版本；JAX/jaxlib 的受审查版本由规范化和对应校验入口另行检查。

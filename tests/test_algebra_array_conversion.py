@@ -17,9 +17,21 @@ import jax.numpy as jnp
 import pytest
 import sympy as sp
 
-from jax_reorder import Status, compare_functions
+from jax_reorder import MathematicalUndecidedError, Status, compare_functions
 from jax_reorder.algebra.budget import Budget
-from jax_reorder.algebra.sympy_ops import equal
+from jax_reorder.algebra.sympy_ops import equal, explicit_symbols
+
+
+def test_integer_read_witness_is_representable_and_keeps_arithmetic_guards():
+    x = sp.IndexedBase("x", shape=(2,), integer=True)
+    i = sp.Symbol("i", integer=True)
+    methods = []
+    assert explicit_symbols(x[0], x[1], methods=methods) == (0, 1)
+    assert "bounded integer read witness" in methods[0]
+    assert explicit_symbols(x[0], x[0]) == (0, 0)
+    assert explicit_symbols(x[0] + 1, x[1]) is None
+    assert explicit_symbols(x[0], x[i]) is None
+    assert explicit_symbols(x[0], x[2]) is None
 
 
 @pytest.mark.parametrize(
@@ -67,3 +79,22 @@ def test_large_matrix_association_still_uses_array_expressions():
     # methods 由查询过程原地追加，用来确认实际走的是 ArrayExpr.doit。
     assert equal(left, right, Budget(100), indices=(i, column), methods=methods) is True
     assert methods == ["ArrayExpr.doit"]
+
+
+def test_concatenation_conditions_are_compared_on_valid_output_coordinates():
+    spec = jax.ShapeDtypeStruct((256,), jnp.float32)
+    result = compare_functions(lambda x: jnp.concatenate((x[:128], x[128:])), lambda x: x, spec)
+    assert result.status is Status.EQUIVALENT
+    assert any(q.scope == "definedness" for q in result.modes[0].algebra.backend_result.queries)
+
+
+def test_output_coordinate_bounds_do_not_erase_partial_input_conditions():
+    def partial(x):
+        values = jnp.log(x) - jnp.log(x)
+        return jnp.concatenate((values[:128], values[128:]))
+
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare_functions(
+            partial, lambda x: jnp.zeros_like(x), jax.ShapeDtypeStruct((256,), jnp.float32)
+        )
+    assert error.value.failure_kind == "condition_undecided"

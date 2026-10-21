@@ -273,19 +273,18 @@ def test_invalid_graphs_fail(kind):
         compare_jaxprs(graph, graph)
 
 
-def test_unsupported_effect_even_in_unused_branch():
-    """未支持的 effect 即使位于未使用分支也必须拒绝，不能靠删除节点跳过语义。"""
+def test_unsupported_callback_even_without_a_used_result():
+    """任意 Python callback 不能靠删除无返回值的节点跳过语义。"""
 
     def fn(x):
-        jax.debug.print("{x}", x=x)
+        jax.debug.callback(lambda value: None, x)
         return lax.sin(x)
 
     graph = trace(fn, 1.0)
-    # 抛出的是带路径和原因的异常对象，测试读取其 reason 确认拒绝理由与 effect 有关。
     with pytest.raises(UnsupportedJaxprError) as error:
         compare_jaxprs(graph, graph)
     result = error.value
-    assert "effect" in result.reason
+    assert "unsupported primitive debug_callback" in result.reason
 
 
 def test_long_chain_does_not_recurse_on_dependencies():

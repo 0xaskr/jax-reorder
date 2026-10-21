@@ -1,5 +1,53 @@
 # 索引乘加与有限求和的代数比较
 
+## 2026-10-19 决定：在代数 lowering 中删减未使用的纯计算
+
+状态：比较边界已确定，待实现；本节记录设计决定，不表示代码已经完成删减。
+
+结构比较继续保留完整原图，包括未参与输出的纯计算和常量。代数比较只保留影响输出、
+副作用及其依赖的计算；能够确认无副作用、且不影响这些根的纯计算可以忽略。
+因此，两份图可以在结构阶段返回 `different`，再在数学阶段返回 `equivalent`，
+并以 `equivalence_kind="algebraic"` 标明结论来源。
+
+### 所在阶段与保留规则
+
+- 删减放在代数 lowering 中、构造 SymPy 表达式之前；tracing、结构规范化与原图对应证据
+  继续处理完整图，原始 jaxpr 不被修改。结构不同的诊断仍保留在函数模式报告中。
+- 以有序输出和具有副作用或顺序约束的节点为根，反向保留全部数据依赖、控制依赖及必要绑定。
+  其余节点只有在能够确认是无副作用的纯计算时才可删除；仅供这些节点使用的内部常量也可删减，
+  外部输入输出契约不变。
+- 嵌套调用和控制流中的副作用必须检查并保留，不能仅凭外层结果无人使用就删除整个区域。
+  `rng_uniform` 等隐式有序操作及 `dce_sink` 等显式保留标记仍是保留根。
+- 未知 effects、不透明语义或无法确认纯性的节点继续明确拒绝。删减不能绕过已有支持域检查，
+  也不意味着数学后端新增了副作用支持；保留后仍无法解释的语义继续通过异常报告。
+- 被删除的纯计算不参与符号构造，其定义条件也不附加到最终输出。仍参与输出或副作用的计算
+  保留原有条件检查；例如返回 `log(x)` 或 `0 * log(x)` 时，不能用本规则消除 `x > 0` 条件。
+  后者在源图中仍有输出依赖，属于代数消项问题，与未使用计算的删减分开处理。
+
+### 示例与后续验证
+
+以下两个函数的原始图不同，但按本决定应判为代数等价：
+
+```python
+def left(x):
+    jnp.log(x)  # 结果未使用，且无副作用。
+    return jnp.zeros(2, dtype=jnp.float32)
+
+
+def right(x):
+    return jnp.zeros(2, dtype=jnp.float32)
+```
+
+左侧未使用的 `log(x)` 不再引入 `x > 0` 的比较前提。纯死代码的定义条件被忽略是本次明确选择的
+比较范围，不能据此声称两份完整计算图相同。
+
+后续回归须覆盖：上述正例及空输出变体、未使用纯计算的依赖链、仍被输出使用的部分函数、
+未使用结果的副作用节点及其生产者、嵌套区域中的副作用，以及未知 effects 的拒绝路径。
+每组分别检查结构结论与代数结论，避免把代数删减结果当作原图结构证据。
+
+当前 [SymbolicBuilder](../../src/jax_reorder/algebra/symbolic.py) 的 `graph` / `finish` 仍转换未使用计算并收集其定义条件，
+后续实现需按本节调整转换流程及相关测试。下文的历史行为与验证记录按当时实现保留。
+
 ## 2026-10-16 三种结论与异常通道
 
 [结果契约](../references/equivalence-results.md)已落实：完整数学比较正常返回结构等价、数学等价、数学不等价；删除 `Status.UNKNOWN`。
@@ -61,7 +109,7 @@ worker 用独立失败消息传输异常分类、诊断与远端 traceback；超
 | [algebra/trusted.py](../../src/jax_reorder/algebra/trusted.py) | SymPy ArrayExpr/逻辑/恒等查询、完整输出汇总与可终止 worker |
 
 `compare_functions`、`compare_function_traces` 和 `compare_algebraic_jaxprs` 接受
-`algebra_timeout`（默认 10 秒，正有限数），原 `algebra_budget` 默认仍为 10,000。
+`algebra_timeout`（默认 60 秒，正有限数），原 `algebra_budget` 默认仍为 10,000。
 时间限制覆盖 worker 内的转换与查询，不包括 JAX tracing、父进程结构规范化与端口检查。
 超时会 kill 并回收 worker，后续请求可继续；预算在大多项式展开前预检。
 这是时间/表达式工作量边界，没有新增进程 RSS 硬上限。
@@ -199,6 +247,14 @@ Python 3.12、JAX 0.11.2、SymPy 1.14.0 下，对 `sum(x*x)` 的一次实测如�
 | [algebra_proof.py](https://github.com/0xaskr/jax-reorder/blob/05abeafa1e85193ea037d9fc182f12f67fa10f9c/src/jax_reorder/algebra_proof.py) | 原图对应和局部推导的独立复核 |
 
 ## 当前边界
+
+Pallas 合法输入 padding 另用 `SymbolicTensor.memory_validity` 携带逐 lane 初始化义务，
+与 log/sqrt 等数学定义域 `defined` 分开。每侧完整输出必须先证明内存有效；
+相同未定义域、`x-x` 或 `0*x` 不能替代初始化证明。受限 masked Sum 的局部区间
+收缩只在代数 lowering 进行，保留 mean 分母和非零补充值；前缀差分还须证明
+选中分支在新增区间全定义。grid、地址、DMA 和信号量时序始终由 core 处理。
+支持范围、原生尺寸用例及 CAS 超时记录见
+[尾块有效域与 Ref 组合](pallas/history/stage-22.md#922-时序重访尾块有效域与-ref-组合2026-10-20完成)。
 
 `-inf` mask 已加入受限支持，设计与验收见[完成计划](../exec-plans/completed/negative-infinity-masks.md)。
 负无穷及含负无穷的捕获数组保留 dtype、shape、完整内容，不进入有理数系数。

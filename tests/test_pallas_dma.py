@@ -226,10 +226,11 @@ def test_two_semaphores_do_not_protect_overlapping_destinations():
         normalize_view(view(kernel, semaphores=2), budget=AnalysisBudget())
 
 
-@pytest.mark.parametrize("programs,size,reason", [(2, 256, "lifetime proof"), (1, 100, "unpadded")])
-def test_grid_scratch_reuse_and_padding_need_additional_proofs(programs, size, reason):
-    with pytest.raises(UnsupportedJaxprError, match=reason):
-        normalize_view(view(copy, programs=programs, size=size), budget=AnalysisBudget())
+def test_grid_scratch_reuse_is_quiescent_but_undefined_padding_cannot_be_a_dma_source():
+    proof = normalize_view(view(copy, programs=2, size=256), budget=AnalysisBudget())
+    assert proof.rule == "local-control-memory-to-values" and proof.projection.communication
+    with pytest.raises(UnsupportedJaxprError, match="undefined input padding"):
+        normalize_view(view(copy, programs=1, size=100), budget=AnalysisBudget())
 
 
 @pytest.mark.parametrize("options", [{"priority": 1}, {"add": True}])

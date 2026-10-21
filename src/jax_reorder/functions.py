@@ -395,7 +395,7 @@ def compare_function_traces(
     *,
     equivalence: str = "auto",
     algebra_budget: int = 10000,
-    algebra_timeout: float = 10.0,
+    algebra_timeout: float = 60.0,
 ) -> ModeComparison:
     """先核对两侧契约是否一致，再比较图，返回这个模式的结论。
 
@@ -473,7 +473,7 @@ def compare_functions(
     check_cpu: bool = False,
     equivalence: str = "auto",
     algebra_budget: int = 10000,
-    algebra_timeout: float = 10.0,
+    algebra_timeout: float = 60.0,
 ) -> FunctionComparison:
     """对每个请求的模式分别追踪、核对契约、比较，最后汇总成一份报告。
 

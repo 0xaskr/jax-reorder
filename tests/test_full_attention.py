@@ -3,8 +3,8 @@
 覆盖：
 - 正例：GLM5 完整层在多个 profile 下给出固定标签序列（两正两负），负例带可序列化的数值
   见证；Llama/CLIP/Flux 等代表性完整层同样重放；索引器即使输出未使用也保留。
-- 反例：Flux 的显式 sharding constraint、单头配置、交叉注意力的不透明调用、MoE interpret
-  模式都按预期拒绝；真实 Pallas/吸收路径断言 CPU lowering 失败。
+- 边界：Flux 的显式 sharding constraint、单头配置拒绝追踪；GLM5 Pallas、Wan/EPMoE
+  完成结构比较。CPU 正常 lowering 与原 MoE interpret 分别验证。
 - 独立证据：attention 依赖文件与 git blob 摘要对照，确认使用的是固定上游源码。
 - 求导边界：forward 与 JVP 相同不表示 VJP 累加顺序一致，四种层族分别检查。
 - 前置条件：业务标记（pytest -m business）、CPU 平台、tests/fixtures 上游快照。
@@ -24,7 +24,7 @@ from examples.full_layers.runner import FAMILIES, verify
 from examples.full_layers.upstream import original_imports
 from examples.sglang_layers.builders import cpu_mesh
 from examples.sglang_layers.upstream import ROOT
-from jax_reorder import TraceError, UnsupportedJaxprError, compare_functions, compare_jaxprs
+from jax_reorder import Status, TraceError, compare_functions, compare_jaxprs
 
 pytestmark = pytest.mark.filterwarnings(
     r"ignore:'\.value' access is now deprecated:DeprecationWarning"
@@ -96,24 +96,21 @@ def test_original_glm5_absorbed_path_rejects_cpu_lowering(decoder, mode):
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), mla_original_imports():
         fn, args = glm5_absorbed(mesh, decoder=decoder, mode=mode)
-        graph = jax.make_jaxpr(fn)(*args)
-        with pytest.raises(UnsupportedJaxprError) as error:
-            compare_jaxprs(graph, graph)
-        result = error.value
-        assert "unsupported primitive pallas_call" in result.reason
+        left, right = (jax.make_jaxpr(fn)(*args) for _ in range(2))
+        result = compare_jaxprs(left, right, search_budget=1)
+        assert result.status == Status.EQUIVALENT
+        assert result.correspondence is not None
         with pytest.raises(ValueError, match="Only interpret mode is supported on CPU"):
             jax.jit(fn).lower(*args).compile()
 
 
-def test_original_cross_attention_is_opaque_and_cpu_rejected():
+def test_original_cross_attention_is_structurally_comparable_but_cpu_rejected():
     from examples.full_layers.blocked import cross_attention
 
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), cross_attention(mesh) as (fn, args):
-        with pytest.raises(UnsupportedJaxprError) as error:
-            compare_jaxprs(jax.make_jaxpr(fn)(*args), jax.make_jaxpr(fn)(*args))
-        result = error.value
-        assert "unsupported primitive pallas_call" in result.reason
+        result = compare_jaxprs(jax.make_jaxpr(fn)(*args), jax.make_jaxpr(fn)(*args))
+        assert result.status == Status.EQUIVALENT
         with pytest.raises(ValueError, match="Only interpret mode is supported on CPU"):
             jax.jit(fn).lower(*args).compile()
 
@@ -136,7 +133,7 @@ def test_complete_indexer_is_retained_even_when_outputs_do_not_use_it(profile):
     assert all(row["numerical_agreement"] for row in rows)
 
 
-def test_original_moe_executes_in_cpu_interpret_but_comparison_raises():
+def test_original_moe_executes_in_cpu_interpret_and_matches_structurally():
     from examples.full_layers.blocked import original_moe
     from examples.full_layers.oracles import moe
     from examples.sglang_layers.runner import close
@@ -144,8 +141,5 @@ def test_original_moe_executes_in_cpu_interpret_but_comparison_raises():
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), original_moe(mesh) as (fn, args):
         graph = jax.make_jaxpr(fn)(*args)
-        with pytest.raises(UnsupportedJaxprError) as error:
-            compare_jaxprs(graph, graph)
-        result = error.value
-        assert "unsupported primitive pallas_call" in result.reason
+        assert compare_jaxprs(graph, graph).status == Status.EQUIVALENT
         close(jax.jit(fn)(*args), moe(args), low_precision=True, oracle=True)

@@ -1,0 +1,27 @@
+{
+  "observed_at": "2026-10-19",
+  "files": [
+    {
+      "repository": "openxla/tokamax",
+      "revision": "991f283fb4f441499e848858606abbe373bb86b0",
+      "path": "tokamax/_src/ops/deepseek_rope/pallas_mosaic_tpu_kernel.py",
+      "snapshot": "tokamax_rope.py.txt",
+      "sha256": "374123098042fcb7af43ee0a5f7e2a5d4895d0a82b2ab63fb6345443ba2a9006",
+      "git_blob": "9286d5ecdf31fa3632dd153698484d89cfaad9e7",
+      "stars_observed": 307,
+      "license": "Apache-2.0",
+      "url": "https://github.com/openxla/tokamax/blob/991f283fb4f441499e848858606abbe373bb86b0/tokamax/_src/ops/deepseek_rope/pallas_mosaic_tpu_kernel.py"
+    },
+    {
+      "repository": "vllm-project/tpu-inference",
+      "revision": "d85861af245fab2bd9c69e789545e6bcfefbfc3b",
+      "path": "tpu_inference/kernels/flash_attention/kernel.py",
+      "snapshot": "vllm_flash_attention.py.txt",
+      "sha256": "80a7b7722ee650d9e92aa7a976d30e814335d7d1d983dd4151f1f9ef5459f63d",
+      "git_blob": "e99484888e4515ac7b985cfe63cd9b0e07a99f8c",
+      "stars_observed": 464,
+      "license": "Apache-2.0",
+      "url": "https://github.com/vllm-project/tpu-inference/blob/d85861af245fab2bd9c69e789545e6bcfefbfc3b/tpu_inference/kernels/flash_attention/kernel.py"
+    }
+  ]
+}

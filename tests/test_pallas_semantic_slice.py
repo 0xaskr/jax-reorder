@@ -34,12 +34,14 @@ from jax_reorder.core.index_domain import (
 from jax_reorder.core.memory import functionalize_call
 from jax_reorder.core.model import ProgramView, RefType
 from jax_reorder.core.normalization import (
+    NormalizedEvidence,
     compare_program_views,
     normalize_view,
     verify_normalized_evidence,
 )
 from jax_reorder.core.view_graph import verify_view_correspondence
 from tests.pallas_domain_oracle import enumerate_blocked
+from tests.pallas_projection_oracle import at_point
 
 
 def build(
@@ -164,14 +166,20 @@ def test_large_shape_does_not_enumerate(monkeypatch):
 
 def test_tail_mask_gap_is_rejected():
     bad = view(128, size=1037, tail=True, gap=1)
-    with pytest.raises(UnsupportedJaxprError, match="coverage gap"):
+    with pytest.raises(UnsupportedJaxprError, match="uninitialized"):
         normalize_view(bad, budget=AnalysisBudget())
 
 
 @pytest.mark.parametrize("block,reverse", [(128, False), (256, True)])
-def test_unguarded_tail_is_rejected(block, reverse):
-    with pytest.raises(UnsupportedJaxprError, match="tail guard"):
-        normalize_view(view(block, reverse, size=1037), budget=AnalysisBudget())
+def test_staged_tail_padding_does_not_escape_valid_output(block, reverse):
+    source = view(block, reverse, size=1037)
+    proof = normalize_view(source, budget=AnalysisBudget())
+    x = np.arange(1037, dtype=np.float32)
+    actual = np.asarray([at_point(proof.projection.outputs[0], (x,), (i,)) for i in range(x.size)])
+    np.testing.assert_array_equal(actual, x + 1)
+    verify_normalized_evidence(
+        source, source, NormalizedEvidence(proof, proof, ((0, 0),)), budget=AnalysisBudget()
+    )
 
 
 def test_program_id_data_is_preserved():
@@ -416,12 +424,13 @@ def test_native_compiler_parameters_are_not_silently_ignored():
     assert compare_program_views(native, view(256, True)).equivalence_kind == "normalized"
 
 
-def test_alias_is_encoded_for_structure_but_not_erased_by_normalization():
+def test_alias_is_encoded_and_requires_matching_independent_blocks():
     native = view(aliases={0: 0})
     assert call(native).aliases == ((0, 0),)
     assert compare_program_views(native, native).equivalence_kind == "structural"
-    with pytest.raises(UnsupportedJaxprError, match="kernel execution contract"):
-        normalize_view(native, budget=AnalysisBudget())
+    proof = normalize_view(native, budget=AnalysisBudget())
+    assert proof.rule == "local-control-memory-to-values"
+    assert compare_program_views(native, view()).equivalence_kind == "normalized"
 
 
 def test_default_jit_wrapper_is_preserved_in_structural_and_normalized_evidence():

@@ -11,13 +11,16 @@ from jax_reorder import (
     Comparison,
     ComparisonFailureKind,
     ComparisonStage,
+    CoreExecutionBinding,
     FunctionComparison,
     FunctionTrace,
+    LocalKernelComparison,
     UnsupportedJaxprError,
     canonicalize,
     compare_algebraic_jaxprs,
     compare_functions,
     compare_jaxprs,
+    compare_pallas_kernels,
     trace_function,
 )
 from jax_reorder.core.canonical import Graph
@@ -43,6 +46,12 @@ def graph_types(graph: core.Jaxpr) -> None:
     assert_type(normalized.regions[graph], Canonicalized)
     assert_type(compare_jaxprs(graph, graph), Comparison)
     assert_type(compare_algebraic_jaxprs(graph, graph), AlgebraComparison)
+    assert_type(compare_pallas_kernels(graph, graph), LocalKernelComparison)
+    local = compare_pallas_kernels(graph, graph, check_protocol=True, execution_cores=1)
+    assert_type(local.execution_cores, int | None)
+    binding = CoreExecutionBinding((((0,),), ((1,),)))
+    bound = compare_pallas_kernels(graph, graph, check_protocol=True, execution=binding)
+    assert_type(bound.execution, CoreExecutionBinding | None)
 
 
 def function_types() -> None:

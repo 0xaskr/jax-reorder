@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import jaxlib
 import numpy as np
 from jax import lax
-from jax._src import core
+from jax._src import core, pjit
 from jax._src.pallas import core as pallas_core
 from jax._src.pallas import primitives as pallas_primitives
 from jax._src.pallas.mosaic import core as tpu_core
@@ -28,7 +28,7 @@ from jax._src.state import indexing as state_indexing
 from jax._src.state import types as state_types
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
-from jax.sharding import Mesh
+from jax.sharding import AbstractMesh, AxisType, Mesh
 from jax.sharding import PartitionSpec as P
 
 from jax_reorder import Status, UnsupportedJaxprError, compare_jaxprs
@@ -98,6 +98,82 @@ def remote_dma_inventory():
                 ),
             }
         )
+    return result
+
+
+def pallas_local_reshard_inventory():
+    """Trace the actual where lowering on two abstract logical mesh positions.
+
+    AbstractMesh avoids requiring two physical CPU/TPU devices. No kernel or
+    communication executes; only the registered primitive/descriptor schemas
+    are observed here.
+    """
+    mesh = AbstractMesh((2,), ("workers",), axis_types=(AxisType.Auto,))
+
+    def kernel(x, y, temporary, send, receive):
+        peer = 1 - lax.axis_index("workers")
+        pltpu.async_remote_copy(x, temporary, send, receive, (peer,)).wait()
+        y[...] = jnp.where(jnp.arange(128)[None, :] < 96, temporary[...], 7)
+
+    call = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
+        scratch_shapes=(
+            pltpu.VMEM((8, 128), jnp.float32),
+            pltpu.SemaphoreType.DMA,
+            pltpu.SemaphoreType.DMA,
+        ),
+        compiler_params=pltpu.CompilerParams(),
+    )
+    function = jax.shard_map(
+        call, mesh=mesh, in_specs=P("workers", None), out_specs=P("workers", None), check_vma=False
+    )
+    graph = jax.make_jaxpr(function)(jax.ShapeDtypeStruct((16, 128), jnp.float32))
+
+    def descriptor(value):
+        return {
+            "class": f"{type(value).__module__}.{type(value).__qualname__}",
+            "mesh_class": f"{type(value.mesh).__module__}.{type(value.mesh).__qualname__}",
+            "mesh_axes": [
+                [name, size, kind.name]
+                for name, size, kind in zip(
+                    value.mesh.axis_names, value.mesh.axis_sizes, value.mesh.axis_types, strict=True
+                )
+            ],
+            "partitions": list(value.spec.partitions),
+            "memory_kind": value.memory_kind,
+            "logical_device_ids": value._logical_device_ids,
+        }
+
+    result, pending = [], [graph]
+    while pending:
+        region = pending.pop()
+        for eq in region.eqns:
+            if (
+                eq.primitive is pjit.reshard_p
+                or eq.primitive is lax.broadcast_in_dim_p
+                and eq.params["sharding"] is not None
+            ):
+                parameter = "dst_sharding" if eq.primitive is pjit.reshard_p else "sharding"
+                result.append(
+                    {
+                        "primitive": eq.primitive.name,
+                        "parameters": {
+                            key: f"{type(value).__module__}.{type(value).__qualname__}"
+                            for key, value in sorted(eq.params.items())
+                        },
+                        "destination": descriptor(eq.params[parameter]),
+                        "input_sharding": descriptor(eq.invars[0].aval.sharding),
+                        "output_sharding": descriptor(eq.outvars[0].aval.sharding),
+                        "input_shape": list(eq.invars[0].aval.shape),
+                        "output_shape": list(eq.outvars[0].aval.shape),
+                        "effects": sorted(type(effect).__name__ for effect in eq.effects),
+                        "concrete_mesh": eq.params.get("concrete_mesh"),
+                    }
+                )
+            if "jaxpr" in eq.params:
+                pending.append(eq.params["jaxpr"])
+    assert any(item["primitive"] == "reshard" for item in result)
     return result
 
 
@@ -198,8 +274,77 @@ def pallas_inventory():
             }
             for kind, probe in (("whole", call), ("sliced", sliced))
         },
+        "local_reshard": pallas_local_reshard_inventory(),
         "remote_dma": remote_dma_inventory(),
+        "semaphore": semaphore_inventory(),
     }
+
+
+def semaphore_inventory():
+    """Observe regular local/remote schemas, effects and DMA counter reads."""
+    mesh = Mesh(np.array(jax.devices("cpu")[:1]), ("workers",))
+    result = {}
+    for target_kind in ("local", "scalar", "tuple"):
+
+        def kernel(x, y, regular, dma, target_kind=target_kind):
+            target = lax.axis_index("workers")
+            destination = (
+                None if target_kind == "local" else (target,) if target_kind == "tuple" else target
+            )
+            pl.semaphore_signal(regular, 2, device_id=destination)
+            value = pl.semaphore_read(regular)
+            pl.semaphore_wait(regular, 1)
+            pl.semaphore_wait(regular, 1)
+            pltpu.async_copy(x, y, dma).wait()
+            y[:] = x[:] + value + pl.semaphore_read(dma)
+
+        spec = pl.BlockSpec((128,), lambda p: (p,))
+        function = pl.pallas_call(
+            kernel,
+            out_shape=jax.ShapeDtypeStruct((128,), jnp.float32),
+            grid=(1,),
+            in_specs=(spec,),
+            out_specs=spec,
+            scratch_shapes=(pltpu.SemaphoreType.REGULAR, pltpu.SemaphoreType.DMA),
+        )
+        function = jax.shard_map(
+            function, mesh=mesh, in_specs=P("workers"), out_specs=P("workers"), check_vma=False
+        )
+        graph = jax.make_jaxpr(function)(jax.ShapeDtypeStruct((128,), jnp.float32))
+        call = graph.eqns[0].params["jaxpr"].eqns[0]
+        result[target_kind] = {
+            "scratch_refs": [
+                {
+                    "dtype_type": f"{type(aval.dtype).__module__}.{type(aval.dtype).__qualname__}",
+                    "shape": list(aval.shape),
+                    "memory_space": aval.memory_space.value,
+                    "kind": aval.kind,
+                }
+                for aval in call.params["grid_mapping"].scratch_avals
+            ],
+            "operations": [
+                {
+                    "primitive": eq.primitive.name,
+                    "parameters": {
+                        k: f"{type(v).__module__}.{type(v).__qualname__}"
+                        for k, v in sorted(eq.params.items())
+                    },
+                    "tree": dma_tree_schema(eq.params["args_tree"]),
+                    "effects": sorted(
+                        f"{type(e).__module__}.{type(e).__qualname__}" for e in eq.effects
+                    ),
+                    "operands": [str(v.aval.dtype) for v in eq.invars],
+                }
+                for eq in call.params["jaxpr"].eqns
+                if eq.primitive
+                in (
+                    pallas_primitives.semaphore_signal_p,
+                    pallas_primitives.semaphore_read_p,
+                    pallas_primitives.semaphore_wait_p,
+                )
+            ],
+        }
+    return result
 
 
 def inventory():

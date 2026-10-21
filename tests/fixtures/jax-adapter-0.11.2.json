@@ -863,6 +863,799 @@
           ]
         ]
       }
+    ],
+    "semaphore": {
+      "local": {
+        "scratch_refs": [
+          {
+            "dtype_type": "jax._src.pallas.core.Semaphore",
+            "shape": [],
+            "memory_space": "semaphore_mem",
+            "kind": null
+          },
+          {
+            "dtype_type": "jax._src.pallas.mosaic.core.DMASemaphore",
+            "shape": [],
+            "memory_space": "semaphore_mem",
+            "kind": null
+          }
+        ],
+        "operations": [
+          {
+            "primitive": "semaphore_signal",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef",
+              "device_id_type": "jax._src.pallas.primitives.DeviceIdType"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.NoneType",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.NoneType",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32"
+            ]
+          },
+          {
+            "primitive": "semaphore_read",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [],
+            "operands": [
+              "semaphore"
+            ]
+          },
+          {
+            "primitive": "semaphore_wait",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "bool"
+            ]
+          },
+          {
+            "primitive": "semaphore_wait",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "bool"
+            ]
+          },
+          {
+            "primitive": "semaphore_read",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [],
+            "operands": [
+              "dma_sem"
+            ]
+          }
+        ]
+      },
+      "scalar": {
+        "scratch_refs": [
+          {
+            "dtype_type": "jax._src.pallas.core.Semaphore",
+            "shape": [],
+            "memory_space": "semaphore_mem",
+            "kind": null
+          },
+          {
+            "dtype_type": "jax._src.pallas.mosaic.core.DMASemaphore",
+            "shape": [],
+            "memory_space": "semaphore_mem",
+            "kind": null
+          }
+        ],
+        "operations": [
+          {
+            "primitive": "semaphore_signal",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef",
+              "device_id_type": "jax._src.pallas.primitives.DeviceIdType"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.NoneType",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.core.CommsEffect",
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "int32"
+            ]
+          },
+          {
+            "primitive": "semaphore_read",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [],
+            "operands": [
+              "semaphore"
+            ]
+          },
+          {
+            "primitive": "semaphore_wait",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "bool"
+            ]
+          },
+          {
+            "primitive": "semaphore_wait",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "bool"
+            ]
+          },
+          {
+            "primitive": "semaphore_read",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [],
+            "operands": [
+              "dma_sem"
+            ]
+          }
+        ]
+      },
+      "tuple": {
+        "scratch_refs": [
+          {
+            "dtype_type": "jax._src.pallas.core.Semaphore",
+            "shape": [],
+            "memory_space": "semaphore_mem",
+            "kind": null
+          },
+          {
+            "dtype_type": "jax._src.pallas.mosaic.core.DMASemaphore",
+            "shape": [],
+            "memory_space": "semaphore_mem",
+            "kind": null
+          }
+        ],
+        "operations": [
+          {
+            "primitive": "semaphore_signal",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef",
+              "device_id_type": "jax._src.pallas.primitives.DeviceIdType"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": [
+                    {
+                      "node": null,
+                      "metadata": null,
+                      "children": []
+                    }
+                  ]
+                },
+                {
+                  "node": "builtins.NoneType",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.core.CommsEffect",
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "int32"
+            ]
+          },
+          {
+            "primitive": "semaphore_read",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [],
+            "operands": [
+              "semaphore"
+            ]
+          },
+          {
+            "primitive": "semaphore_wait",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "bool"
+            ]
+          },
+          {
+            "primitive": "semaphore_wait",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [
+              "jax._src.pallas.primitives.SemaphoreEffect"
+            ],
+            "operands": [
+              "semaphore",
+              "int32",
+              "bool"
+            ]
+          },
+          {
+            "primitive": "semaphore_read",
+            "parameters": {
+              "args_tree": "jaxlib._jax.pytree.PyTreeDef"
+            },
+            "tree": {
+              "node": "builtins.list",
+              "metadata": null,
+              "children": [
+                {
+                  "node": null,
+                  "metadata": null,
+                  "children": []
+                },
+                {
+                  "node": "builtins.tuple",
+                  "metadata": null,
+                  "children": []
+                }
+              ]
+            },
+            "effects": [],
+            "operands": [
+              "dma_sem"
+            ]
+          }
+        ]
+      }
+    },
+    "local_reshard": [
+      {
+        "primitive": "broadcast_in_dim",
+        "parameters": {
+          "broadcast_dimensions": "builtins.tuple",
+          "shape": "builtins.tuple",
+          "sharding": "jax.sharding.NamedSharding"
+        },
+        "destination": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "input_sharding": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "output_sharding": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "input_shape": [
+          1,
+          128
+        ],
+        "output_shape": [
+          8,
+          128
+        ],
+        "effects": [],
+        "concrete_mesh": null
+      },
+      {
+        "primitive": "reshard",
+        "parameters": {
+          "concrete_mesh": "builtins.NoneType",
+          "dst_sharding": "jax.sharding.NamedSharding"
+        },
+        "destination": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "input_sharding": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "output_sharding": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "input_shape": [
+          8,
+          128
+        ],
+        "output_shape": [
+          8,
+          128
+        ],
+        "effects": [],
+        "concrete_mesh": null
+      },
+      {
+        "primitive": "broadcast_in_dim",
+        "parameters": {
+          "broadcast_dimensions": "builtins.tuple",
+          "shape": "builtins.tuple",
+          "sharding": "jax.sharding.NamedSharding"
+        },
+        "destination": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "input_sharding": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "output_sharding": {
+          "class": "jax.sharding.NamedSharding",
+          "mesh_class": "jax._src.mesh.AbstractMesh",
+          "mesh_axes": [
+            [
+              "workers",
+              2,
+              "Manual"
+            ]
+          ],
+          "partitions": [
+            null,
+            null
+          ],
+          "memory_kind": null,
+          "logical_device_ids": null
+        },
+        "input_shape": [],
+        "output_shape": [
+          8,
+          128
+        ],
+        "effects": [],
+        "concrete_mesh": null
+      }
     ]
   },
   "public_lax": [

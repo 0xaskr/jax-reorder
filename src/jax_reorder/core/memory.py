@@ -35,9 +35,11 @@ from .model import (
     RefType,
     SemaphoreType,
     SliceIndex,
+    TensorIndex,
     ValueRef,
 )
 from .storage import Piece, Span, Storage
+from .tensor_domain import TensorDomain
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class MemoryVersion:
     value: Expression
     origin: Origin
     span: Span
+    rectangle: tuple[Span, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -83,7 +86,7 @@ class Uninitialized:
 @dataclass(frozen=True)
 class MemoryProjection:
     outputs: tuple[Expression, ...]
-    domains: tuple[BlockDomain, ...]
+    domains: tuple[BlockDomain | TensorDomain, ...]
     versions: tuple[MemoryVersion, ...]
     origins: tuple[Origin, ...]
     conditions: tuple[str, ...]
@@ -469,6 +472,8 @@ def functionalize_call(call: PallasCallView, *, budget: AnalysisBudget) -> Memor
             raise UnsupportedJaxprError(loc, "partitioned kernel operations are not yet projected")
         access = op.access
         if access is not None:
+            if access.transforms:
+                raise UnsupportedJaxprError(loc, "Ref coordinate transforms require tensor memory")
             slot = ref_slots.get(access.ref.id)
             if slot is None:
                 raise UnsupportedJaxprError(loc, "unknown storage binding")
@@ -484,6 +489,8 @@ def functionalize_call(call: PallasCallView, *, budget: AnalysisBudget) -> Memor
                     )
                 local = axis("lane")
             else:
+                if isinstance(index, TensorIndex):
+                    raise UnsupportedJaxprError(loc, "tensor index requires the tensor memory rule")
                 local = read(index)
             if local != axis("lane"):
                 raise UnsupportedJaxprError(
