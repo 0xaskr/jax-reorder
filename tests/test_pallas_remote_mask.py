@@ -7,26 +7,36 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from jax_reorder import CorrespondenceError, Status, UnsupportedJaxprError
+from jax_reorder import (
+    CorrespondenceError,
+    Status,
+    UnsupportedJaxprError,
+    compare_algebraic_jaxprs,
+    compare_pallas_kernels,
+)
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.index_domain import AnalysisBudget
 from jax_reorder.core.normalization import (
+    _call,
     compare_program_views,
     normalize_view,
     verify_normalized_evidence,
 )
 from jax_reorder.core.protocol import Access
+from jax_reorder.core.remote_memory import functionalize_remote_call, same_remote_evidence
 from jax_reorder.core.storage import Span
 from tests.pallas_projection_oracle import at_point
 from tests.pallas_remote_mask_cases import expected, masked_function
 
 
+def trace(mode="store", **options):
+    return jax.make_jaxpr(masked_function(mode, **options))(
+        jax.ShapeDtypeStruct((16, 256), jnp.float32)
+    )
+
+
 def graph(mode="store", **options):
-    return adapt(
-        jax.make_jaxpr(masked_function(mode, **options))(
-            jax.ShapeDtypeStruct((16, 256), jnp.float32)
-        )
-    ).view
+    return adapt(trace(mode, **options)).view
 
 
 def projection(mode="store", **options):
@@ -53,6 +63,10 @@ def projection(mode="store", **options):
         "data_load",
         "data_store",
         "data_where",
+        "conditional_store",
+        "conditional_slices",
+        "conditional_read",
+        "conditional_dma_complete",
     ],
 )
 @pytest.mark.parametrize("identity_indices", [False, True])
@@ -63,6 +77,105 @@ def test_remote_mask_complete_numpy_projection(mode, identity_indices):
         [at_point(proof.projection.outputs[0], (x,), p) for p in np.ndindex(x.shape)]
     ).reshape(x.shape)
     np.testing.assert_array_equal(result, expected(x, mode))
+
+
+@pytest.mark.parametrize("mode", ["conditional_store", "conditional_slices"])
+def test_conditional_remote_initialization_reaches_public_comparison(mode):
+    source = trace(mode)
+    assert compare_pallas_kernels(source, source, check_protocol=True).protocol_checked
+    assert compare_algebraic_jaxprs(trace("data_store"), source).status is Status.EQUIVALENT
+
+
+def test_conditional_remote_initialization_keeps_the_actual_second_write():
+    result = compare_algebraic_jaxprs(trace("conditional_store"), trace("conditional_wrong"))
+    assert result.status is Status.INEQUIVALENT
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "conditional_gap",
+        "conditional_same",
+        "conditional_read_wrong",
+        "conditional_overwritten_read",
+        "conditional_mask",
+        "conditional_control",
+        "conditional_index",
+        "conditional_dma",
+        "conditional_missing_wait",
+    ],
+)
+def test_conditional_initialization_cannot_hide_an_actual_undefined_consumer(mode):
+    with pytest.raises(UnsupportedJaxprError):
+        projection(mode)
+
+
+def local_projection(mode="conditional_store", **options):
+    return _local_projection(graph(mode, **options))
+
+
+def _local_projection(view):
+    call, boundaries = _call(view)
+    boundary = next(b for b in boundaries if b.shard_map is not None)
+    return functionalize_remote_call(
+        call,
+        boundary.shard_map,
+        boundary.inputs,
+        boundary.outputs,
+        scope="device_local",
+        budget=AnalysisBudget(100000),
+    )
+
+
+@pytest.mark.parametrize("mode", ["data_store", "conditional_store"])
+def test_remote_local_outputs_do_not_claim_parent_replication(mode):
+    local, proof = local_projection(mode, replicated_output=True)
+    partitioned, _ = local_projection(mode)
+    assert proof.local_outputs == ((0, 0), (0, 1))
+    assert local.outputs == partitioned.outputs
+    x = np.arange(4096, dtype=np.float32).reshape(16, 256)
+    expected_shards = np.split(expected(x, mode), 2)
+    for output, reference in zip(local.outputs, expected_shards, strict=True):
+        actual = np.asarray(
+            [at_point(output, (x,), point) for point in np.ndindex((8, 256))]
+        ).reshape(8, 256)
+        np.testing.assert_array_equal(actual, reference)
+    # The separate full-function contract still checks claimed replication.
+    with pytest.raises(UnsupportedJaxprError, match="replicated output values differ"):
+        projection(mode, replicated_output=True)
+    assert not same_remote_evidence(proof, replace(proof, local_outputs=((0, 1), (0, 0))))
+
+
+def test_remote_local_outputs_keep_the_received_peer_identity():
+    correct, left = local_projection()
+    wrong, right = local_projection(wrong_peer=True)
+    x = np.arange(4096, dtype=np.float32).reshape(16, 256)
+    reference = np.where(x > 2500, x + 100, x)
+    for output, shard in zip(wrong.outputs, np.split(reference, 2), strict=True):
+        actual = np.asarray(
+            [at_point(output, (x,), point) for point in np.ndindex((8, 256))]
+        ).reshape(8, 256)
+        np.testing.assert_array_equal(actual, shard)
+    assert at_point(correct.outputs[0], (x,), (0, 0)) != at_point(wrong.outputs[0], (x,), (0, 0))
+    assert not same_remote_evidence(left, right)
+
+
+def test_remote_local_outputs_preserve_port_then_device_order():
+    from jax.experimental.pallas import tpu
+
+    from tests.pallas_remote_cases import projection_array, remote_graph
+
+    def kernel(x, y, z, send, recv):
+        tpu.async_remote_copy(x, y, send, recv, (1 - jax.lax.axis_index("d"),)).wait()
+        z[:] = x[:] + 1
+
+    local, proof = _local_projection(adapt(remote_graph(kernel, outputs=2)).view)
+    assert proof.local_outputs == ((0, 0), (0, 1), (1, 0), (1, 1))
+    x = np.arange(256, dtype=np.float32)
+    references = (x[128:], x[:128], x[:128] + 1, x[128:] + 1)
+    for output, reference in zip(local.outputs, references, strict=True):
+        actual = projection_array(output, (x,), 128)
+        np.testing.assert_array_equal(actual, reference)
 
 
 @pytest.mark.parametrize(
@@ -117,7 +230,20 @@ def test_remote_mask_evidence_replays_exact_footprint():
 
 
 @pytest.mark.pallas_communication
-@pytest.mark.parametrize("case", ["store", "holes", "disjoint", "data_store", "tail"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "store",
+        "holes",
+        "disjoint",
+        "data_store",
+        "tail",
+        "conditional_store",
+        "conditional_slices",
+        "conditional_dma_complete",
+        "conditional_wrong",
+    ],
+)
 @pytest.mark.parametrize("mode", ["eager", "on_wait"])
 def test_remote_masks_official_cpu_interpreter(case, mode):
     from tests.pallas_oracle import run_worker

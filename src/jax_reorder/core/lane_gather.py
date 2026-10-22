@@ -41,20 +41,26 @@ def lane_gather(
     extent = typ.shape[-1]
     budget.spend(path + ".lanes", extent)
 
-    def evaluate(value: Expression, lane: int, cache: dict[int, int | bool]) -> int | bool:
+    # Evaluate the finite lane vector once per DAG node. Object integers retain
+    # exact arithmetic until each source dtype's range has been checked.
+    cache: dict[int, np.ndarray] = {}
+
+    def evaluate(value: Expression) -> np.ndarray:
         if id(value) in cache:
             return cache[id(value)]
         budget.spend(path + ".lane_value")
         if type(value) is bool:
-            return value
+            result = np.full(extent, value, dtype=object)
+            cache[id(value)] = result
+            return result
         if isinstance(value, IndexExpr):
-            values = [evaluate(a, lane, cache) for a in value.args]
+            values = [evaluate(a) for a in value.args]
             if value.kind == "constant":
-                result = int(value.value)
+                result = np.full(extent, int(value.value), dtype=object)
             elif value.kind == "axis" and value.value == f"local:{rank - 1}":
-                result = lane
+                result = np.arange(extent, dtype=object)
             elif value.kind == "sum":
-                result = sum(values)
+                result = sum(values, np.zeros(extent, dtype=object))
             elif value.kind == "scale":
                 result = int(value.value) * values[0]
             elif value.kind == "div":
@@ -62,9 +68,9 @@ def lane_gather(
             elif value.kind == "mod":
                 result = values[0] % int(value.value)
             elif value.kind == "lookup":
-                if not 0 <= values[0] < len(values) - 1:
+                if np.any(values[0] < 0) or np.any(values[0] >= len(values) - 1):
                     raise UnsupportedJaxprError(path, "lane address outside its table")
-                result = values[values[0] + 1]
+                result = np.stack(values[1:])[np.asarray(values[0], dtype=int), np.arange(extent)]
             else:
                 raise UnsupportedJaxprError(path, "gather index depends on a non-lane coordinate")
         elif isinstance(value, ValueExpr | Predicate):
@@ -75,15 +81,17 @@ def lane_gather(
                 raise UnsupportedJaxprError(
                     path, "gather index must be a pure integer lane function"
                 )
-            values = [evaluate(a, lane, cache) for a in value.operands]
+            values = [evaluate(a) for a in value.operands]
             if name == "literal" and isinstance(value, ValueExpr):
-                result = int(np.frombuffer(value.data, dtype=value.type.dtype)[0])
+                result = np.full(
+                    extent, int(np.frombuffer(value.data, dtype=value.type.dtype)[0]), dtype=object
+                )
             elif name in ("add", "sub", "mul", "div", "rem", "xor", "max", "min"):
                 a, b = values
-                if name in ("div", "rem") and b == 0:
+                if name in ("div", "rem") and np.any(b == 0):
                     raise UnsupportedJaxprError(path, "zero divisor in lane address")
                 quotient = (
-                    abs(a) // abs(b) * (-1 if (a < 0) != (b < 0) else 1)
+                    abs(a) // abs(b) * np.where((a < 0) != (b < 0), -1, 1)
                     if name in ("div", "rem")
                     else 0
                 )
@@ -94,8 +102,8 @@ def lane_gather(
                     "div": lambda: quotient,
                     "rem": lambda: a - quotient * b,
                     "xor": lambda: a ^ b,
-                    "max": lambda: max(a, b),
-                    "min": lambda: min(a, b),
+                    "max": lambda: np.maximum(a, b),
+                    "min": lambda: np.minimum(a, b),
                 }[name]()
             elif name in ("eq", "ne", "lt", "le", "gt", "ge"):
                 a, b = values
@@ -111,11 +119,11 @@ def lane_gather(
                 boolean = isinstance(value, Predicate) or np.dtype(value.type.dtype).kind == "b"
                 if boolean:
                     result = (
-                        all(values)
+                        np.logical_and.reduce(values)
                         if name == "and"
-                        else any(values)
+                        else np.logical_or.reduce(values)
                         if name == "or"
-                        else not values[0]
+                        else np.logical_not(values[0])
                     )
                 else:
                     result = (
@@ -126,30 +134,32 @@ def lane_gather(
                         else ~values[0]
                     )
             elif name == "sign":
-                result = (values[0] > 0) - (values[0] < 0)
+                result = np.sign(values[0])
             elif name == "neg":
                 result = -values[0]
             elif name == "convert_element_type":
                 assert isinstance(value, ValueExpr)
                 result = (
-                    bool(values[0]) if np.dtype(value.type.dtype).kind == "b" else int(values[0])
+                    values[0] != 0
+                    if np.dtype(value.type.dtype).kind == "b"
+                    else np.asarray(values[0], dtype=object)
                 )
             elif name == "select_n":
-                if not 0 <= values[0] < len(values) - 1:
+                if np.any(values[0] < 0) or np.any(values[0] >= len(values) - 1):
                     raise UnsupportedJaxprError(path, "invalid lane selector")
-                result = values[values[0] + 1]
+                result = np.stack(values[1:])[np.asarray(values[0], dtype=int), np.arange(extent)]
             else:
                 raise UnsupportedJaxprError(path, f"unreviewed lane operation {name}")
             if isinstance(value, ValueExpr) and np.dtype(value.type.dtype).kind in "iu":
                 limits = np.iinfo(value.type.dtype)
-                if not limits.min <= result <= limits.max:
+                if np.any(result < limits.min) or np.any(result > limits.max):
                     raise UnsupportedJaxprError(path, "integer lane arithmetic may overflow")
         else:
             raise UnsupportedJaxprError(path, "invalid lane expression")
         cache[id(value)] = result
         return result
 
-    table = tuple(int(evaluate(root, i, {})) for i in range(extent))
+    table = tuple(map(int, evaluate(root)))
     if any(not 0 <= i < source.shape[-1] for i in table):
         raise UnsupportedJaxprError(path, "lane gather violates its in-bounds promise")
     address = IndexExpr("lookup", (coordinate("local", rank - 1), *map(integer, table)))

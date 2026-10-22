@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from itertools import product
+from math import prod
 from types import SimpleNamespace
 from typing import cast
 
@@ -10,7 +13,8 @@ from jax._src import core
 from ...core.adapters.jax import adapt
 from ...core.adapters.pallas.structural import pallas_call_p
 from ...core.core_execution import CoreExecutionBinding
-from ...core.index_domain import AnalysisBudget
+from ...core.index_domain import AnalysisBudget, integer
+from ...core.memory import _substitute
 from ...core.normalization import RewriteEvidence, normalize_view
 from ...core.params import parameter_view
 from ...errors import ComparisonBudgetError, ComparisonStage, UnsupportedJaxprError
@@ -73,6 +77,48 @@ def project(
 
     inputs = tuple(variable(i, v) for i, v in enumerate(graph.invars))
     outputs = tuple(variable(len(inputs) + i, v) for i, v in enumerate(graph.outvars))
+    return _projection_graph(evidence, inputs, outputs), evidence
+
+
+def freeze_local_projection(evidence: RewriteEvidence, budget: Budget) -> SymbolicGraph:
+    boundary = evidence.boundaries[0]
+    from ...core.model import ArrayType
+
+    types = boundary.inputs + boundary.outputs
+    if not all(isinstance(v, ArrayType) for v in types):
+        raise UnsupportedJaxprError("algebra.pallas.local", "local contract requires array values")
+    outputs_types = tuple(cast(ArrayType, v) for v in boundary.outputs)
+    axes = cast(
+        tuple[tuple[str, int, str], ...],
+        next(p.value for p in boundary.parameters if p.name == "axes"),
+    )
+    if axes and evidence.remote is None:
+        # Instantiating the proven finite device environment prevents a CAS
+        # counterexample from choosing an out-of-range logical device index.
+        budget.spend(prod(a[1] for a in axes), path="algebra.pallas.device_instances")
+        points = tuple(product(*(range(a[1]) for a in axes)))
+        roots = tuple(
+            _substitute(
+                root, {"device:" + a[0]: integer(v) for a, v in zip(axes, point, strict=True)}
+            )
+            for root in evidence.projection.outputs
+            for point in points
+        )
+        outputs_types = tuple(v for v in outputs_types for _ in points)
+        evidence = replace(evidence, projection=replace(evidence.projection, outputs=roots))
+    inputs = tuple(
+        Variable(i, cast(ArrayType, v).shape, cast(ArrayType, v).dtype)
+        for i, v in enumerate(boundary.inputs)
+    )
+    outputs = tuple(
+        Variable(len(inputs) + i, v.shape, v.dtype) for i, v in enumerate(outputs_types)
+    )
+    return _projection_graph(evidence, inputs, outputs)
+
+
+def _projection_graph(
+    evidence: RewriteEvidence, inputs: tuple[Variable, ...], outputs: tuple[Variable, ...]
+) -> SymbolicGraph:
     return cast(
         SymbolicGraph,
         SimpleNamespace(
@@ -92,4 +138,4 @@ def project(
                 ),
             ),
         ),
-    ), evidence
+    )

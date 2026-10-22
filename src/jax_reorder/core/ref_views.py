@@ -124,6 +124,39 @@ def view_footprint(
 ) -> tuple[Box, ...]:
     if not any(t.kind == "index" for t in transforms):
         return (full_box(storage_shape),)
+    # A slot selection, contiguous slice or transpose of independent local
+    # axes is one exact rectangle. Prove that bijection without enumerating its
+    # potentially large tensor volume; strided/scattered maps retain fallback.
+    singleton_axes = {f"local:{i}": integer(0) for i, n in enumerate(result_shape) if n == 1}
+    used, rectangle = set(), []
+    for dimension, extent in enumerate(storage_shape):
+        budget.spend(path + ".ref_view_rectangle")
+        expr = substitute(backward[f"local:{dimension}"], singleton_axes)
+        offset, selected = 0, None
+        terms = expr.args if expr.kind == "sum" else (expr,)
+        for term in terms:
+            if term.kind == "constant":
+                offset += int(term.value)
+            elif term.kind == "axis" and str(term.value).startswith("local:") and selected is None:
+                selected = int(str(term.value).split(":")[1])
+            else:
+                break
+        else:
+            if selected is None:
+                span = Span(offset, offset + 1)
+            elif 0 <= selected < len(result_shape) and selected not in used:
+                used.add(selected)
+                span = Span(offset, offset + result_shape[selected])
+            else:
+                break
+            if not 0 <= span.start < span.stop <= extent:
+                raise UnsupportedJaxprError(path, "Ref footprint leaves original storage")
+            rectangle.append(span)
+            continue
+        break
+    else:
+        if used == {i for i, n in enumerate(result_shape) if n > 1}:
+            return (Box(tuple(rectangle)),)
     size = prod(result_shape)
     budget.spend(path + ".ref_view_points", size)
     points = []

@@ -10,7 +10,15 @@ from jax import lax
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu
 
-from jax_reorder import ComparisonBudgetError, UnsupportedJaxprError
+from jax_reorder import (
+    ComparisonBudgetError,
+    CorrespondenceError,
+    Status,
+    UnsupportedJaxprError,
+    compare_algebraic_jaxprs,
+    compare_pallas_kernels,
+    verify_pallas_kernel_comparison,
+)
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.index_domain import AnalysisBudget
 from jax_reorder.core.model import RefTransform, SliceIndex, TensorIndex
@@ -19,6 +27,230 @@ from jax_reorder.core.ref_views import view_coordinates
 from jax_reorder.core.tensor_memory import functionalize_tensor_call
 from tests.pallas_pipeline_cases import environment
 from tests.pallas_projection_oracle import at_point
+
+PAGE_SHAPE = (2, 8, 128)
+PAGE_SIGNATURE = (
+    jax.ShapeDtypeStruct((2,), jnp.int32),
+    *(jax.ShapeDtypeStruct(PAGE_SHAPE, jnp.float32) for _ in range(2)),
+)
+
+
+def paged_dma_function(
+    *, separate_semaphores=False, serialized=False, static_first=False, wrong=None, interpret=False
+):
+    """K/V page loads preserve the same runtime selections across overlapping DMAs."""
+
+    def kernel(pages, k, v, out_k, out_v, buf_k, buf_v, *sems):
+        selected = (jnp.int32(0) if static_first else pages[0] & 1, pages[1] & 1)
+        copies = []
+        for group, (source, target) in enumerate(((k, buf_k), (v, buf_v))):
+            for slot, page in enumerate(selected):
+                if wrong == ("k_page" if group == 0 else "v_page") and slot == 1:
+                    page = 1 - page
+                sem = sems[2 * group + slot] if separate_semaphores else sems[group]
+                copy = tpu.make_async_copy(source.at[page, :, :], target.at[slot, :, :], sem)
+                copy.start()
+                copies.append(copy)
+                if serialized:
+                    copy.wait()
+        if wrong == "destination_hazard":
+            buf_k[0, :, :] = jnp.zeros((8, 128), jnp.float32)
+        if not serialized:
+            for i, copy in enumerate(copies):
+                if wrong == "missing_wait" and i == 3:
+                    continue
+                if wrong == "wrong_wait" and i == 3:
+                    tpu.make_async_copy(v.at[selected[1], :, :], buf_v.at[1, :, :], sems[-1]).wait()
+                elif wrong == "partial_wait" and i == 3:
+                    sem = sems[3] if separate_semaphores else sems[1]
+                    tpu.make_async_copy(v.at[selected[1], :4, :], buf_v.at[1, :4, :], sem).wait()
+                else:
+                    copy.wait()
+        out_k[...] = buf_k[...]
+        out_v[...] = buf_v[...]
+
+    sem_count = (4 if separate_semaphores else 2) + (wrong == "wrong_wait")
+    return pl.pallas_call(
+        kernel,
+        out_shape=(PAGE_SIGNATURE[1], PAGE_SIGNATURE[2]),
+        in_specs=(
+            pl.BlockSpec(),
+            pl.BlockSpec(memory_space=pl.ANY),
+            pl.BlockSpec(memory_space=pl.ANY),
+        ),
+        scratch_shapes=(
+            tpu.VMEM(PAGE_SHAPE, jnp.float32),
+            tpu.VMEM(PAGE_SHAPE, jnp.float32),
+            *((tpu.SemaphoreType.DMA,) * sem_count),
+        ),
+        compiler_params=tpu.CompilerParams(),
+        interpret=interpret,
+    )
+
+
+def paged_dma_source(**options):
+    return jax.make_jaxpr(paged_dma_function(**options))(*PAGE_SIGNATURE)
+
+
+def paged_dma_inputs(pages):
+    k = np.arange(np.prod(PAGE_SHAPE), dtype=np.float32).reshape(PAGE_SHAPE)
+    return np.asarray(pages, np.int32), k, 3 * k + 11
+
+
+def expected_pages(inputs, *, static_first=False, wrong=None):
+    pages, k, v = inputs
+    selected = np.bitwise_and(pages, 1).copy()
+    if static_first:
+        selected[0] = 0
+    outputs = []
+    for name, source in (("k_page", k), ("v_page", v)):
+        indices = selected.copy()
+        if wrong == name:
+            indices[1] = 1 - indices[1]
+        outputs.append(source[indices])
+    return tuple(outputs)
+
+
+@pytest.mark.parametrize(
+    "separate_semaphores,static_first", [(False, False), (True, False), (False, True)]
+)
+def test_bounded_source_dmas_keep_every_page_and_output(separate_semaphores, static_first):
+    source = paged_dma_source(separate_semaphores=separate_semaphores, static_first=static_first)
+    projection = normalize_view(adapt(source).view, budget=AnalysisBudget()).projection
+    assert len(projection.communication) == 4
+    for evidence in projection.communication:
+        transfer = evidence.transfer
+        assert transfer.elements == 8 * 128
+        assert transfer.logical_bytes == 8 * 128 * 4
+        if transfer.source_alternatives:
+            assert len(transfer.source_alternatives) == 2
+            assert all(
+                sum(box.size for box in choice) == transfer.elements
+                for choice in transfer.source_alternatives
+            )
+    for pages in np.ndindex((2, 2)):
+        inputs = paged_dma_inputs(pages)
+        expected = expected_pages(inputs, static_first=static_first)
+        for output, reference in zip(projection.outputs, expected, strict=True):
+            for point in np.ndindex(PAGE_SHAPE):
+                assert at_point(output, inputs, point) == reference[point]
+
+
+@pytest.mark.parametrize("separate_semaphores", [False, True])
+def test_bounded_source_dma_overlap_matches_serialized_public_comparison(separate_semaphores):
+    concurrent = paged_dma_source(separate_semaphores=separate_semaphores)
+    serialized = paged_dma_source(separate_semaphores=separate_semaphores, serialized=True)
+    result = compare_pallas_kernels(concurrent, serialized, equivalence="semantic")
+    assert result.status is Status.EQUIVALENT
+    assert result.protocol_checked
+    verify_pallas_kernel_comparison(concurrent, serialized, result)
+    assert (
+        compare_algebraic_jaxprs(concurrent, serialized, scope="device_local").status
+        is Status.EQUIVALENT
+    )
+
+
+@pytest.mark.parametrize("wrong", ["k_page", "v_page"])
+def test_bounded_source_dma_wrong_page_keeps_k_and_v_correlations(wrong):
+    original, changed = paged_dma_source(), paged_dma_source(wrong=wrong)
+    assert (
+        compare_pallas_kernels(original, changed, equivalence="semantic").status is Status.DIFFERENT
+    )
+    projection = normalize_view(adapt(changed).view, budget=AnalysisBudget()).projection
+    for pages in np.ndindex((2, 2)):
+        inputs = paged_dma_inputs(pages)
+        correct, changed_expected = expected_pages(inputs), expected_pages(inputs, wrong=wrong)
+        assert not np.array_equal(correct[wrong == "v_page"], changed_expected[wrong == "v_page"])
+        for output, reference in zip(projection.outputs, changed_expected, strict=True):
+            for point in np.ndindex(PAGE_SHAPE):
+                assert at_point(output, inputs, point) == reference[point]
+    assert (
+        compare_algebraic_jaxprs(original, changed, scope="device_local").status
+        is Status.INEQUIVALENT
+    )
+
+
+@pytest.mark.parametrize(
+    "wrong", ["destination_hazard", "missing_wait", "partial_wait", "wrong_wait"]
+)
+def test_bounded_source_dma_does_not_erase_pending_access_or_wait_errors(wrong):
+    with pytest.raises(
+        UnsupportedJaxprError, match="DMA|dma|uninitialized|completion|pending|wait"
+    ):
+        normalize_view(adapt(paged_dma_source(wrong=wrong)).view, budget=AnalysisBudget())
+
+
+def test_bounded_source_dma_cannot_read_an_inflight_destination():
+    def kernel(pages, k, v, out_k, out_v, source, destination, first_sem, second_sem):
+        first = tpu.async_copy(k, source, first_sem)
+        second = tpu.async_copy(source.at[pages[0] & 1, :, :], destination.at[0, :, :], second_sem)
+        first.wait()
+        second.wait()
+        destination[1, :, :] = v[0, :, :]
+        out_k[...] = destination[...]
+        out_v[...] = destination[...]
+
+    function = pl.pallas_call(
+        kernel,
+        out_shape=(PAGE_SIGNATURE[1], PAGE_SIGNATURE[2]),
+        scratch_shapes=(
+            tpu.VMEM(PAGE_SHAPE, jnp.float32),
+            tpu.VMEM(PAGE_SHAPE, jnp.float32),
+            tpu.SemaphoreType.DMA,
+            tpu.SemaphoreType.DMA,
+        ),
+        compiler_params=tpu.CompilerParams(),
+    )
+    source = jax.make_jaxpr(function)(*PAGE_SIGNATURE)
+    with pytest.raises(UnsupportedJaxprError, match="quiescent|pending|uninitialized|DMA"):
+        normalize_view(adapt(source).view, budget=AnalysisBudget())
+
+
+@pytest.mark.parametrize("mutation", ["alternatives", "elements", "bytes"])
+def test_bounded_source_dma_evidence_rechecks_choices_and_transfer_count(mutation):
+    source = paged_dma_source()
+    result = compare_pallas_kernels(source, source, equivalence="semantic")
+    proof = result.left_protocol
+    assert proof is not None
+    first, *rest = proof.projection.communication
+    transfer = first.transfer
+    assert transfer.source_alternatives
+    fields = {
+        "alternatives": {"source_alternatives": transfer.source_alternatives[:1]},
+        "elements": {"elements": transfer.elements * 2},
+        "bytes": {"logical_bytes": transfer.logical_bytes * 2},
+    }[mutation]
+    corrupt = replace(first, transfer=replace(transfer, **fields))
+    forged = replace(
+        result,
+        left_protocol=replace(
+            proof,
+            projection=replace(proof.projection, communication=(corrupt, *rest)),
+        ),
+    )
+    with pytest.raises(CorrespondenceError):
+        verify_pallas_kernel_comparison(source, source, forged)
+
+
+@pytest.mark.pallas_communication
+@pytest.mark.parametrize("separate_semaphores", [False, True])
+def test_bounded_source_dmas_match_official_generic_cpu(separate_semaphores):
+    function = paged_dma_function(separate_semaphores=separate_semaphores, interpret=True)
+    for pages in ((0, 1), (1, 0), (1, 1)):
+        inputs = paged_dma_inputs(pages)
+        for output, reference in zip(function(*inputs), expected_pages(inputs), strict=True):
+            np.testing.assert_array_equal(output, reference)
+
+
+@pytest.mark.parametrize("separate_semaphores", [False, True])
+def test_bounded_source_dmas_lower_to_verified_native_tpu_ir(separate_semaphores):
+    with environment():
+        lowered = (
+            jax.jit(paged_dma_function(separate_semaphores=separate_semaphores))
+            .trace(*PAGE_SIGNATURE)
+            .lower(lowering_platforms=("tpu",))
+        )
+        assert lowered.compiler_ir("stablehlo").operation.verify()
 
 
 def dynamic_function(mode="program", *, wrong=False, interpret=False):

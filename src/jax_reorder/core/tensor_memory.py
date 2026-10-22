@@ -15,8 +15,18 @@ import numpy as np
 from ..errors import UnsupportedJaxprError
 from .communication import MAX_DMA_BYTES, LocalDmaState, TransferEvidence
 from .grid_execution import functionalize_banked_grid
-from .grid_state import GridPlan, independent_domains, state_domains
-from .index_domain import AnalysisBudget, IndexExpr, add, bounds, divide, integer, scale, substitute
+from .grid_state import GridPlan, OutputWindowTracker, independent_domains, state_domains
+from .index_domain import (
+    AnalysisBudget,
+    IndexExpr,
+    add,
+    bounds,
+    divide,
+    integer,
+    lookup,
+    scale,
+    substitute,
+)
 from .masked_access import mask_regions, range_guard, require_defined, require_true, resolve_defined
 from .memory import (
     Expression,
@@ -35,6 +45,7 @@ from .memory import (
 from .model import (
     ArrayType,
     DynamicSliceIndex,
+    EffectView,
     Operand,
     OperationView,
     Origin,
@@ -52,7 +63,7 @@ from .model import (
 from .ref_views import view_coordinates, view_footprint
 from .storage import Span, VersionSlice
 from .tensor_dma import DmaRectangle
-from .tensor_domain import coordinate, coordinate_ranges
+from .tensor_domain import coordinate, coordinate_ranges, prove_tensor_domain
 from .tensor_owner_partition import functionalize_partitioned_owners
 from .tensor_storage import Box, BoxPiece, TensorStorage, full_box
 from .tensor_values import project_coordinates, tensor_value
@@ -64,7 +75,96 @@ class TensorRef:
     slot: int
 
 
+@dataclass(frozen=True)
+class _DmaSourceChoice:
+    selector: Expression
+    alternatives: tuple[DmaRectangle | _DmaSourceChoice, ...]
+
+
+@dataclass(frozen=True)
+class _DmaPayload:
+    source: DmaRectangle
+    destination: DmaRectangle
+    source_boxes: tuple[Box, ...]
+    pieces: tuple[BoxPiece[Expression], ...]
+    incoming: Expression | None = None
+
+
 type Binding = Expression | TensorRef | Uninitialized
+
+
+ORDERED_INDEX_MAP_ASSUMPTION = (
+    "serial index maps read the initial prefetch state for the first program and the "
+    "completed previous kernel state thereafter; automatic pipelining must respect this order"
+)
+
+
+def _prefetch_constant_integer(value: Expression, path: str) -> Expression:
+    """Read one exact integer from the original captured constant array."""
+    if not isinstance(value, ValueExpr) or value.operation != "constant_array":
+        return value
+    dtype = np.dtype(value.type.dtype)
+    if dtype.kind not in "iu":
+        return value
+    shape = tuple(p.value for p in value.parameters if p.name == "shape")
+    if (
+        len(value.parameters) != 1
+        or len(shape) != 1
+        or not isinstance(shape[0], tuple)
+        or any(type(n) is not int or n <= 0 for n in shape[0])
+    ):
+        raise UnsupportedJaxprError(path, "prefetch constant has an invalid original shape")
+    dimensions = cast(tuple[int, ...], shape[0])
+    if (
+        len(value.operands) != len(dimensions)
+        or len(value.data) != prod(dimensions) * dtype.itemsize
+    ):
+        raise UnsupportedJaxprError(path, "prefetch constant shape, coordinates and data disagree")
+    if any(not isinstance(v, IndexExpr) or v.kind != "constant" for v in value.operands):
+        return value
+    position = 0
+    for address, extent in zip(value.operands, dimensions, strict=True):
+        index = int(cast(IndexExpr, address).value)
+        if not 0 <= index < extent:
+            raise UnsupportedJaxprError(
+                path, "prefetch constant index is outside its original shape"
+            )
+        position = position * extent + index
+    return integer(int(np.frombuffer(value.data, dtype=dtype)[position]))
+
+
+def _stateful_maps(call: PallasCallView) -> tuple[int, ...]:
+    selected = []
+    for i, block in enumerate(call.blocks):
+        region = block.index_map
+        if not region.effects:
+            continue
+        refs = {v.id for v in region.inputs[len(call.grid) :]}
+        if not all(
+            isinstance(e, EffectView) and e.kind == "read" and e.ref.id in refs
+            for e in region.effects
+        ):
+            raise UnsupportedJaxprError(
+                region.origin.path, "index maps may only read scalar-prefetch state"
+            )
+        pending = [region]
+        while pending:
+            child = pending.pop()
+            for op in child.operations:
+                if (
+                    op.dma
+                    or op.semaphore
+                    or op.call
+                    or op.primitive == "run_scoped"
+                    or op.access is not None
+                    and op.access.value is not None
+                ):
+                    raise UnsupportedJaxprError(
+                        op.origin.path, "index maps may only read scalar-prefetch state"
+                    )
+                pending.extend(binding.region for binding in op.regions)
+        selected.append(i)
+    return tuple(selected)
 
 
 def box_predicate(box: Box) -> Predicate | bool:
@@ -199,11 +299,41 @@ def _functionalize_tensor_call(
     if any(g.semantics not in ("arbitrary", "parallel") for g in call.grid):
         raise UnsupportedJaxprError(path, "tensor grid requires reviewed program scheduling")
     grid = tuple(g.size for g in call.grid)
-    plan = owner_plan or (
-        state_domains(call, budget, banked_interleaving=banked_interleaving)
-        if program_point is None
-        else independent_domains(call, budget)
-    )
+    stateful_maps = _stateful_maps(call)
+    stateful_outputs = any(i >= call.num_inputs for i in stateful_maps)
+    if stateful_maps and (
+        program_point is not None
+        or semaphore_observer is not None
+        or banked_interleaving
+        or any(g.size > 1 and g.semantics == "parallel" for g in call.grid)
+    ):
+        raise UnsupportedJaxprError(
+            path, "state-dependent index maps need complete serial ownership and state replay"
+        )
+    # These provisional domains supply only storage shape to planning.
+    # No kernel runs until the actual maps have been evaluated and proved, and
+    # the returned evidence replaces them with the complete executed map table.
+    provisional = {i: tuple(integer(0) for _ in call.blocks[i].block_shape) for i in stateful_maps}
+    if stateful_outputs:
+        # The output sequence is only known as the kernels complete. Its
+        # incremental window proof must finish before any projection is returned.
+        plan = GridPlan(
+            tuple(
+                prove_tensor_domain(block, grid, budget, writer=False, mapping=provisional.get(i))
+                for i, block in enumerate(call.blocks)
+            ),
+            (),
+        )
+    else:
+        plan = owner_plan or (
+            state_domains(
+                call, budget, banked_interleaving=banked_interleaving, input_mappings=provisional
+            )
+            if program_point is None
+            else independent_domains(call, budget)
+        )
+    if stateful_maps:
+        plan = replace(plan, serial_axes=tuple(i for i, size in enumerate(grid) if size > 1))
     domains, serial_axes = plan.domains, plan.serial_axes
     if owner_plan is None and program_point is None and semaphore_observer is None:
 
@@ -294,7 +424,10 @@ def _functionalize_tensor_call(
         else:
             raise UnsupportedJaxprError(path, "unknown tensor semaphore allocation")
 
-    readonly = set(range(npre + call.num_inputs))
+    # Scalar-prefetch arguments are call-lifetime SMEM copies. Their local
+    # updates do not mutate the supplied HBM arrays; ordinary inputs stay read-only.
+    initialized_inputs = set(range(npre + call.num_inputs))
+    readonly = set(range(npre, npre + call.num_inputs))
     restoring = {
         npre + i
         for i, block in enumerate(call.blocks)
@@ -303,6 +436,15 @@ def _functionalize_tensor_call(
         and block.pipeline_mode.revisit == "any"
     }
     unbuffered = {npre + i for i, block in enumerate(call.blocks) if block.unbuffered}
+
+    def input_value(slot: int, address: tuple[IndexExpr, ...]) -> Expression:
+        if inputs is None:
+            return ValueExpr("input", scalar_type(types[slot]), address, input=slot)
+        bindings = {f"local:{i}": a for i, a in enumerate(address)}
+        if len(address) == 1:
+            bindings["global"] = address[0]
+        return _substitute(inputs[slot], bindings)
+
     for slot, var in enumerate(call.kernel.inputs):
         if not isinstance(var.type, RefType):
             raise UnsupportedJaxprError(path, "tensor kernel argument must be a Ref")
@@ -323,22 +465,20 @@ def _functionalize_tensor_call(
             raise UnsupportedJaxprError(path, "tensor memory must be shard-local")
         types[slot] = typ
         value = None
-        if slot in readonly:
+        if slot in initialized_inputs:
             address = (
                 tuple(coordinate("local", i) for i in range(len(typ.shape)))
                 if slot < npre
                 else domains[slot - npre].address
             )
-            if inputs is None:
-                value = ValueExpr("input", scalar_type(typ), address, input=slot)
-            else:
-                bindings = {f"local:{i}": a for i, a in enumerate(address)}
-                if len(address) == 1:
-                    bindings["global"] = address[0]
-                value = _substitute(inputs[slot], bindings)
+            value = input_value(slot, address)
         memories[slot] = TensorStorage(typ.shape, value, call.kernel.origin, budget)
     dma_state = LocalDmaState(semaphores, budget)
-    payloads: dict[int, tuple[DmaRectangle, DmaRectangle, tuple[BoxPiece[Expression], ...]]] = {}
+    payloads: dict[int, _DmaPayload] = {}
+    dma_geometry: dict[tuple[tuple[int, ...], str, tuple[RefTransform, ...]], DmaRectangle] = {}
+    dma_unions: dict[tuple[tuple[Box, ...], ...], tuple[Box, ...]] = {}
+    dma_choice_geometry: dict[tuple[object, ...], tuple[DmaRectangle, ...]] = {}
+    tensor_depths: dict[int, tuple[Expression, int]] = {}
     versions: list[MemoryVersion] = []
     origins: list[Origin] = []
     # Final output values retain executed control even after writes are replaced.
@@ -360,6 +500,10 @@ def _functionalize_tensor_call(
     def write(slot: int, box: Box, value: Expression, origin: Origin) -> int:
         if slot in readonly:
             raise UnsupportedJaxprError(origin.path, "input storage must remain read-only")
+        if slot < npre and any(g.size > 1 and g.semantics == "parallel" for g in call.grid):
+            raise UnsupportedJaxprError(
+                origin.path, "mutable scalar prefetch needs a serial ownership proof"
+            )
         version = memories[slot].write(box, value, origin)
         versions.append(
             MemoryVersion(
@@ -371,7 +515,9 @@ def _functionalize_tensor_call(
     def valid_output_box(resource: int, mapping: tuple[IndexExpr, ...]) -> Box:
         domain = domains[resource - npre]
         axes = []
-        for size, width, tile in zip(domain.shape, domain.block_shape, mapping, strict=True):
+        for dimension, (size, width, tile) in enumerate(
+            zip(domain.shape, domain.block_shape, mapping, strict=True)
+        ):
             if size % width == 0:
                 stop = width
             else:
@@ -383,7 +529,8 @@ def _functionalize_tensor_call(
                         path, "padded output restoration needs a fixed tail owner"
                     )
                 stop = min(width, size - high * width)
-            axes.append(Span(0, stop))
+            if dimension not in domain.squeezed_axes:
+                axes.append(Span(0, stop))
         return Box(tuple(axes))
 
     def evaluate(
@@ -395,6 +542,12 @@ def _functionalize_tensor_call(
         value_types = {v.id: v.type for v in source.inputs}
         value_types.update((v.id, v.type) for v, _ in source.constants)
         value_types.update((v.id, v.type) for op in source.operations for v in op.results)
+        # Region SSA bindings do not change between a start and its wait.
+        # Reuse only geometry/selection proofs, never memory reads or payloads.
+        dma_sources: dict[
+            tuple[int, SliceIndex | TensorIndex | None, tuple[RefTransform, ...]],
+            tuple[DmaRectangle | _DmaSourceChoice, tuple[DmaRectangle, ...]],
+        ] = {}
 
         def read(v: Operand) -> Binding:
             return env[v.id] if isinstance(v, ValueRef) else _literal(v, source.origin.path)
@@ -646,6 +799,7 @@ def _functionalize_tensor_call(
             transforms: tuple[RefTransform, ...] = (),
         ) -> DmaRectangle:
             shape = types[resource].shape
+            full_storage = index is None
             if index is None:
                 indices = tuple(SliceIndex(0, n, 1) for n in shape)
                 index = TensorIndex(indices, shape)
@@ -654,7 +808,15 @@ def _functionalize_tensor_call(
                 isinstance(ix, SliceIndex | DynamicSliceIndex) and ix.stride != 1 for ix in indices
             ):
                 raise UnsupportedJaxprError(loc, "tensor DMA slice requires unit stride")
-            (box,), to_ref, to_value, output_shape = access_region(index, resource, loc)
+            if full_storage:
+                # The storage extent proves this full base immediately. Actual
+                # source reads and every version/hazard check still run below.
+                box, output_shape = full_box(shape), shape
+                to_ref = to_value = {
+                    f"local:{i}": coordinate("local", i) for i in range(len(shape))
+                }
+            else:
+                (box,), to_ref, to_value, output_shape = access_region(index, resource, loc)
             footprint = (box,)
             if transforms:
                 if box != full_box(shape):
@@ -662,6 +824,10 @@ def _functionalize_tensor_call(
                         loc, "DMA transforms require a full original-storage base"
                     )
                 transforms = fixed_views(transforms, loc)
+                geometry_key = shape, types[resource].dtype, transforms
+                if geometry_key in dma_geometry:
+                    budget.spend(loc + ".dma_geometry_reuse")
+                    return dma_geometry[geometry_key]
                 output_shape, to_ref, to_value = view_coordinates(shape, transforms, loc, budget)
                 footprint = view_footprint(shape, output_shape, to_ref, transforms, loc, budget)
                 box = Box(
@@ -691,9 +857,265 @@ def _functionalize_tensor_call(
             kept = tuple(
                 i for i, ix in enumerate(indices) if isinstance(ix, SliceIndex | DynamicSliceIndex)
             )
-            return DmaRectangle(
+            result = DmaRectangle(
                 box, kept, to_ref, to_value, output_shape, bool(transforms), footprint
             )
+            if transforms:
+                dma_geometry[shape, types[resource].dtype, transforms] = result
+            return result
+
+        def dma_source_choices(
+            index: SliceIndex | TensorIndex | None,
+            resource: int,
+            transforms: tuple[RefTransform, ...],
+            loc: str,
+        ) -> tuple[DmaRectangle | _DmaSourceChoice, tuple[DmaRectangle, ...]]:
+            """Specialize one transfer, never its remaining program or DMA state."""
+            selected = dynamic_view_case(dma_indices(index, resource, transforms), loc)
+            if selected is None:
+                rectangle = dma_rectangle(index, resource, loc, transforms)
+                return rectangle, (rectangle,)
+            operand, candidate, (low, high) = selected
+            require_defined(candidate, ranges, budget, loc + ".dma_address")
+            selector = (
+                add(candidate, integer(-low))
+                if isinstance(candidate, IndexExpr)
+                else candidate
+                if low == 0
+                else ValueExpr("sub", cast(ValueExpr, candidate).type, (candidate, integer(low)))
+            )
+            previous = env[operand.id]
+            template_key = None
+            if (
+                index is None
+                and resource in readonly
+                and all(
+                    address == operand
+                    or isinstance(current := value(address), IndexExpr)
+                    and current.kind == "constant"
+                    for address, _, _ in view_indices(types[resource].shape, transforms)
+                )
+            ):
+                # Only one varying SSA operand is abstracted. Its exact use
+                # locations preserve repeated-index correlations; every other
+                # index, reshape, transpose and slice stays in the fixed key.
+                positions = tuple(
+                    (transform_index, index_axis)
+                    for transform_index, transform in enumerate(transforms)
+                    for index_axis, address in enumerate(transform.indices)
+                    if address == operand
+                    or isinstance(address, DynamicSliceIndex)
+                    and address.start == operand
+                )
+                env[operand.id] = integer(low)
+                try:
+                    template_key = (
+                        types[resource].shape,
+                        types[resource].dtype,
+                        fixed_views(transforms, loc),
+                        positions,
+                        low,
+                        high,
+                    )
+                finally:
+                    env[operand.id] = previous
+                budget.spend(loc + ".dma_source_template")
+                if template_key in dma_choice_geometry:
+                    rectangles = dma_choice_geometry[template_key]
+                    return _DmaSourceChoice(selector, rectangles), rectangles
+            budget.spend(loc + ".dma_source_cases", high - low + 1)
+            choices, rectangles = [], []
+            try:
+                for position in range(low, high + 1):
+                    env[operand.id] = integer(position)
+                    choice, leaves = dma_source_choices(index, resource, transforms, loc)
+                    choices.append(choice)
+                    rectangles.extend(leaves)
+            finally:
+                env[operand.id] = previous
+            if template_key is not None:
+                dma_choice_geometry[template_key] = tuple(rectangles)
+            return _DmaSourceChoice(selector, tuple(choices)), tuple(rectangles)
+
+        def dma_indices(
+            index: SliceIndex | TensorIndex | None,
+            resource: int,
+            transforms: tuple[RefTransform, ...],
+        ) -> tuple[tuple[Operand, int, int], ...]:
+            storage_shape = types[resource].shape
+            result = list(view_indices(storage_shape, transforms))
+            indices = index.indices if isinstance(index, TensorIndex) else (index,)
+            for item, extent in zip(indices, storage_shape, strict=False):
+                if isinstance(item, DynamicSliceIndex):
+                    result.append((item.start, extent, (item.size - 1) * item.stride))
+                elif isinstance(item, ValueRef):
+                    result.append((item, extent, 0))
+            return tuple(result)
+
+        def source_union(rectangles: tuple[DmaRectangle, ...], loc: str) -> tuple[Box, ...]:
+            """Disjoint exact union for version replay and conservative hazards."""
+            key = tuple(rectangle.boxes for rectangle in rectangles)
+            if key in dma_unions:
+                budget.spend(loc + ".dma_union_reuse")
+                return dma_unions[key]
+            result: list[Box] = []
+            for rectangle in rectangles:
+                for box in rectangle.boxes:
+                    parts = [box]
+                    for previous in result:
+                        budget.spend(loc + ".dma_source_union", len(parts))
+                        parts = [part for current in parts for part in current.subtract(previous)]
+                        if not parts:
+                            break
+                    result.extend(parts)
+            # Adjacent rectangles with identical other axes have exactly the
+            # same union as their merged rectangle. Coalesce that geometry so
+            # version/initialization checks do not reread one storage piece for
+            # every possible page. Gaps and differing axes remain separate.
+            while len(result) > 1:
+                previous_count = len(result)
+                for dimension in range(len(result[0].axes)):
+                    budget.spend(loc + ".dma_source_merge", len(result))
+                    groups: dict[tuple[Span, ...], list[Box]] = {}
+                    for box in result:
+                        group_key = box.axes[:dimension] + box.axes[dimension + 1 :]
+                        groups.setdefault(group_key, []).append(box)
+                    merged = []
+                    for boxes in groups.values():
+                        ordered = sorted(boxes, key=lambda box: box.axes[dimension])
+                        current = ordered[0]
+                        for following in ordered[1:]:
+                            if current.axes[dimension].stop == following.axes[dimension].start:
+                                axes = list(current.axes)
+                                axes[dimension] = Span(
+                                    current.axes[dimension].start, following.axes[dimension].stop
+                                )
+                                current = Box(tuple(axes))
+                            else:
+                                merged.append(current)
+                                current = following
+                        merged.append(current)
+                    result = merged
+                    if len(result) == 1:
+                        break
+                if len(result) == previous_count:
+                    break
+            union = tuple(sorted(result))
+            dma_unions[key] = union
+            return union
+
+        def choice_payload(
+            choice: DmaRectangle | _DmaSourceChoice,
+            destination: DmaRectangle,
+            resource: int,
+            loc: str,
+        ) -> Expression:
+            if isinstance(choice, _DmaSourceChoice):
+                return select_payload(
+                    _substitute(choice.selector, iteration_coordinates),
+                    tuple(
+                        choice_payload(c, destination, resource, loc) for c in choice.alternatives
+                    ),
+                    {
+                        **ranges,
+                        **{
+                            f"local:{i}": (span.start, span.stop - 1)
+                            for i, span in enumerate(destination.box.axes)
+                        },
+                    },
+                    loc,
+                )
+            pieces = tuple(p for box in choice.boxes for p in memories[resource].read(box, loc))
+            incoming = expression(assemble(pieces, types[resource]), loc)
+            incoming = _substitute(incoming, iteration_coordinates)
+            return _substitute(_substitute(incoming, choice.to_ref), destination.to_value)
+
+        def select_payload(
+            selector: Expression,
+            alternatives: tuple[Expression, ...],
+            payload_ranges: dict[str, tuple[int, int]],
+            loc: str,
+        ) -> Expression:
+            """Factor proved source choices into their pure value/address DAG.
+
+            In particular selecting input[0], ..., input[n-1] becomes one
+            input[selector] read. Tensor binders remain intact to avoid capture.
+            """
+            cache: dict[tuple[int, ...], Expression] = {}
+
+            def resolved(item: Expression) -> Expression:
+                while isinstance(item, ValueExpr) and item.operation == "select_n":
+                    condition = item.operands[0]
+                    known = truth(condition, payload_ranges)
+                    position = (
+                        int(known)
+                        if known is not None
+                        else int(condition.value)
+                        if isinstance(condition, IndexExpr) and condition.kind == "constant"
+                        else None
+                    )
+                    if position is None or not 0 <= position < len(item.operands) - 1:
+                        break
+                    item = item.operands[position + 1]
+                return item
+
+            def visit(items: tuple[Expression, ...]) -> Expression:
+                key = tuple(id(item) for item in items)
+                if key in cache:
+                    return cache[key]
+                budget.spend(loc + ".dma_payload")
+                items = tuple(resolved(item) for item in items)
+                first = items[0]
+                if all(expressions_equal((first,), (item,)) for item in items[1:]):
+                    result = first
+                elif all(item == integer(i) for i, item in enumerate(items)):
+                    result = selector
+                elif (
+                    isinstance(first, ValueExpr)
+                    and not first.operation.startswith("tensor.")
+                    and all(
+                        isinstance(item, ValueExpr)
+                        and (
+                            item.operation,
+                            item.type,
+                            item.parameters,
+                            item.data,
+                            item.input,
+                            len(item.operands),
+                        )
+                        == (
+                            first.operation,
+                            first.type,
+                            first.parameters,
+                            first.data,
+                            first.input,
+                            len(first.operands),
+                        )
+                        for item in items[1:]
+                    )
+                ):
+                    result = replace(
+                        first,
+                        operands=tuple(
+                            visit(tuple(cast(ValueExpr, item).operands[i] for item in items))
+                            for i in range(len(first.operands))
+                        ),
+                    )
+                else:
+                    typ = (
+                        first.type
+                        if isinstance(first, ValueExpr)
+                        else ScalarType("bool", False, ())
+                        if isinstance(first, bool | Predicate)
+                        else selector.type
+                        if isinstance(selector, ValueExpr)
+                        else ScalarType("int64", False, ())
+                    )
+                    result = ValueExpr("select_n", typ, (selector, *items))
+                cache[key] = result
+                return result
+
+            return visit(alternatives)
 
         def semaphore_slot(ref: ValueRef, index: TensorIndex | None, loc: str) -> int:
             resource = slot(ref)
@@ -1110,9 +1532,17 @@ def _functionalize_tensor_call(
                     or types[src].dtype != types[dst].dtype
                 ):
                     raise UnsupportedJaxprError(loc, "invalid tensor DMA data binding")
+                src_index = dma.source_tensor_slice or dma.source_slice
+                dst_index = dma.destination_tensor_slice or dma.destination_slice
+                source_indices = dma_indices(src_index, src, dma.source_transforms)
+                destination_indices = dma_indices(dst_index, dst, dma.destination_transforms)
+                # A readonly source choice changes only the value delivered by
+                # this transfer. General mutable/destination choices still need
+                # the existing complete-state branch proof.
                 selected = dynamic_view_case(
-                    view_indices(types[src].shape, dma.source_transforms)
-                    + view_indices(types[dst].shape, dma.destination_transforms),
+                    destination_indices
+                    if src in readonly
+                    else source_indices + destination_indices,
                     loc,
                 )
                 if selected is not None:
@@ -1120,23 +1550,31 @@ def _functionalize_tensor_call(
                     return fork_address(
                         operand, candidate, low, high, loc, origin, operation_position
                     )
-                boxes = []
-                for resource, single, tensor, transforms in (
-                    (src, dma.source_slice, dma.source_tensor_slice, dma.source_transforms),
-                    (
-                        dst,
-                        dma.destination_slice,
-                        dma.destination_tensor_slice,
-                        dma.destination_transforms,
-                    ),
-                ):
-                    index = tensor if tensor is not None else single
-                    boxes.append(dma_rectangle(index, resource, loc, transforms))
-                a, b = boxes
-                if a.shape != b.shape:
+                source_key = src, src_index, dma.source_transforms
+                if source_key in dma_sources:
+                    budget.spend(loc + ".dma_source_reuse")
+                    source_choice, source_rectangles = dma_sources[source_key]
+                else:
+                    source_choice, source_rectangles = dma_source_choices(
+                        src_index, src, dma.source_transforms, loc
+                    )
+                    dma_sources[source_key] = source_choice, source_rectangles
+                a = source_rectangles[0]
+                b = dma_rectangle(dst_index, dst, loc, dma.destination_transforms)
+                if any(rectangle.shape != b.shape for rectangle in source_rectangles):
                     raise UnsupportedJaxprError(loc, "tensor DMA region shapes differ")
+                source_boxes = (
+                    source_union(source_rectangles, loc)
+                    if isinstance(source_choice, _DmaSourceChoice)
+                    else a.boxes
+                )
                 source_span, dest_span = (
-                    a.box.linear_bounds(types[src].shape),
+                    Span(
+                        min(box.linear_bounds(types[src].shape).start for box in source_boxes),
+                        max(box.linear_bounds(types[src].shape).stop for box in source_boxes),
+                    )
+                    if isinstance(source_choice, _DmaSourceChoice)
+                    else a.box.linear_bounds(types[src].shape),
                     b.box.linear_bounds(types[dst].shape),
                 )
                 bound = replace(
@@ -1145,7 +1583,10 @@ def _functionalize_tensor_call(
                 count_bytes = a.size * np.dtype(types[src].dtype).itemsize
                 aligned_regions = all(
                     span.start % 128 == span.size % 128 == 0
-                    for endpoint, resource in ((a, src), (b, dst))
+                    for endpoint, resource in (
+                        *((rectangle, src) for rectangle in source_rectangles),
+                        (b, dst),
+                    )
                     for box in endpoint.boxes
                     for span in (box.linear_bounds(types[resource].shape),)
                 )
@@ -1156,7 +1597,7 @@ def _functionalize_tensor_call(
                             # Automatic input staging leaves the out-of-bounds
                             # tail undefined. A DMA has no mask: every source
                             # element must belong to the true input domain.
-                            for source_box in a.boxes:
+                            for source_box in source_boxes:
                                 source_ranges = {
                                     **ranges,
                                     **{
@@ -1173,7 +1614,7 @@ def _functionalize_tensor_call(
                                             loc,
                                             "tensor DMA source includes undefined input padding",
                                         )
-                    pieces = tuple(p for box in a.boxes for p in memories[src].read(box, loc))
+                    pieces = tuple(p for box in source_boxes for p in memories[src].read(box, loc))
                     for piece in pieces:
                         assert piece.value is not None
                         require_defined(
@@ -1200,19 +1641,28 @@ def _functionalize_tensor_call(
                         ),
                         dtype=types[src].dtype,
                         logical_bytes=count_bytes,
-                        source_region=a.boxes,
+                        source_region=source_boxes,
                         destination_region=b.boxes,
                         aligned_regions=aligned_regions,
+                        source_alternatives=(
+                            tuple(rectangle.boxes for rectangle in source_rectangles)
+                            if isinstance(source_choice, _DmaSourceChoice)
+                            else ()
+                        ),
                     )
-                    payloads[transfer.id] = (
+                    payloads[transfer.id] = _DmaPayload(
                         a,
                         b,
+                        source_boxes,
                         tuple(
                             replace(p, value=_substitute(p.value, iteration_coordinates))
                             if p.value is not None and src in readonly
                             else p
                             for p in pieces
                         ),
+                        choice_payload(source_choice, b, src, loc)
+                        if isinstance(source_choice, _DmaSourceChoice)
+                        else None,
                     )
                 else:
                     completed = dma_state.wait(
@@ -1225,18 +1675,22 @@ def _functionalize_tensor_call(
                         aligned_regions=aligned_regions,
                     )
                     for transfer in completed:
-                        a, b, pieces = payloads.pop(transfer.id)
+                        payload = payloads.pop(transfer.id)
+                        a, b, pieces = payload.source, payload.destination, payload.pieces
                         current = tuple(
                             VersionSlice(p.box.linear_bounds(types[src].shape), p.version)
-                            for box in a.boxes
+                            for box in payload.source_boxes
                             for p in memories[src].read(box, loc)
                         )
                         if current != transfer.source_versions:
                             raise UnsupportedJaxprError(loc, "tensor DMA source changed in flight")
                         version = 0
-                        if a.transformed or b.transformed:
-                            incoming = expression(assemble(pieces, types[src]), loc)
-                            incoming = _substitute(_substitute(incoming, a.to_ref), b.to_value)
+                        if payload.incoming is not None or a.transformed or b.transformed:
+                            if payload.incoming is not None:
+                                incoming = payload.incoming
+                            else:
+                                incoming = expression(assemble(pieces, types[src]), loc)
+                                incoming = _substitute(_substitute(incoming, a.to_ref), b.to_value)
                             for box in b.boxes:
                                 version = write(dst, box, incoming, origin)
                         else:
@@ -1521,6 +1975,8 @@ def _functionalize_tensor_call(
                         )
                         require_defined(checked, region.ranges, budget, loc)
                 old = _substitute(old, to_ref)
+                if stateful_maps and resource < npre and not result_shape and access.value is None:
+                    old = _prefetch_constant_integer(old, loc)
                 if resource in readonly:
                     old = _substitute(old, iteration_coordinates)
                 if domain is not None and domain.padded and resource in readonly:
@@ -1582,6 +2038,7 @@ def _functionalize_tensor_call(
                 coordinates,
                 grid,
                 budget,
+                tensor_depths=tensor_depths,
             )
         return tuple(read(a) for a in source.outputs)
 
@@ -1595,10 +2052,14 @@ def _functionalize_tensor_call(
     windows: list[dict[tuple[IndexExpr, ...], tuple[tuple[int, ...], Expression]]] = [
         {} for _ in range(call.num_outputs)
     ]
+    output_tracker = (
+        OutputWindowTracker(call, domains, serial_axes, budget) if stateful_outputs else None
+    )
+    output_windows = output_tracker.windows if output_tracker is not None else plan.windows
 
     def window_identity(output: int, key: tuple[int, ...]) -> tuple[IndexExpr, ...]:
-        if plan.windows:
-            return plan.windows[output][key[0]].mapping
+        if output_windows:
+            return output_windows[output][key[0]].mapping
         fixed = {f"program:{i}": integer(k) for i, k in zip(window_axes[output], key, strict=True)}
         return tuple(substitute(v, fixed) for v in domains[call.num_inputs + output].mapping)
 
@@ -1627,11 +2088,44 @@ def _functionalize_tensor_call(
         if program_point is not None
         else product(*(range(grid[i]) for i in serial_axes))
     )
+    map_history: dict[int, list[tuple[IndexExpr, ...]]] = {i: [] for i in stateful_maps}
     for iteration, point in enumerate(points):
         step = dict(zip(serial_axes, point, strict=True))
+        iteration_coordinates = {
+            f"program:{i}": integer(k) for i, k in zip(serial_axes, point, strict=True)
+        }
+        coordinates.update(iteration_coordinates)
+        ranges.update({f"program:{i}": (k, k) for i, k in zip(serial_axes, point, strict=True)})
+        for i in stateful_maps:
+            block = call.blocks[i]
+            mapped = evaluate(
+                block.index_map,
+                tuple(
+                    iteration_coordinates.get(f"program:{j}", integer(0)) for j in range(len(grid))
+                )
+                + tuple(TensorRef(j) for j in range(npre)),
+                f".index_map.grid{point}",
+            )
+            mapping = tuple(
+                integer(static_integer(expression(v, block.origin.path), block.origin.path))
+                for v in mapped
+            )
+            domain = prove_tensor_domain(block, grid, budget, writer=False, mapping=mapping)
+            domains = domains[:i] + (domain,) + domains[i + 1 :]
+            map_history[i].append(mapping)
+        if output_tracker is not None:
+            output_tracker.append(
+                tuple(
+                    tuple(substitute(v, iteration_coordinates) for v in domain.mapping)
+                    for domain in domains[call.num_inputs :]
+                ),
+                iteration_coordinates,
+            )
         for j, axes in enumerate(window_axes):
-            if plan.windows:
-                if iteration == plan.windows[j][window_positions[j]].stop:
+            if output_tracker is not None:
+                key = (len(output_windows[j]) - 1,)
+            elif output_windows:
+                if iteration == output_windows[j][window_positions[j]].stop:
                     window_positions[j] += 1
                 key = (window_positions[j],)
             else:
@@ -1668,11 +2162,22 @@ def _functionalize_tensor_call(
                     path=path + ".input_staging_boundary",
                     region=box,
                 )
-        iteration_coordinates = {
-            f"program:{i}": integer(k) for i, k in zip(serial_axes, point, strict=True)
-        }
-        coordinates.update(iteration_coordinates)
-        ranges.update({f"program:{i}": (k, k) for i, k in zip(serial_axes, point, strict=True)})
+            if i in map_history:
+                resource = npre + i
+                origin = Origin(path + f".input_mapping[{i}].grid{point}")
+                box = full_box(types[resource].shape)
+                value = input_value(resource, domains[i].address)
+                version = memories[resource].write(box, value, origin)
+                versions.append(
+                    MemoryVersion(
+                        resource,
+                        version,
+                        value,
+                        origin,
+                        box.linear_bounds(types[resource].shape),
+                        box.axes,
+                    )
+                )
         evaluate(
             call.kernel,
             tuple(TensorRef(i) for i in range(len(call.kernel.inputs))),
@@ -1687,6 +2192,23 @@ def _functionalize_tensor_call(
             path, "tensor semaphore counts are not conserved at program exit"
         )
     communication = dma_state.finish(path)
+    if stateful_maps:
+        selector = add(
+            *(scale(coordinate("program", i), prod(grid[i + 1 :])) for i in range(len(grid)))
+        )
+        for i, entries in map_history.items():
+            if len(entries) != prod(grid):
+                raise UnsupportedJaxprError(path, "stateful index map replay is incomplete")
+            mapping = tuple(
+                lookup(selector, tuple(entry[j] for entry in entries))
+                for j in range(len(call.blocks[i].block_shape))
+            )
+            domain = prove_tensor_domain(
+                call.blocks[i], grid, budget, writer=False, mapping=mapping
+            )
+            domains = domains[:i] + (domain,) + domains[i + 1 :]
+    if output_tracker is not None:
+        output_windows = output_tracker.finish()
     for j, key in enumerate(window_keys):
         assert key is not None
         finish_window(j, key)
@@ -1702,11 +2224,19 @@ def _functionalize_tensor_call(
                     (control_guard, value, value),
                     parameters=(ParameterView("__control_guard", True),),
                 )
-            bindings = plan.windows[j][key[0]].inverse if plan.windows else domain.inverse
+            bindings = output_windows[j][key[0]].inverse if output_windows else domain.inverse
             parts = []
-            if plan.windows:
-                for d, span in enumerate(plan.windows[j][key[0]].box.axes):
+            output_ranges = coordinate_ranges("output", domain.shape)
+            if output_windows:
+                for d, span in enumerate(output_windows[j][key[0]].box.axes):
                     out = coordinate("output", d)
+                    # This value is only selected inside its proved window.
+                    # Restrict coordinate simplification to that rectangle,
+                    # excluding padding beyond the logical output shape.
+                    output_ranges[f"output:{d}"] = (
+                        max(0, span.start),
+                        min(domain.shape[d], span.stop) - 1,
+                    )
                     parts.extend(
                         (
                             Predicate("ge", (out, integer(span.start))),
@@ -1725,7 +2255,9 @@ def _functionalize_tensor_call(
                 ):
                     start = scale(substitute(mapping, bindings), width)
                     out = coordinate("output", d)
-                    bindings[f"local:{d}"] = add(out, scale(start, -1))
+                    if d not in domain.squeezed_axes:
+                        local_axis = domain.local_axes.index(d)
+                        bindings[f"local:{local_axis}"] = add(out, scale(start, -1))
                     parts.extend(
                         (
                             Predicate("ge", (out, start)),
@@ -1739,7 +2271,7 @@ def _functionalize_tensor_call(
                     substitute(a, bindings): coordinate("output", i)
                     for i, a in enumerate(domain.address)
                 },
-                {**(axis_ranges or {}), **coordinate_ranges("output", domain.shape)},
+                {**(axis_ranges or {}), **output_ranges},
                 budget,
             )
             if owner_suffix:
@@ -1817,4 +2349,5 @@ def _functionalize_tensor_call(
         ),
         communication,
         tuple(dma_state.waits),
+        assumptions=(ORDERED_INDEX_MAP_ASSUMPTION,) if stateful_maps else (),
     )

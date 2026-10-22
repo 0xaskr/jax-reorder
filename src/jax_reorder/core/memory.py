@@ -92,6 +92,7 @@ class MemoryProjection:
     conditions: tuple[str, ...]
     communication: tuple[TransferEvidence, ...] = ()
     waits: tuple[WaitEvidence, ...] = ()
+    assumptions: tuple[str, ...] = ()
 
 
 def scalar_type(typ: ArrayType) -> ScalarType:
@@ -157,14 +158,17 @@ def _substitute(value: Expression, bindings: dict[str, IndexExpr]) -> Expression
         if id(item) in done:
             continue
         if isinstance(item, IndexExpr):
-            done[id(item)] = substitute(item, bindings)
+            projected = substitute(item, bindings)
+            done[id(item)] = item if projected == item else projected
         elif isinstance(item, (Predicate, ValueExpr)):
             if not ready:
                 pending.append((item, True))
                 pending.extend((child, False) for child in item.operands)
                 continue
             children = tuple(done[id(child)] for child in item.operands)
-            if isinstance(item, Predicate):
+            if all(a is b for a, b in zip(children, item.operands, strict=True)):
+                done[id(item)] = item
+            elif isinstance(item, Predicate):
                 done[id(item)] = Predicate(
                     item.operation, cast(tuple[IndexExpr | Predicate | bool, ...], children)
                 )

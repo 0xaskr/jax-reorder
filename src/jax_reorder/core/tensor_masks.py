@@ -21,7 +21,7 @@ def prove_mask(
             for address, n in zip(domain.address, domain.shape, strict=True)
         ),
     )
-    initial = {**ranges, **coordinate_ranges("local", domain.block_shape)}
+    initial = {**ranges, **coordinate_ranges("local", domain.local_shape)}
 
     def normalized(value: Expression, bounds: dict[str, tuple[int, int]]) -> Expression:
         known = truth(value, bounds)

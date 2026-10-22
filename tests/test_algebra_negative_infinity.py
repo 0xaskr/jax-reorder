@@ -268,3 +268,84 @@ def test_all_masked_softmax_nan_path_and_final_guard_are_preserved():
             signature((3,)),
             signature((3,), jnp.bool_),
         )
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16, jnp.float16])
+def test_online_maximum_initialization_has_exact_extended_real_steps(dtype):
+    def initialized(x):
+        maximum = jnp.maximum(-jnp.inf, x + x)
+        return maximum, jnp.exp(-jnp.inf - maximum)
+
+    result, _ = compare(initialized, lambda x: (2 * x, jnp.zeros_like(x)), signature((3,), dtype))
+    assert result.status is Status.EQUIVALENT
+    assert "negative-infinity-initialization" in result.rules
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda value: value - value,
+        lambda value: 0 * value,
+        lambda value: jnp.exp(value - value),
+        lambda value: jnp.maximum(-jnp.inf, 0 * value),
+    ],
+)
+def test_propagated_negative_infinity_cannot_erase_indeterminate_arithmetic(operation):
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(
+            lambda x: operation(-jnp.inf - x),
+            lambda x: jnp.zeros_like(x),
+            signature((3,)),
+        )
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda x: jnp.maximum(-jnp.inf, jnp.log(x)) - jnp.log(x),
+        lambda x: jnp.exp(-jnp.inf - jnp.log(x)),
+        lambda x: jnp.exp(-jnp.inf - x.astype(jnp.float16).astype(jnp.float32)),
+    ],
+)
+def test_extended_real_initialization_preserves_operand_definedness(operation):
+    with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+        compare(operation, lambda x: jnp.zeros_like(x), signature((3,)))
+
+
+@pytest.mark.parametrize(
+    "denominator,positive",
+    [
+        (jnp.exp, True),
+        (lambda x: jnp.where(x > 0, jnp.exp(x), 1.0), True),
+        (
+            lambda x: jnp.sum(
+                jnp.exp(jnp.where(jnp.arange(4)[None, :] > jnp.arange(4)[:, None], -1e6, x)),
+                axis=1,
+            ),
+            True,
+        ),
+        (lambda x: jnp.sum(jnp.exp(x[:0])), False),
+        (lambda x: jnp.where(x > 0, jnp.exp(x), 0.0), False),
+        (lambda x: jnp.sum(jnp.where(x > 0, 1.0, -1.0)), False),
+        (lambda x: jnp.exp(-jnp.inf - x), False),
+        (lambda x: jnp.exp(jnp.log(x)), False),
+        (lambda x: jnp.sum(jnp.exp(jnp.sqrt(x))), False),
+    ],
+)
+def test_positive_denominator_requires_nonempty_finite_positive_terms(denominator, positive):
+    shape = jax.eval_shape(denominator, signature((4,))).shape
+
+    def ratio(x):
+        value = denominator(x)
+        return value / value
+
+    def reference(x):
+        return jnp.ones(shape, dtype=x.dtype)
+
+    if positive:
+        result, _ = compare(ratio, reference, signature((4,)))
+        assert result.status is Status.EQUIVALENT
+        assert "positive-finite-denominator" in result.rules
+    else:
+        with pytest.raises((MathematicalUndecidedError, UnsupportedJaxprError)):
+            compare(ratio, reference, signature((4,)))

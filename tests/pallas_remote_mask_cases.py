@@ -11,12 +11,20 @@ from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
 
-def masked_function(mode="store", *, receive_first=False, mesh=None, identity_indices=False):
+def masked_function(
+    mode="store",
+    *,
+    receive_first=False,
+    mesh=None,
+    identity_indices=False,
+    replicated_output=False,
+    wrong_peer=False,
+):
     shape = (8, 256)
     spec = pl.BlockSpec(shape, lambda _: (0, 0))
 
-    def kernel(x, y, temp, send, recv):
-        peer = 1 - lax.axis_index("d")
+    def kernel(x, y, temp, send, recv, *extra):
+        peer = lax.axis_index("d") if wrong_peer else 1 - lax.axis_index("d")
         cols = jnp.broadcast_to(jnp.arange(256)[None, :], shape)
         rows = jnp.broadcast_to(jnp.arange(8)[:, None], shape)
         index = (rows, cols) if identity_indices else (slice(None), slice(None))
@@ -49,9 +57,53 @@ def masked_function(mode="store", *, receive_first=False, mesh=None, identity_in
         if receive_first:
             copy.wait_recv()
             copy.wait_send()
-        else:
+        elif mode != "conditional_missing_wait":
             copy.wait()
-        if mode in ("store", "holes", "data_store"):
+        if mode.startswith("conditional_"):
+            value = temp[...]
+            active = value > 2500
+            if mode == "conditional_slices":
+                y[:, :128] = value[:, :128]
+            pp.store(y, index, value + 100, mask=active)
+            if mode in ("conditional_read", "conditional_read_wrong"):
+                y[...] = pp.load(
+                    y, index, mask=~active if mode.endswith("wrong") else active, other=7
+                )
+                return
+            if mode == "conditional_overwritten_read":
+                # Keep the read in the source graph: Pallas tracing deletes a
+                # standalone unused load before the comparison sees it.
+                y[...] = pp.load(y, index) * 0
+            if mode in ("conditional_mask", "conditional_control", "conditional_index"):
+                incomplete = pp.load(y, index, mask=active)
+                if mode == "conditional_mask":
+                    pp.store(y, index, value, mask=incomplete > 0)
+                elif mode == "conditional_control":
+                    lax.cond(
+                        jnp.sum(incomplete) > 0,
+                        lambda: y.__setitem__(Ellipsis, value),
+                        lambda: y.__setitem__(Ellipsis, value + 1),
+                    )
+                else:
+                    y[0, jnp.asarray(incomplete[0, 0], jnp.int32)] = jnp.float32(1)
+                return
+            if mode == "conditional_dma":
+                tpu.async_remote_copy(y, extra[0], extra[1], extra[2], (peer,)).wait()
+                y[...] = x[...]
+                return
+            second = (
+                active
+                if mode == "conditional_same"
+                else value < 2500
+                if mode == "conditional_gap"
+                else ~active
+            )
+            replacement = value + 1 if mode == "conditional_wrong" else value
+            pp.store(y, index, replacement, mask=second)
+            if mode == "conditional_dma_complete":
+                tpu.async_remote_copy(y, extra[0], extra[1], extra[2], (peer,)).wait()
+                y[...] = extra[0][...]
+        elif mode in ("store", "holes", "data_store"):
             y[...] = temp[...]
             active = (cols < 32) | (cols >= 192) if mode == "holes" else mask
             if mode == "data_store":
@@ -99,12 +151,21 @@ def masked_function(mode="store", *, receive_first=False, mesh=None, identity_in
         grid=(1,),
         in_specs=(spec,),
         out_specs=spec,
-        scratch_shapes=(tpu.VMEM(shape, jnp.float32), tpu.SemaphoreType.DMA, tpu.SemaphoreType.DMA),
+        scratch_shapes=(tpu.VMEM(shape, jnp.float32), tpu.SemaphoreType.DMA, tpu.SemaphoreType.DMA)
+        + (
+            (tpu.VMEM(shape, jnp.float32), tpu.SemaphoreType.DMA, tpu.SemaphoreType.DMA)
+            if mode in ("conditional_dma", "conditional_dma_complete")
+            else ()
+        ),
         compiler_params=tpu.CompilerParams(),
     )
     mesh = mesh or Mesh(np.asarray(jax.devices("cpu")[:2]), ("d",))
     return jax.shard_map(
-        call, mesh=mesh, in_specs=P("d", None), out_specs=P("d", None), check_vma=False
+        call,
+        mesh=mesh,
+        in_specs=P("d", None),
+        out_specs=P() if replicated_output else P("d", None),
+        check_vma=False,
     )
 
 
@@ -120,6 +181,14 @@ def expected(x, mode="store"):
             value[:, :128] = peer[:, :128]
         elif mode.startswith("empty"):
             value = peer.copy()
+        elif mode.startswith("conditional_"):
+            if mode == "conditional_dma_complete":
+                peer = shards[device]
+            value = np.where(
+                peer > 2500,
+                peer + 100,
+                7 if mode == "conditional_read" else peer + (mode == "conditional_wrong"),
+            )
         elif mode in ("store", "holes", "data_store", "transpose_store"):
             mask = (cols < 32) | (cols >= 192) if mode == "holes" else cols < 192
             if mode == "data_store":

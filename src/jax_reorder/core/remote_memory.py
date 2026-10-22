@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from dataclasses import dataclass, replace
 from math import prod
-from typing import cast
+from typing import Literal, cast
 
 from ..errors import UnsupportedJaxprError
 from .core_execution import CoreExecutionBinding
@@ -25,6 +25,7 @@ from .masked_access import require_defined, resolve_defined
 from .memory import (
     Expression,
     MemoryProjection,
+    Predicate,
     Uninitialized,
     ValueExpr,
     _assemble,
@@ -91,14 +92,17 @@ class RemoteValueEvidence:
     transfers: tuple[RemoteTransferEvidence, ...]
     assembly: tuple[ShardPlacement, ...]
     discharged_obligations: tuple[str, ...]
+    # Device-local projection outputs are ordered by (kernel port, device).
+    # Empty retains the existing parent-function/global assembly contract.
+    local_outputs: tuple[tuple[int, int], ...] = ()
 
 
 def same_remote_evidence(a: RemoteValueEvidence | None, b: RemoteValueEvidence | None) -> bool:
     if a is None or b is None:
         return a is b
     return (
-        (a.protocol, a.transfers, a.assembly, a.discharged_obligations)
-        == (b.protocol, b.transfers, b.assembly, b.discharged_obligations)
+        (a.protocol, a.transfers, a.assembly, a.discharged_obligations, a.local_outputs)
+        == (b.protocol, b.transfers, b.assembly, b.discharged_obligations, b.local_outputs)
         and tuple((v.storage, v.version, v.span, v.origin) for v in a.versions)
         == tuple((v.storage, v.version, v.span, v.origin) for v in b.versions)
         and expressions_equal(
@@ -156,7 +160,16 @@ def functionalize_remote_call(
     budget: AnalysisBudget,
     execution_cores: int | None = None,
     execution: CoreExecutionBinding | None = None,
+    scope: Literal["global", "device_local"] = "global",
 ) -> tuple[MemoryProjection, RemoteValueEvidence]:
+    """Prove remote state, optionally retaining separate device-local outputs.
+
+    Local scope keeps the same peer program/protocol and globally bound input
+    identities. Each (port, device) output has the kernel's local array shape;
+    parent output partitioning and cross-device replication are not its claims.
+    """
+    if scope not in ("global", "device_local"):
+        raise ValueError("remote projection scope must be global or device_local")
     path = call.kernel.origin.path
     proof = analyze_remote_call(
         call,
@@ -170,6 +183,9 @@ def functionalize_remote_call(
     axis_name, devices = shard.mesh.axes[0][:2] if shard is not None else (None, 1)
     input_partitions = shard.input_partitions if shard is not None else ((),) * len(inputs)
     output_partitions = shard.output_partitions if shard is not None else ((),) * len(outputs)
+    if scope == "device_local":
+        outputs = tuple(block.array for block in call.blocks[call.num_inputs :])
+        output_partitions = ((),) * len(outputs)
     io, domains = proof.io, proof.io.domains
     access_commands = {
         command.origin: command
@@ -307,7 +323,13 @@ def functionalize_remote_call(
         memory.pieces = [Piece(memory.extent, None, memory.version, origin)]
 
     def write(
-        storage: Instance, span: Span, value: Expression, origin: Origin, *, internal: bool = False
+        storage: Instance,
+        span: Span,
+        value: Expression,
+        origin: Origin,
+        *,
+        internal: bool = False,
+        conditional: bool = False,
     ) -> None:
         if storage.ref in input_resources and not internal:
             raise UnsupportedJaxprError(origin.path, "input storage must remain read-only")
@@ -315,9 +337,58 @@ def functionalize_remote_call(
         # The protocol proof orders every conflicting access under all allowed
         # schedules. Replay therefore publishes each real write's latest version,
         # including repeated output HBM commits; it never supplies missing order.
-        value = resolve_defined(value, {"global": (span.start, span.stop - 1)}, budget, origin.path)
+        if not conditional:
+            value = resolve_defined(
+                value, {"global": (span.start, span.stop - 1)}, budget, origin.path
+            )
         version = memories[storage].write(span, value, origin, overwrite=True)
         versions.append(RemoteVersion(storage, version, span, value, origin))
+
+    def select(
+        mask: Expression, inactive: Expression, active: Expression, typ: ArrayType, loc: str
+    ) -> Expression:
+        # A literal boolean complement is the same predicate with exchanged
+        # branches. This does not infer relationships between distinct masks.
+        while (
+            isinstance(mask, Predicate | ValueExpr)
+            and mask.operation == "not"
+            and (isinstance(mask, Predicate) or mask.type.dtype == "bool")
+        ):
+            budget.spend(loc + ".mask_complement")
+            (mask,) = mask.operands
+            inactive, active = active, inactive
+        branches = [inactive, active]
+        for index, branch in enumerate(branches):
+            while (
+                isinstance(branch, ValueExpr)
+                and branch.operation == "select_n"
+                and len(branch.operands) == 3
+                and not branch.parameters
+                and expressions_equal((mask,), (branch.operands[0],))
+            ):
+                budget.spend(loc + ".mask_assumption")
+                branch = branch.operands[index + 1]
+            branches[index] = branch
+        return ValueExpr("select_n", scalar_type(typ), (mask, *branches))
+
+    def defined_pieces(
+        pieces: tuple[Piece[Expression], ...], loc: str
+    ) -> tuple[Piece[Expression], ...]:
+        result = []
+        for piece in pieces:
+            assert piece.value is not None
+            result.append(
+                replace(
+                    piece,
+                    value=resolve_defined(
+                        piece.value,
+                        {"global": (piece.span.start, piece.span.stop - 1)},
+                        budget,
+                        loc,
+                    ),
+                )
+            )
+        return tuple(result)
 
     def evaluate(
         source: RegionView,
@@ -487,39 +558,47 @@ def functionalize_remote_call(
                 buffered_input = any(
                     p.input and p.buffered and p.ref == storage.ref for p in io.ports
                 )
-                if access.value is None and any(p.value is None for p in pieces):
-                    if not buffered_input:
-                        raise UnsupportedJaxprError(
-                            origin.path, "read of uninitialized output/scratch storage"
-                        )
-                    pieces = tuple(
-                        replace(p, value=undefined) if p.value is None else p for p in pieces
+                pieces = tuple(
+                    replace(p, value=undefined) if p.value is None else p for p in pieces
+                )
+                previous = _assemble(pieces, types[storage.ref]) if pieces else undefined
+                assert not isinstance(previous, Uninitialized)
+                previous = _substitute(previous, {"global": selected.to_storage})
+                old = previous
+                if mask is not None:
+                    other = expression(access.other) if access.other is not None else undefined
+                    old = select(mask, other, old, result_type, origin.path)
+                if access.value is None and not buffered_input:
+                    # Inactive load results may remain undefined, but active
+                    # reads must already be initialized even when unused later.
+                    checked = (
+                        previous
+                        if mask is None
+                        else select(mask, True, previous, result_type, origin.path)
                     )
-                old = _assemble(pieces, types[storage.ref]) if pieces else undefined
-                if not isinstance(old, Uninitialized):
-                    old = _substitute(old, {"global": selected.to_storage})
-                    if mask is not None:
-                        other = expression(access.other) if access.other is not None else undefined
-                        old = ValueExpr("select_n", scalar_type(result_type), (mask, other, old))
+                    require_defined(
+                        checked,
+                        {"global": (0, prod(result_type.shape) - 1)},
+                        budget,
+                        origin.path,
+                    )
                 if access.value is not None:
                     value = expression(access.value)
                     if selected.conditional and selected.spans:
-                        if isinstance(old, Uninitialized):
-                            raise UnsupportedJaxprError(
-                                origin.path, "data-masked store requires initialized inactive lanes"
-                            )
                         # The conservative footprint covers every possible write;
-                        # untouched lanes retain the previous storage version's value.
-                        previous = _assemble(pieces, types[storage.ref])
-                        assert not isinstance(previous, Uninitialized)
-                        previous = _substitute(previous, {"global": selected.to_storage})
+                        # untouched lanes retain both the previous value and its
+                        # conditional initialization. They are not read by store.
                         assert mask is not None
-                        value = ValueExpr(
-                            "select_n", scalar_type(result_type), (mask, previous, value)
+                        require_defined(
+                            select(mask, True, value, result_type, origin.path),
+                            {"global": (0, prod(result_type.shape) - 1)},
+                            budget,
+                            origin.path,
                         )
+                        value = select(mask, previous, value, result_type, origin.path)
                     value = _substitute(value, {"global": selected.to_view})
                     for span in selected.spans:
-                        write(storage, span, value, origin)
+                        write(storage, span, value, origin, conditional=selected.conditional)
                 if len(op.results) != 1:
                     raise UnsupportedJaxprError(origin.path, "invalid access result arity")
                 env[op.results[0].id] = old
@@ -564,7 +643,10 @@ def functionalize_remote_call(
                     for local, global_ in pairs:
                         source, target = (global_, local) if incoming else (local, global_)
                         delta = target.start - source.start
-                        for piece in memories[command.storage].read(source, command.origin.path):
+                        for piece in defined_pieces(
+                            memories[command.storage].read(source, command.origin.path),
+                            command.origin.path,
+                        ):
                             assert piece.value is not None
                             result.append(
                                 Piece(
@@ -681,10 +763,13 @@ def functionalize_remote_call(
             )
         if isinstance(command, Start):
             transfer = command.transfer
-            payloads[event.origin] = tuple(
-                piece
-                for span in transfer.source_spans
-                for piece in memories[transfer.source].read(span, event.origin.path)
+            payloads[event.origin] = defined_pieces(
+                tuple(
+                    piece
+                    for span in transfer.source_spans
+                    for piece in memories[transfer.source].read(span, event.origin.path)
+                ),
+                event.origin.path,
             )
             snapshots[event.origin] = tuple(
                 version
@@ -702,7 +787,23 @@ def functionalize_remote_call(
     if any(origin is not None for origin in pending.values()) or payloads or snapshots or sent:
         raise UnsupportedJaxprError(path, "remote execution has unfinished operations")
 
+    def output_value(value: Expression, shape: tuple[int, ...]) -> Expression:
+        if len(shape) != 1:
+            value = _substitute(
+                value,
+                {"global": linear(tuple(axis(f"output:{i}") for i in range(len(shape))), shape)},
+            )
+        return resolve_defined(
+            value,
+            coordinate_ranges("output", shape)
+            if len(shape) != 1
+            else {"global": (0, prod(shape) - 1)},
+            budget,
+            path,
+        )
+
     global_outputs = []
+    local_outputs = []
     for port, contract in enumerate(outputs):
         assert isinstance(contract, ArrayType)
         pieces: list[Piece[Expression]] = []
@@ -713,6 +814,10 @@ def functionalize_remote_call(
             local = memory.read(memory.extent, path)
             value = _assemble(local, types[placement.storage.ref])
             assert not isinstance(value, Uninitialized)
+            if scope == "device_local":
+                global_outputs.append(output_value(value, contract.shape))
+                local_outputs.append((port, placement.storage.device))
+                continue
             if partitioned:
                 global_coordinates = coordinates(axis("global"), contract.shape)
                 to_local = linear(
@@ -733,6 +838,8 @@ def functionalize_remote_call(
                     pieces.append(Piece(span, value, 0, call.kernel.origin))
             else:
                 replicas.append(value)
+        if scope == "device_local":
+            continue
         if partitioned:
             output = _assemble(tuple(sorted(pieces, key=lambda p: p.span)), contract)
             assert not isinstance(output, Uninitialized)
@@ -740,27 +847,14 @@ def functionalize_remote_call(
             if not all(expressions_equal((replicas[0],), (v,)) for v in replicas[1:]):
                 raise UnsupportedJaxprError(path, "replicated output values differ across devices")
             output = replicas[0]
-        if len(contract.shape) != 1:
-            output = _substitute(
-                output,
-                {
-                    "global": linear(
-                        tuple(axis(f"output:{i}") for i in range(len(contract.shape))),
-                        contract.shape,
-                    )
-                },
-            )
-        output = resolve_defined(
-            output,
-            coordinate_ranges("output", contract.shape)
-            if len(contract.shape) != 1
-            else {"global": (0, prod(contract.shape) - 1)},
-            budget,
-            path,
-        )
-        global_outputs.append(output)
+        global_outputs.append(output_value(output, contract.shape))
     evidence = RemoteValueEvidence(
-        proof, tuple(versions), tuple(transfers), tuple(assembly), proof.unproved_obligations
+        proof,
+        tuple(versions),
+        tuple(transfers),
+        tuple(assembly),
+        proof.unproved_obligations,
+        tuple(local_outputs),
     )
     return MemoryProjection(
         tuple(global_outputs),
@@ -774,6 +868,9 @@ def functionalize_remote_call(
             "inputs are read-only; scratch has call lifetime; no transfer is outstanding at exit",
             "output windows retain versions until their individual automatic writeback; "
             "ordered HBM overwrites publish the latest version without restoring staging",
-            "global shard placement is exact; replicated outputs agree across devices",
+            "each ordered (kernel output port, device) retains its complete local value; "
+            "parent output assembly and replica equality are not claimed"
+            if scope == "device_local"
+            else "global shard placement is exact; replicated outputs agree across devices",
         ),
     ), evidence

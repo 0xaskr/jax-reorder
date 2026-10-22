@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Never
 
 import jax
@@ -27,6 +27,7 @@ from .algebra.budget import Budget, validate_timeout
 from .core._typing import TreeDef
 from .core.canonical import Comparison, compare_jaxprs, difference
 from .core.core_execution import CoreExecutionBinding
+from .core.local import LocalKernelComparison, compare_pallas_kernels
 from .core.semantics import Encoder, Frozen, encoded_equal
 from .errors import (
     ComparisonContractError,
@@ -125,8 +126,10 @@ class ModeComparison:
     right: FunctionTrace | None = field(default=None, compare=False, repr=False)
     # auto 模式结构不同或显式请求 execution 时填；structural 模式始终是 None。
     algebra: AlgebraComparison | None = None
-    # 等价是怎么来的：structural（整张图相同）或 algebraic（独立代数证明）。
+    # 实际依据：structural、normalized（局部语义投影）或 algebraic。
     equivalence_kind: str | None = None
+    scope: str = "function"
+    local: LocalKernelComparison | None = None
 
 
 @dataclass(frozen=True)
@@ -140,8 +143,9 @@ class FunctionComparison:
     unverified_modes: tuple[str, ...]
     # 只有请求了编译、且每个模式两侧都编译成功才是 True；它不代表跑过数值验证。
     cpu_compiled: bool
-    # 整体结论的等价来源：structural 或 algebraic；整体不等价时为 None。
+    # 整体等价来源：structural、normalized 或 algebraic；不等价时为 None。
     equivalence_kind: str | None = None
+    scope: str = "function"
 
 
 def _context() -> Frozen:
@@ -397,6 +401,7 @@ def compare_function_traces(
     equivalence: str = "auto",
     algebra_budget: int = 10000,
     algebra_timeout: float = 60.0,
+    scope: str = "function",
     execution: CoreExecutionBinding
     | tuple[CoreExecutionBinding, CoreExecutionBinding]
     | None = None,
@@ -411,9 +416,16 @@ def compare_function_traces(
     custom_jvp / custom_vjp 携带的规则（include_derivative_rules=False），
     因为求导程序已经通过公开变换展开过了，不能从这次检查外推还没请求的
     高阶规则。比较中的 ComparisonError 会补上模式前缀后重新抛出。
+
+    scope="device_local" 仅支持 forward，核对输入树/静态参数/追踪环境后，
+    由 Pallas 局部入口建立实际输入输出契约；父函数输出包装不参与该局部结论。
     """
     if equivalence not in ("auto", "structural"):
         raise ValueError("equivalence must be auto or structural")
+    if scope not in ("function", "device_local"):
+        raise ValueError("scope must be function or device_local")
+    if scope == "device_local" and (left.mode != "forward" or right.mode != "forward"):
+        raise ValueError("device_local scope requires forward mode only")
     if execution is not None and (
         equivalence != "auto" or left.mode != "forward" or right.mode != "forward"
     ):
@@ -428,7 +440,14 @@ def compare_function_traces(
             "trace contexts or comparison modes differ",
             failure_kind=ComparisonFailureKind.CONTEXT_MISMATCH,
         )
-    difference_path = difference(left.signature, right.signature)
+    signatures = (left.signature, right.signature)
+    if scope == "device_local":
+        # Local input avals are established by the bound kernel projection;
+        # parent output packaging is outside this explicitly chosen scope.
+        signatures = tuple(
+            replace(s, input_avals=(), output_avals=(), output_tree=()) for s in signatures
+        )
+    difference_path = difference(*signatures)
     if difference_path:
         raise ComparisonContractError(
             f"{left.mode}.{difference_path.replace('graph', 'signature', 1)}",
@@ -437,6 +456,32 @@ def compare_function_traces(
     # 求导已经展开成一阶程序了，这里只比较展开后的前向语义；
     # 一次一阶检查推不出还没请求的高阶规则。
     try:
+        if scope == "device_local":
+            local = None
+            algebra = None
+            if equivalence == "auto":
+                algebra = compare_algebraic_jaxprs(
+                    left.jaxpr,
+                    right.jaxpr,
+                    scope=scope,
+                    algebra_budget=algebra_budget,
+                    algebra_timeout=algebra_timeout,
+                    execution=execution,
+                )
+                status, kind = algebra.status, algebra.equivalence_kind
+            else:
+                local = compare_pallas_kernels(left.jaxpr, right.jaxpr)
+                status, kind = local.status, local.equivalence_kind
+            return ModeComparison(
+                left.mode,
+                status,
+                left=left,
+                right=right,
+                algebra=algebra,
+                equivalence_kind=kind,
+                scope=scope,
+                local=local,
+            )
         result = compare_jaxprs(left.jaxpr, right.jaxpr, include_derivative_rules=False)
         algebra = None
         status, difference_path = result.status, result.difference
@@ -485,6 +530,7 @@ def compare_functions(
     equivalence: str = "auto",
     algebra_budget: int = 10000,
     algebra_timeout: float = 60.0,
+    scope: str = "function",
     execution: CoreExecutionBinding
     | tuple[CoreExecutionBinding, CoreExecutionBinding]
     | None = None,
@@ -492,9 +538,11 @@ def compare_functions(
     """对每个请求的模式分别追踪、核对契约、比较，最后汇总成一份报告。
 
     - equivalence="auto"：结构不同时再试理想实数范围内的代数证明；"structural" 只看结构。
+    - scope="device_local"：仅比较已绑定的 Pallas kernel（forward），结果明确记录局部范围。
     - algebra_budget / algebra_timeout：限制每个模式的代数查询次数和符号 worker 超时；
       浮点交换律之类的警告留在 algebra 报告里，不会丢。
     - execution：远端单 core 的共用绑定或左右绑定对，只支持 auto + forward；
+      device_local 另支持已接入证明的本地多 core 绑定。
       即使结构相同也检查协议，将执行条件保存在该模式的 algebra 报告中。
     - check_cpu：额外编译两侧的物化图，用来区分“CPU 后端不接受这张图”和“图本身不支持”；
       它不做数值采样，样本相等也不能当成结构结论。
@@ -507,6 +555,10 @@ def compare_functions(
     modes = tuple(modes)
     if equivalence not in ("auto", "structural"):
         raise ValueError("equivalence must be auto or structural")
+    if scope not in ("function", "device_local"):
+        raise ValueError("scope must be function or device_local")
+    if scope == "device_local" and modes != ("forward",):
+        raise ValueError("device_local scope requires forward mode only")
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
     if not modes or len(set(modes)) != len(modes) or any(mode not in MODES for mode in modes):
@@ -562,6 +614,7 @@ def compare_functions(
                 equivalence=equivalence,
                 algebra_budget=algebra_budget,
                 algebra_timeout=algebra_timeout,
+                scope=scope,
                 execution=execution,
             )
         )
@@ -580,8 +633,17 @@ def compare_functions(
         # 全部模式都等价才给来源：只要有一个模式靠代数证明就记 algebraic，
         # 全部靠结构相同才是 structural。
         kind = (
-            "algebraic" if any(r.equivalence_kind == "algebraic" for r in results) else "structural"
+            "algebraic"
+            if any(r.equivalence_kind == "algebraic" for r in results)
+            else "normalized"
+            if any(r.equivalence_kind == "normalized" for r in results)
+            else "structural"
         )
     return FunctionComparison(
-        status, tuple(results), tuple(mode for mode in MODES if mode not in modes), compiled, kind
+        status,
+        tuple(results),
+        tuple(mode for mode in MODES if mode not in modes),
+        compiled,
+        kind,
+        scope,
     )

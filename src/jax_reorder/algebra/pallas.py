@@ -16,10 +16,11 @@ import sympy as sp
 from jax import dtypes, lax
 
 from ..core.index_domain import IndexExpr, axis, bounds
+from ..core.integer_ranges import integer_value_bounds
 from ..core.memory import Expression, MemoryProjection, Predicate, ValueExpr
 from ..errors import UnsupportedJaxprError
 from ._typing import ArrayAval, Equation
-from .expression import SymbolicTensor, coordinates, rename_bounds
+from .expression import SymbolicTensor, coordinates, rename_bounds, substitute
 from .finiteness import Source
 from .pallas_domains import lower_padding_domains
 
@@ -90,7 +91,7 @@ def _operation(
                 )
             ),
         )
-    elif name in ("reduce_sum", "reduce_max"):
+    elif name in ("reduce_sum", "reduce_max", "reduce_min", "reduce_and", "reduce_or"):
         original = values[0]
         limits = [builder.bound(original.shape[axis]) for axis in params["axes"]]
         reductions = dict(zip(params["axes"], limits, strict=True))
@@ -134,6 +135,76 @@ def projected_outputs(
 ) -> list[SymbolicTensor]:
     projection: MemoryProjection = equation.params["projection"]
     builder.rules.add(equation.params["rule"])
+    # A complete kernel can return several views of the same contraction.  Keep
+    # source DAG identity and lexical captures separate from each output read.
+    signatures: dict[int, tuple[Expression, int, frozenset[str]]] = {}
+    interned: dict[tuple[Any, ...], int] = {}
+    computed_tensors: dict[tuple[Any, ...], tuple[SymbolicTensor, bool]] = {}
+    coordinate_constants: dict[tuple[tuple[int, ...], int], SymbolicTensor] = {}
+    addresses: dict[sp.Indexed, sp.Basic] = {}
+    address_coordinates: dict[sp.Expr, sp.Basic] = {}
+    tensor_kinds: set[tuple[Any, ...]] = set()
+
+    def remember(
+        value: Expression, children: tuple[tuple[int, frozenset[str]], ...]
+    ) -> tuple[int, frozenset[str]]:
+        if type(value) is bool:
+            key, free = ("bool", value), frozenset()
+        elif isinstance(value, IndexExpr):
+            free = frozenset().union(*(names for _, names in children))
+            if value.kind == "axis":
+                free |= {str(value.value)}
+            key = ("index", value.kind, value.value, tuple(k for k, _ in children))
+        elif isinstance(value, Predicate | ValueExpr):
+            bound = (
+                cast(
+                    tuple[tuple[str, ...], ...],
+                    dict((p.name, p.value) for p in value.parameters)["__input_axes"],
+                )
+                if isinstance(value, ValueExpr) and value.operation.startswith("tensor.")
+                else ()
+            )
+            free = frozenset().union(
+                *(
+                    names - set(bound[i]) if i < len(bound) else names
+                    for i, (_, names) in enumerate(children)
+                )
+            )
+            key = (
+                ("value", value.operation, value.type, value.parameters, value.data, value.input)
+                if isinstance(value, ValueExpr)
+                else ("predicate", value.operation)
+            ) + (tuple(k for k, _ in children),)
+        else:
+            raise UnsupportedJaxprError("algebra.pallas.tensor", "unknown tensor body")
+        identity = interned.setdefault(key, len(interned))
+        signatures[id(value)] = (value, identity, free)
+        return identity, free
+
+    def operands(value: Expression) -> tuple[Expression, ...]:
+        if isinstance(value, IndexExpr):
+            return value.args
+        if isinstance(value, Predicate | ValueExpr):
+            return value.operands
+        return ()
+
+    def signature(value: Expression) -> tuple[int, frozenset[str]]:
+        previous = signatures.get(id(value))
+        if previous is not None:
+            return previous[1], previous[2]
+        builder.budget.spend(path="algebra.pallas.tensor_signature")
+        return remember(value, tuple(signature(child) for child in operands(value)))
+
+    def remember_emitted(value: Expression) -> None:
+        if len(projection.outputs) < 2 or id(value) in signatures:
+            return
+        children = tuple(signatures.get(id(child)) for child in operands(value))
+        if all(child is not None for child in children):
+            # The already charged value visit has finished all these children.
+            # Assemble its identity here rather than walking its body a second
+            # time. Lazy, unvisited branches still use budgeted signature().
+            remember(value, tuple((child[1], child[2]) for child in children if child is not None))
+
     results = []
     for root, var in zip(projection.outputs, equation.outvars, strict=True):
         shape = tuple(var.aval.shape)
@@ -159,6 +230,124 @@ def projected_outputs(
         ) -> Callable[[Expression], SymbolicTensor]:
             cache: dict[int, SymbolicTensor] = {}
             range_cache: dict[int, tuple[int, int] | None] = {}
+            address_cache: dict[int, SymbolicTensor] = {}
+
+            def emit_address(value: Expression) -> SymbolicTensor:
+                """Exact, dtype-safe arithmetic for a proven memory coordinate.
+
+                A mask bounds a runtime page without fixing its value. Preserve
+                that dependency rather than treating integer arithmetic as an
+                uninterpreted function inside an array address.
+                """
+                if id(value) in address_cache:
+                    return address_cache[id(value)]
+                result = None
+                if isinstance(value, ValueExpr) and np.dtype(value.type.dtype).kind in "iu":
+                    dtype = np.dtype(value.type.dtype)
+                    name = value.operation
+                    if name == "select_n":
+                        selector = emit_address(value.operands[0])
+                        interval = integer_value_bounds(value.operands[0], ranges)
+                        boolean = np.dtype(selector.dtype).kind == "b"
+                        count = len(value.operands) - 1
+                        if (boolean and count == 2) or (
+                            interval is not None and 0 <= interval[0] <= interval[1] < count
+                        ):
+                            builder.budget.spend(count, path="algebra.pallas.address_selection")
+                            args = [selector, *(emit_address(v) for v in value.operands[1:])]
+                            pred, dp = builder.broadcast(selector, shape)
+                            branches = [builder.broadcast(v, shape) for v in args[1:]]
+                            guards = (
+                                [sp.Not(pred), pred]
+                                if boolean
+                                else [sp.Eq(pred, i) for i in range(count)]
+                            )
+                            guards[-1] = sp.Not(sp.Or(*guards[:-1]))
+
+                            def chosen(parts: Sequence[sp.Basic], *, domain: bool) -> sp.Basic:
+                                if all(part == parts[0] for part in parts[1:]):
+                                    return parts[0]
+                                if domain:
+                                    return sp.Or(
+                                        *(sp.And(g, p) for g, p in zip(guards, parts, strict=True))
+                                    )
+                                return sp.Piecewise(
+                                    *((p, g) for g, p in zip(guards[:-1], parts[:-1], strict=True)),
+                                    (parts[-1], True),
+                                )
+
+                            result = SymbolicTensor(
+                                shape,
+                                dtype,
+                                chosen([v for v, _ in branches], domain=False),
+                                sp.And(dp, chosen([d for _, d in branches], domain=True)),
+                                finite=all(v.finite for v in args[1:]),
+                                memory_validity=sp.And(
+                                    _memory_broadcast(selector, shape),
+                                    chosen(
+                                        [_memory_broadcast(v, shape) for v in args[1:]],
+                                        domain=True,
+                                    ),
+                                ),
+                            )
+                            builder.rules.add("pallas.bounded-address-selection:v1")
+                    elif name in {"and", "add", "sub", "mul", "neg", "convert_element_type"}:
+                        builder.budget.spend(path="algebra.pallas.address_integer")
+                        args = [emit_address(v) for v in value.operands]
+                        values = [builder.broadcast(v, shape) for v in args]
+                        expressions = [v for v, _ in values]
+                        expression = None
+                        if name == "and" and len(args) == 2:
+                            for item, mask in (expressions, expressions[::-1]):
+                                if mask.is_Integer and 0 <= int(mask) <= np.iinfo(dtype).max:
+                                    n = int(mask) + 1
+                                    if n & (n - 1) == 0:
+                                        expression = sp.Mod(item, n)
+                                        break
+                        elif name != "and":
+                            limits = [integer_value_bounds(v, ranges) for v in value.operands]
+                            if all(limit is not None for limit in limits):
+                                intervals = cast(list[tuple[int, int]], limits)
+                                a = intervals[0]
+                                if name == "convert_element_type":
+                                    interval, expression = a, expressions[0]
+                                elif name == "neg":
+                                    interval, expression = (-a[1], -a[0]), -expressions[0]
+                                else:
+                                    b = intervals[1]
+                                    x, y = expressions
+                                    if name == "add":
+                                        interval, expression = (a[0] + b[0], a[1] + b[1]), x + y
+                                    elif name == "sub":
+                                        interval, expression = (a[0] - b[1], a[1] - b[0]), x - y
+                                    else:
+                                        products = [x * y for x in a for y in b]
+                                        interval = min(products), max(products)
+                                        expression = x * y
+                                dtype_limits = np.iinfo(dtype)
+                                if (
+                                    not dtype_limits.min
+                                    <= interval[0]
+                                    <= interval[1]
+                                    <= dtype_limits.max
+                                ):
+                                    expression = None
+                        if expression is not None:
+                            result = SymbolicTensor(
+                                shape,
+                                dtype,
+                                expression,
+                                sp.And(*(d for _, d in values)),
+                                finite=all(v.finite for v in args),
+                                memory_validity=sp.And(
+                                    *(_memory_broadcast(v, shape) for v in args)
+                                ),
+                            )
+                            builder.rules.add("pallas.bounded-address-integer:v1")
+                if result is None:
+                    result = emit(value)
+                address_cache[id(value)] = result
+                return result
 
             def coordinate_bounds(value: IndexExpr) -> tuple[int, int] | None:
                 if id(value) in range_cache:
@@ -229,6 +418,19 @@ def projected_outputs(
                 nonlocal has_padding
                 if id(value) in cache:
                     return cache[id(value)]
+                constant_key = (
+                    (shape, int(value.value))
+                    if isinstance(value, IndexExpr) and value.kind == "constant"
+                    else None
+                )
+                if constant_key in coordinate_constants:
+                    # Coordinate constants have no lexical captures or read
+                    # obligations. Reuse their actual construction across
+                    # independent tensor emitters of the same shape.
+                    result = coordinate_constants[constant_key]
+                    remember_emitted(value)
+                    cache[id(value)] = result
+                    return result
                 builder.budget.spend(path="algebra.pallas.value")
                 if type(value) is bool:
                     result = scalar(value, np.dtype("bool"))
@@ -314,7 +516,8 @@ def projected_outputs(
                                 array,
                                 cast(ArrayAval, SimpleNamespace(shape=array.shape, dtype=dtype)),
                             )
-                        addresses = tuple(emit(a).expression for a in value.operands)
+                        address_values = tuple(emit_address(a) for a in value.operands)
+                        addresses = tuple(a.expression for a in address_values)
                         expr, defined = source.read(addresses)
                         # Different global reads must not share a Source identity
                         # merely because they read the same external array slot.
@@ -322,8 +525,11 @@ def projected_outputs(
                             source,
                             shape=shape,
                             expression=expr,
-                            defined=defined,
-                            memory_validity=_memory_read(source, addresses),
+                            defined=sp.And(defined, *(a.defined for a in address_values)),
+                            memory_validity=sp.And(
+                                _memory_read(source, addresses),
+                                *(a.memory_validity for a in address_values),
+                            ),
                             source=Source(None, shape, source.dtype, finite=source.finite),
                         )
                     elif value.operation == "select_n" and any(
@@ -428,87 +634,129 @@ def projected_outputs(
                         input_dtypes = cast(tuple[str, ...], metadata["__input_dtypes"])
                         input_axes = cast(tuple[tuple[str, ...], ...], metadata["__input_axes"])
                         output_shape = cast(tuple[int, ...], metadata["__output_shape"])
-                        args = []
-                        for body, input_shape, input_dtype, names in zip(
-                            value.operands[: len(input_shapes)],
-                            input_shapes,
-                            input_dtypes,
-                            input_axes,
-                            strict=True,
-                        ):
-                            axes = tuple(
-                                sp.Dummy("tensor", integer=True, nonnegative=True) for _ in names
+                        kind = (
+                            value.operation,
+                            value.type,
+                            value.parameters,
+                            value.data,
+                            value.input,
+                        )
+
+                        def tensor_key() -> tuple[Any, ...]:
+                            bodies = tuple(
+                                signature(body) for body in value.operands[: len(input_shapes)]
                             )
-                            local = emitter(
-                                input_shape,
-                                {**bindings, **dict(zip(names, axes, strict=True))},
-                                {
-                                    **ranges,
-                                    **{
-                                        name: (0, n - 1)
-                                        for name, n in zip(names, input_shape, strict=True)
-                                    },
-                                },
-                            )(body)
-                            rename = dict(zip(axes, coordinates(input_shape), strict=True))
-                            source = local.source
-                            if source is not None and not source.shape and input_shape:
-                                # Core folds constant broadcast bodies to a
-                                # scalar; restore its tensor view for consumers
-                                # that inspect Source axes (not only values).
-                                source = Source(
-                                    lax.broadcast_in_dim_p,
-                                    input_shape,
-                                    np.dtype(input_dtype),
-                                    (source,),
-                                    {"shape": input_shape, "broadcast_dimensions": ()},
-                                    finite=source.finite,
-                                )
-                            args.append(
-                                replace(
-                                    local,
-                                    shape=input_shape,
-                                    dtype=np.dtype(input_dtype),
-                                    expression=local.expression.xreplace(rename),
-                                    defined=local.defined.xreplace(rename),
-                                    memory_validity=local.memory_validity.xreplace(rename),
-                                    source=source,
+                            captures = frozenset().union(
+                                *(
+                                    free - set(names)
+                                    for (_, free), names in zip(bodies, input_axes, strict=True)
                                 )
                             )
-                        params = {}
-                        for p in value.parameters:
-                            if p.name.startswith("__"):
-                                continue
-                            if p.name in {"precision", "out_sharding"}:
-                                if p.value != ("none",):
-                                    raise UnsupportedJaxprError(
-                                        "algebra.pallas.tensor", f"non-default {p.name}"
-                                    )
-                                params[p.name] = None
-                            elif p.name == "preferred_element_type":
-                                params[p.name] = (
-                                    None if p.value == ("none",) else np.dtype(cast(str, p.value))
-                                )
-                            elif p.name in {"dimension_numbers", "axes"}:
-                                params[p.name] = p.value
-                            else:
-                                raise UnsupportedJaxprError("algebra.pallas.tensor", p.name)
-                        eq = cast(
-                            Equation,
-                            SimpleNamespace(
-                                primitive=SimpleNamespace(
-                                    name=value.operation.removeprefix("tensor.")
+                            return kind + (
+                                tuple(k for k, _ in bodies),
+                                tuple(
+                                    (name, bindings.get(name), ranges.get(name))
+                                    for name in sorted(captures)
                                 ),
-                                params=params,
-                                invars=(),
-                                outvars=(
-                                    SimpleNamespace(
-                                        aval=SimpleNamespace(shape=output_shape, dtype=dtype)
+                            )
+
+                        key = tensor_key() if kind in tensor_kinds else None
+                        cached = computed_tensors.get(key) if key is not None else None
+                        if cached is not None:
+                            computed, padding = cached
+                            has_padding |= padding
+                        else:
+                            outer_padding = has_padding
+                            has_padding = False
+                            args = []
+                            for body, input_shape, input_dtype, names in zip(
+                                value.operands[: len(input_shapes)],
+                                input_shapes,
+                                input_dtypes,
+                                input_axes,
+                                strict=True,
+                            ):
+                                axes = tuple(
+                                    sp.Dummy("tensor", integer=True, nonnegative=True)
+                                    for _ in names
+                                )
+                                local = emitter(
+                                    input_shape,
+                                    {**bindings, **dict(zip(names, axes, strict=True))},
+                                    {
+                                        **ranges,
+                                        **{
+                                            name: (0, n - 1)
+                                            for name, n in zip(names, input_shape, strict=True)
+                                        },
+                                    },
+                                )(body)
+                                rename = dict(zip(axes, coordinates(input_shape), strict=True))
+                                source = local.source
+                                if source is not None and not source.shape and input_shape:
+                                    # Core folds constant broadcast bodies to a
+                                    # scalar; restore its tensor view for consumers
+                                    # that inspect Source axes (not only values).
+                                    source = Source(
+                                        lax.broadcast_in_dim_p,
+                                        input_shape,
+                                        np.dtype(input_dtype),
+                                        (source,),
+                                        {"shape": input_shape, "broadcast_dimensions": ()},
+                                        finite=source.finite,
+                                    )
+                                args.append(
+                                    replace(
+                                        local,
+                                        shape=input_shape,
+                                        dtype=np.dtype(input_dtype),
+                                        expression=substitute(local.expression, rename),
+                                        defined=substitute(local.defined, rename),
+                                        memory_validity=substitute(local.memory_validity, rename),
+                                        source=source,
+                                    )
+                                )
+                            params = {}
+                            for p in value.parameters:
+                                if p.name.startswith("__"):
+                                    continue
+                                if p.name in {"precision", "out_sharding"}:
+                                    if p.value != ("none",):
+                                        raise UnsupportedJaxprError(
+                                            "algebra.pallas.tensor", f"non-default {p.name}"
+                                        )
+                                    params[p.name] = None
+                                elif p.name == "preferred_element_type":
+                                    params[p.name] = (
+                                        None
+                                        if p.value == ("none",)
+                                        else np.dtype(cast(str, p.value))
+                                    )
+                                elif p.name in {"dimension_numbers", "axes"}:
+                                    params[p.name] = p.value
+                                else:
+                                    raise UnsupportedJaxprError("algebra.pallas.tensor", p.name)
+                            eq = cast(
+                                Equation,
+                                SimpleNamespace(
+                                    primitive=SimpleNamespace(
+                                        name=value.operation.removeprefix("tensor.")
+                                    ),
+                                    params=params,
+                                    invars=(),
+                                    outvars=(
+                                        SimpleNamespace(
+                                            aval=SimpleNamespace(shape=output_shape, dtype=dtype)
+                                        ),
                                     ),
                                 ),
-                            ),
-                        )
-                        computed = _operation(builder, eq, args)
+                            )
+                            computed = _operation(builder, eq, args)
+                            if len(projection.outputs) > 1:
+                                key = tensor_key() if key is None else key
+                                computed_tensors[key] = (computed, has_padding)
+                                tensor_kinds.add(kind)
+                            has_padding |= outer_padding
                         at = tuple(emit(a).expression for a in value.operands[len(input_shapes) :])
                         expression, defined = computed.read(at)
                         result = replace(
@@ -579,7 +827,10 @@ def projected_outputs(
                             result = _operation(builder, eq, args)
                 else:
                     raise UnsupportedJaxprError("algebra.pallas", "unknown projected value")
+                remember_emitted(value)
                 cache[id(value)] = result
+                if constant_key is not None:
+                    coordinate_constants[constant_key] = result
                 return result
 
             return emit
@@ -587,19 +838,30 @@ def projected_outputs(
         result = emitter(shape, bindings, ranges)(root)
         expr, defined = builder.broadcast(result, shape)
         rename = dict(zip(output_coordinates, coordinates(shape), strict=True))
-        expr, defined = expr.xreplace(rename), defined.xreplace(rename)
-        validity = _memory_broadcast(result, shape).xreplace(rename)
+        expr, defined = substitute(expr, rename), substitute(defined, rename)
+        validity = substitute(_memory_broadcast(result, shape), rename)
         # Tensor reads substitute local output coordinates after the core has
         # proved their global address domain. Compose the resulting integer
         # quotient/remainder spelling before comparing contraction formulas.
         reads = expr.atoms(sp.Indexed) | defined.atoms(sp.Indexed) | validity.atoms(sp.Indexed)
-        builder.budget.spend(len(reads), path="algebra.pallas.address_spelling")
-        replacements = {
-            read: read.base[tuple(sp.expand(i.rewrite(sp.floor)) for i in read.indices)]
-            for read in reads
-        }
-        expr, defined = expr.xreplace(replacements), defined.xreplace(replacements)
-        validity = validity.xreplace(replacements)
+        missing = reads - addresses.keys()
+        # Distinct array reads often share the same page/lane coordinates.
+        # Rewrite each exact coordinate once across all output ports, keeping
+        # bound-symbol identity in the key so unrelated scopes never alias.
+        missing_coordinates = {
+            index for read in missing for index in read.indices
+        } - address_coordinates.keys()
+        builder.budget.spend(len(missing_coordinates), path="algebra.pallas.address_spelling")
+        address_coordinates.update(
+            (index, sp.expand(index.rewrite(sp.floor))) for index in missing_coordinates
+        )
+        addresses.update(
+            (read, read.base[tuple(address_coordinates[index] for index in read.indices)])
+            for read in missing
+        )
+        replacements = {read: addresses[read] for read in reads}
+        expr, defined = substitute(expr, replacements), substitute(defined, replacements)
+        validity = substitute(validity, replacements)
         # IndexExpr intentionally models checked mathematical coordinates; the
         # enclosing output contract supplies the final integer dtype.
         result = replace(

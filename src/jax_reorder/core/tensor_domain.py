@@ -29,6 +29,7 @@ from .index_domain import (
 from .model import (
     ArrayType,
     BlockMappingView,
+    EffectView,
     LiteralValue,
     Operand,
     PallasCallView,
@@ -77,6 +78,7 @@ POINTWISE_PRIMITIVES = frozenset(
         "floor",
         "ceil",
         "is_finite",
+        "stop_gradient",
         "integer_pow",
         "convert_element_type",
     }
@@ -86,8 +88,13 @@ TENSOR_VALUE_PRIMITIVES = frozenset(
         "dot_general",
         "reduce_sum",
         "reduce_max",
+        "reduce_min",
+        "reduce_and",
+        "reduce_or",
         "transpose",
         "reshape",
+        "slice",
+        "concatenate",
         "tile",
         "gather",
         "broadcast_to",
@@ -126,9 +133,23 @@ def restoring_outputs(call: PallasCallView) -> bool:
     )
 
 
+def mutable_prefetch(call: PallasCallView) -> bool:
+    """SMEM copies written by the kernel carry state across serial programs."""
+    ports = {v.id for v in call.kernel.inputs[: len(call.prefetch)]}
+    return any(
+        isinstance(effect, EffectView) and effect.kind == "write" and effect.ref.id in ports
+        for effect in call.kernel.effects
+    )
+
+
 def multidimensional(call: PallasCallView, *, masked: bool = True) -> bool:
     """Whether memory projection needs tensor coordinates, including rank-one values."""
-    if len(call.grid) != 1 or any(len(b.block_shape) != 1 or b.unbuffered for b in call.blocks):
+    if (
+        mutable_prefetch(call)
+        or any(block.index_map.effects for block in call.blocks)
+        or len(call.grid) != 1
+        or any(len(b.block_shape) != 1 or b.unbuffered or b.squeezed_axes for b in call.blocks)
+    ):
         return True
     if (call.scratch or masked) and any(b.array.shape[0] % b.block_shape[0] for b in call.blocks):
         # Padding with resources needs per-Ref valid-domain and lifetime checks.
@@ -513,6 +534,15 @@ class TensorDomain:
     linear_order: tuple[tuple[int, bool], ...] = ()
     serial_axes: tuple[int, ...] = ()
     finite_inverse: tuple[IndexExpr, ...] = ()
+    squeezed_axes: tuple[int, ...] = ()
+
+    @property
+    def local_axes(self) -> tuple[int, ...]:
+        return tuple(i for i in range(len(self.block_shape)) if i not in self.squeezed_axes)
+
+    @property
+    def local_shape(self) -> tuple[int, ...]:
+        return tuple(self.block_shape[i] for i in self.local_axes)
 
     @property
     def size(self) -> int:
@@ -532,8 +562,9 @@ class TensorDomain:
 
     @property
     def address(self) -> tuple[IndexExpr, ...]:
+        local = {axis: coordinate("local", i) for i, axis in enumerate(self.local_axes)}
         return tuple(
-            add(scale(p, b), coordinate("local", i))
+            add(scale(p, b), local.get(i, integer(0)))
             for i, (p, b) in enumerate(zip(self.mapping, self.block_shape, strict=True))
         )
 
@@ -542,8 +573,8 @@ class TensorDomain:
         result = {f"program:{i}": integer(0) for i in range(len(self.grid))}
         result.update(
             {
-                f"local:{i}": modulo(coordinate("output", i), b)
-                for i, b in enumerate(self.block_shape)
+                f"local:{i}": modulo(coordinate("output", d), self.block_shape[d])
+                for i, d in enumerate(self.local_axes)
             }
         )
         if self.finite_inverse:
@@ -568,7 +599,6 @@ class TensorDomain:
             return result
         for i, (b, (p, reverse)) in enumerate(zip(self.block_shape, self.writer_axes, strict=True)):
             item = coordinate("output", i)
-            result[f"local:{i}"] = modulo(item, b)
             if p >= 0:
                 group = divide(item, b)
                 result[f"program:{p}"] = (
@@ -590,6 +620,15 @@ def _prove_tensor_domain(
     shape, widths = block.array.shape, block.block_shape
     if len(shape) != len(widths) or not shape or any(n <= 0 for n in (*shape, *widths, *grid)):
         raise UnsupportedJaxprError(path, "invalid static tensor domain")
+    squeezed = block.squeezed_axes
+    if (
+        type(squeezed) is not tuple
+        or any(type(i) is not int or not 0 <= i < len(widths) for i in squeezed)
+        or tuple(sorted(set(squeezed))) != squeezed
+        or any(widths[i] != 1 for i in squeezed)
+        or block.ref.inner.shape != tuple(n for i, n in enumerate(widths) if i not in squeezed)
+    ):
+        raise UnsupportedJaxprError(path, "invalid squeezed block coordinate binding")
     if mapping is None:
         mapping = index_map(block.index_map, grid, budget)
     if len(mapping) != len(shape):
@@ -658,8 +697,8 @@ def _prove_tensor_domain(
             )
         if linear != add(*expected):
             raise UnsupportedJaxprError(path, "output linearized map is shifted outside its grid")
-        return TensorDomain(shape, widths, grid, mapping, (), order)
-    result = TensorDomain(shape, widths, grid, mapping, tuple(axes))
+        return TensorDomain(shape, widths, grid, mapping, (), order, squeezed_axes=squeezed)
+    result = TensorDomain(shape, widths, grid, mapping, tuple(axes), squeezed_axes=squeezed)
     if writer:
         for i, address in enumerate(result.address):
             if substitute(address, result.inverse) != coordinate("output", i):
@@ -741,7 +780,12 @@ def prove_tensor_domain(
         separated = _separable_finite_inverse(domain, budget, block.origin.path)
         if separated is not None:
             return TensorDomain(
-                domain.shape, domain.block_shape, grid, mapping, finite_inverse=separated
+                domain.shape,
+                domain.block_shape,
+                grid,
+                mapping,
+                finite_inverse=separated,
+                squeezed_axes=domain.squeezed_axes,
             )
         tiles = tuple(
             (n + b - 1) // b for n, b in zip(domain.shape, domain.block_shape, strict=True)
@@ -781,4 +825,5 @@ def prove_tensor_domain(
                 lookup(selector, tuple(integer(inverse[k][i]) for k in range(prod(tiles))))
                 for i in range(len(grid))
             ),
+            squeezed_axes=domain.squeezed_axes,
         )

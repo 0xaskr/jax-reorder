@@ -296,7 +296,7 @@ def analyze_remote_call(
             raise UnsupportedJaxprError(path, "protocol arguments must be Refs")
         typ = v.type.inner
         if i < count:
-            if not isinstance(typ, ArrayType) or typ.shape != domains[i].block_shape:
+            if not isinstance(typ, ArrayType) or typ.shape != domains[i].local_shape:
                 raise UnsupportedJaxprError(path, "invalid data Ref domain binding")
             types[v.id] = typ
         else:

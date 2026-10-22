@@ -215,5 +215,6 @@ def functionalize_core_execution(
         ),
         tuple(t for item in pieces for t in item.projection.communication),
         tuple(w for item in pieces for w in item.projection.waits),
+        assumptions=tuple(dict.fromkeys(a for item in pieces for a in item.projection.assumptions)),
     )
     return combined, CoreExecutionEvidence(binding, protocol, tuple(pieces))

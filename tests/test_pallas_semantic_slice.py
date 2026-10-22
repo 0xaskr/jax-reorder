@@ -15,6 +15,7 @@ from jax._src import core
 from jax._src.pallas import primitives as pp
 from jax._src.state import types as st
 from jax.experimental import pallas as pl
+from jax.experimental.pallas import tpu
 
 from jax_reorder import (
     ComparisonBudgetError,
@@ -22,6 +23,8 @@ from jax_reorder import (
     MathematicalUndecidedError,
     Status,
     UnsupportedJaxprError,
+    compare_algebraic_jaxprs,
+    compare_pallas_kernels,
 )
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.index_domain import (
@@ -31,7 +34,7 @@ from jax_reorder.core.index_domain import (
     prove_block_domain,
     substitute,
 )
-from jax_reorder.core.memory import functionalize_call
+from jax_reorder.core.memory import _substitute, functionalize_call
 from jax_reorder.core.model import ProgramView, RefType
 from jax_reorder.core.normalization import (
     NormalizedEvidence,
@@ -217,7 +220,6 @@ def test_store_then_get_uses_current_version():
     "mode,reason",
     [
         ("uninitialized", "uninitialized"),
-        ("duplicate", "multiple writes"),
         ("partial", "uninitialized"),
         ("input_write", "read-only"),
     ],
@@ -227,7 +229,8 @@ def test_unsafe_memory_is_rejected_before_projection(mode, reason):
         normalize_view(view(mode=mode), budget=AnalysisBudget())
 
 
-def test_unused_uninitialized_read_is_still_checked():
+@pytest.mark.parametrize("scope", [None, "function", "device_local"])
+def test_unused_uninitialized_read_is_still_checked(scope):
     # JAX's tracing DCE removes unused get operations. Insert the retained source
     # equation explicitly to exercise the complete-graph admission requirement.
     graph = trace()
@@ -241,7 +244,92 @@ def test_unused_uninitialized_read_is_still_checked():
     kernel = kernel.replace(eqns=[unused, *kernel.eqns], effects=kernel.effects | unused.effects)
     changed = graph.jaxpr.replace(eqns=[outer.replace(params={**outer.params, "jaxpr": kernel})])
     with pytest.raises(UnsupportedJaxprError, match="uninitialized"):
-        normalize_view(adapt(changed).view, budget=AnalysisBudget())
+        if scope is None:
+            normalize_view(adapt(changed).view, budget=AnalysisBudget())
+        else:
+            compare_algebraic_jaxprs(changed, graph, scope=scope)
+
+
+def _prefetch_dependency_graph(mode):
+    def kernel(counter, x, y):
+        if mode in ("reference", "address"):
+            y[:] = x[:]
+        else:
+            offset = counter[0] & jnp.int32(1)
+            y[:] = x[:] + offset
+
+    spec = pl.BlockSpec((128,), lambda i, _: (i,))
+    input_spec = (
+        pl.BlockSpec((128,), lambda _, counter: (counter[0] & jnp.int32(1),))
+        if mode == "address"
+        else spec
+    )
+    function = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((256,), jnp.float32),
+        grid_spec=tpu.PrefetchScalarGridSpec(
+            num_scalar_prefetch=1,
+            grid=(2,),
+            in_specs=[input_spec],
+            out_specs=spec,
+        ),
+        compiler_params=tpu.CompilerParams(dimension_semantics=("arbitrary",)),
+    )
+    graph = jax.make_jaxpr(function)(
+        jax.ShapeDtypeStruct((1,), jnp.int32), jax.ShapeDtypeStruct((256,), jnp.float32)
+    )
+    if mode != "dead":
+        return graph
+    # Pallas tracing removes dead arithmetic. Disconnect the store afterward to
+    # test mathematical projection of a source that still contains every op.
+    outer = graph.eqns[0]
+    kernel_graph = outer.params["jaxpr"]
+    loaded = next(
+        eq.outvars[0]
+        for eq in kernel_graph.eqns
+        if eq.primitive.name == "get" and eq.invars[0] == kernel_graph.invars[1]
+    )
+    store = kernel_graph.eqns[-1]
+    store = store.replace(invars=[store.invars[0], loaded, *store.invars[2:]])
+    kernel_graph = kernel_graph.replace(eqns=[*kernel_graph.eqns[:-1], store])
+    return core.ClosedJaxpr(
+        graph.jaxpr.replace(eqns=[outer.replace(params={**outer.params, "jaxpr": kernel_graph})]),
+        graph.consts,
+    )
+
+
+@pytest.mark.parametrize("scope", ["function", "device_local"])
+def test_unused_unknown_scalar_computation_drops_only_from_value_projection(scope):
+    source, reference = (_prefetch_dependency_graph(mode) for mode in ("dead", "reference"))
+    assert any(eq.primitive.name == "and" for eq in source.eqns[0].params["jaxpr"].eqns)
+    assert compare_pallas_kernels(source, reference).status is Status.DIFFERENT
+    assert compare_algebraic_jaxprs(source, reference, scope=scope).status is Status.EQUIVALENT
+
+
+@pytest.mark.parametrize("mode", ["output", "address"])
+@pytest.mark.parametrize("scope", ["function", "device_local"])
+def test_live_unknown_scalar_dependency_is_not_erased(mode, scope):
+    source, reference = (_prefetch_dependency_graph(case) for case in (mode, "reference"))
+    if mode == "address":
+        with pytest.raises(UnsupportedJaxprError, match="static integer"):
+            compare_algebraic_jaxprs(source, reference, scope=scope)
+        return
+    assert (
+        compare_pallas_kernels(source, reference, equivalence="semantic").status is Status.DIFFERENT
+    )
+    proof = normalize_view(adapt(source).view, budget=AnalysisBudget())
+    output = _substitute(proof.projection.outputs[0], {"global": axis("output:0")})
+    x = np.arange(256, dtype=np.float32)
+    for initial in (0, 1):
+        arguments = (np.asarray([initial], np.int32), x)
+        actual = [at_point(output, arguments, (i,)) for i in range(256)]
+        np.testing.assert_array_equal(actual, x + initial)
+    try:
+        result = compare_algebraic_jaxprs(source, reference, scope=scope)
+    except MathematicalUndecidedError:
+        pass
+    else:
+        assert result.status is Status.INEQUIVALENT
 
 
 def test_formula_mismatch_is_not_inequivalence():

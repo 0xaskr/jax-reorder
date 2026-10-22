@@ -245,4 +245,5 @@ def functionalize_partitioned_owners(
         ),
         tuple(transfer for proof in projections for transfer in proof.communication),
         tuple(wait for proof in projections for wait in proof.waits),
+        assumptions=tuple(dict.fromkeys(a for proof in projections for a in proof.assumptions)),
     )

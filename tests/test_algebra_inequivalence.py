@@ -203,11 +203,12 @@ def test_huge_output_shape_does_not_allocate_coordinate_pools():
 
 def test_large_sum_does_not_trigger_unbounded_equals_expansion():
     first, second = graphs(lambda x: jnp.sum(x), lambda x: 2 * jnp.sum(x), (10**9,))
-    with pytest.raises(MathematicalUndecidedError) as error:
-        compare_algebraic_jaxprs(first, second, algebra_budget=1000)
-    result = error.value
-    assert result.failure_kind == "cas_undecided"
-    assert any("unevaluated_sum" in q.method for q in result.diagnostics["queries"])
+    result = compare_algebraic_jaxprs(first, second, algebra_budget=1000)
+    assert result.status is Status.INEQUIVALENT
+    assert any(
+        query.answer is False and "exact representable input witness" in query.method
+        for query in result.backend_result.queries
+    )
 
 
 def test_different_contract_is_not_a_polynomial_inequivalence():
@@ -233,3 +234,17 @@ def test_canceled_intermediate_difference_is_not_final_inequality():
     left, right = graphs(lambda x: (x + 1) * 0, lambda x: (x + 2) * 0, ())
     result = compare_algebraic_jaxprs(left, right)
     assert result.status == Status.EQUIVALENT, result
+
+
+@pytest.mark.parametrize("size", [2, 1024])
+def test_partial_multi_output_negative_has_a_shared_valid_input(size):
+    left, right = graphs(
+        lambda x: (jnp.log(x), jnp.float32(0)),
+        lambda x: (jnp.log(x), jnp.float32(1)),
+        (size,),
+    )
+    result = compare_algebraic_jaxprs(left, right)
+    assert result.status is Status.INEQUIVALENT
+    assert any(
+        "exact representable input witness: one" in q.method for q in result.backend_result.queries
+    )

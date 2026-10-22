@@ -48,6 +48,44 @@ def traced(fn, size=1024, inputs=1):
     return jax.make_jaxpr(fn)(*(jax.ShapeDtypeStruct((size,), jnp.float32),) * inputs)
 
 
+def test_shared_address_coordinates_keep_source_ports_and_output_offsets():
+    import sympy as sp
+
+    from jax_reorder.algebra.adapter.pallas import project
+    from jax_reorder.algebra.budget import Budget
+    from jax_reorder.algebra.symbolic import SymbolicBuilder
+
+    def kernel(a, b, first, repeated, shifted):
+        first[...] = a[:, :128] + b[:, :128]
+        repeated[...] = a[:, :128] + 2 * b[:, :128]
+        shifted[...] = a[:, 128:] + b[:, 128:]
+
+    source = jax.make_jaxpr(
+        pl.pallas_call(
+            kernel,
+            out_shape=(jax.ShapeDtypeStruct((8, 128), jnp.float32),) * 3,
+            compiler_params=tpu.CompilerParams(),
+        )
+    )(*(jax.ShapeDtypeStruct((8, 256), jnp.float32),) * 2)
+    graph, _ = project(source.jaxpr, Budget(10000))
+    values = SymbolicBuilder(10000).graph(graph)
+    a = np.arange(8 * 256, dtype=np.float32).reshape((8, 256))
+    b = 3 * a + 7
+    references = (a[:, :128] + b[:, :128], a[:, :128] + 2 * b[:, :128], a[:, 128:] + b[:, 128:])
+    inputs = {"x0": a, "x1": b}
+    for value, reference in zip(values, references, strict=True):
+        assert value.defined == value.memory_validity == sp.true
+        for point in np.ndindex(reference.shape):
+            expression, _ = value.read(point)
+            actual = expression.xreplace(
+                {
+                    read: float(inputs[str(read.base.label)][tuple(map(int, read.indices))])
+                    for read in expression.atoms(sp.Indexed)
+                }
+            )
+            assert float(actual) == reference[point]
+
+
 def boolean_dot_pallas(mode="dot", *, different=False, preferred=None, interpret=False):
     call = pointwise(lambda x: x, size=128, interpret=interpret)
 
@@ -835,7 +873,15 @@ def test_cast_and_nonfinite_values_do_not_acquire_real_algebra_identities():
         )
 
 
-@pytest.mark.parametrize("mode", ["uninitialized", "duplicate", "input_write", "partial"])
+def test_sequential_duplicate_store_retains_the_latest_output_value():
+    assert compare_algebraic_jaxprs(trace(mode="duplicate"), trace()).status is Status.EQUIVALENT
+    assert (
+        compare_algebraic_jaxprs(trace(mode="duplicate"), trace(mode="add_two")).status
+        is Status.INEQUIVALENT
+    )
+
+
+@pytest.mark.parametrize("mode", ["uninitialized", "input_write", "partial"])
 def test_effects_and_unsafe_memory_cannot_be_erased_by_algebra(mode):
     with pytest.raises(UnsupportedJaxprError) as error:
         compare_algebraic_jaxprs(trace(mode=mode), trace())

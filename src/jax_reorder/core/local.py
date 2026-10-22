@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, fields, is_dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 from ..errors import (
     ComparisonBudgetError,
@@ -13,18 +14,27 @@ from ..errors import (
     UnsupportedJaxprError,
 )
 from ..status import Status
+from .adapters.attributes import project_mesh_attribute
 from .adapters.jax import adapt
 from .call_bindings import BindingExpr, CallSite, binding_value, extract_call
 from .canonical import canonicalize
+from .communication import DMA_PROGRESS_ASSUMPTION
 from .core_execution import (
     CoreExecutionBinding,
     CoreExecutionEvidence,
     functionalize_core_execution,
 )
 from .index_domain import AnalysisBudget, axis
-from .local_memory import functionalize_local_call
-from .model import ArrayType, MeshView, OperationView, PallasCallView, ProgramView
-from .normalization import RewriteEvidence, _same_rewrite, normalize_view
+from .local_memory import functionalize_local_call, has_unmasked_padding
+from .memory import Expression, Predicate, ValueExpr
+from .model import ArrayType, MeshView, OperationView, PallasCallView, ParameterView, ProgramView
+from .normalization import (
+    CallBoundary,
+    RewriteEvidence,
+    _outputs_equal,
+    _same_rewrite,
+)
+from .remote_memory import functionalize_remote_call
 
 
 @dataclass(frozen=True)
@@ -51,10 +61,11 @@ class LocalKernelComparison:
     execution: CoreExecutionBinding | None = None
     left_execution: CoreExecutionEvidence | None = None
     right_execution: CoreExecutionEvidence | None = None
+    equivalence: str = "structural"
 
     @property
     def equivalence_kind(self) -> str | None:
-        return "structural" if self.status is Status.EQUIVALENT else None
+        return self.evidence.kind if self.status is Status.EQUIVALENT and self.evidence else None
 
 
 def _axes(site: CallSite) -> tuple[tuple[str, int, str], ...]:
@@ -97,16 +108,18 @@ def _axes(site: CallSite) -> tuple[tuple[str, int, str], ...]:
     return tuple(available[name] for name in available if name in used)
 
 
-def _key(site: CallSite) -> tuple[Any, ...]:
+def _local_facts(site: CallSite) -> Callable[[Any], Any]:
+    """Derive a local contract without changing any source facts or routing."""
     axes = _axes(site)
     names = {a[0] for a in axes}
     cache: dict[int, tuple[Any, Any]] = {}
+    remote = site.operation.call is not None and _has_remote(site.operation.call)
 
     def local(value: Any) -> Any:
         if id(value) in cache:
             return cache[id(value)][1]
         original = value
-        if isinstance(value, BindingExpr) and value.operation == "local_input":
+        if isinstance(value, BindingExpr) and value.operation == "local_input" and not remote:
             (parent,) = value.operands
             if parent.operation == "input":
                 value = replace(parent, type=value.type)
@@ -117,10 +130,12 @@ def _key(site: CallSite) -> tuple[Any, ...]:
                 value, metadata=tuple((k, v) for k, v in value.metadata if k != "manual_axis_type")
             )
         if isinstance(value, MeshView):
+            selected = tuple(a for a in value.axes if a[0] in names)
             result = replace(
                 value,
-                axes=tuple(a for a in value.axes if a[0] in names),
+                axes=selected,
                 devices=(),
+                abstract_device=value.abstract_device if selected or remote else ("none",),
                 concrete=False,
             )
         elif is_dataclass(value) and not isinstance(value, type):
@@ -128,7 +143,8 @@ def _key(site: CallSite) -> tuple[Any, ...]:
                 value, **{f.name: local(getattr(value, f.name)) for f in fields(value) if f.compare}
             )
         elif isinstance(value, tuple):
-            result = tuple(local(v) for v in value)
+            projected = project_mesh_attribute(value, names) if not remote else value
+            result = projected if projected is not value else tuple(local(v) for v in value)
         else:
             result = value
         # Replacements create temporary descriptors. Keep their original objects
@@ -136,7 +152,17 @@ def _key(site: CallSite) -> tuple[Any, ...]:
         cache[id(original)] = (original, result)
         return result
 
-    return local(site.operation.call), local(site.arguments), axes
+    return local
+
+
+def _key(site: CallSite) -> tuple[Any, ...]:
+    local = _local_facts(site)
+    return (
+        local(site.operation.call),
+        local(site.arguments),
+        _axes(site),
+        local(site.operation.context),
+    )
 
 
 def _has_remote(call: PallasCallView) -> bool:
@@ -151,22 +177,49 @@ def _has_remote(call: PallasCallView) -> bool:
     return False
 
 
+def _boundary(
+    view: ProgramView,
+    site: CallSite,
+    inputs: tuple[ArrayType, ...],
+    outputs: tuple[ArrayType, ...],
+    parameters: tuple[ParameterView, ...],
+) -> CallBoundary:
+    call = site.operation.call
+    assert call is not None
+    boundary = CallBoundary(
+        "pallas_local_values",
+        inputs,
+        outputs,
+        parameters,
+        site.operation.context,
+        view.root.is_high,
+        compiler_backend=call.compiler.backend if call.compiler else None,
+        compiler_options=tuple(
+            p for p in call.compiler.parameters if p.name != "dimension_semantics"
+        )
+        if call.compiler
+        else (),
+        kernel_argument_policy=call.kernel_argument_policy,
+    )
+    # Remote inputs still denote global source arrays and actual partitions.
+    # Purely local values have already been bound at their local signatures.
+    return boundary if _has_remote(call) else _local_facts(site)(boundary)
+
+
 def _check_protocol(
     view: ProgramView,
     site: CallSite,
     budget: AnalysisBudget,
     execution_cores: int | None,
     execution: CoreExecutionBinding | None,
+    *,
+    defer_padding: bool = False,
 ) -> tuple[RewriteEvidence, CoreExecutionEvidence | None]:
     call = site.operation.call
     assert call is not None
+    defer_padding = defer_padding and has_unmasked_padding(call)
     if _has_remote(call):
-        return (
-            normalize_view(
-                view, budget=budget, execution_cores=execution_cores, execution=execution
-            ),
-            None,
-        )
+        return _remote_projection(view, site, budget, execution_cores, execution), None
     if call.aliases and len(set(site.arguments)) != len(site.arguments):
         raise UnsupportedJaxprError(
             call.kernel.origin.path, "aliased call repeats an outer input binding"
@@ -192,9 +245,41 @@ def _check_protocol(
         cache[id(v)] = result
         return result
 
+    bound = tuple(local_input(a) for a in site.arguments)
+    input_types: dict[int, ArrayType] = {}
+    pending, seen = list(bound), set()
+    while pending:
+        value = pending.pop()
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        if value.operation == "input":
+            assert value.port is not None and isinstance(value.type, ArrayType)
+            typ = replace(
+                value.type,
+                metadata=tuple((k, v) for k, v in value.type.metadata if k != "manual_axis_type"),
+            )
+            if value.port in input_types and input_types[value.port] != typ:
+                raise UnsupportedJaxprError(
+                    "local.inputs", "one source input has incompatible local views"
+                )
+            input_types[value.port] = typ
+        pending.extend(value.operands)
+    ports = tuple(sorted(input_types))
+    renumbered: dict[int, BindingExpr] = {}
+
+    def renumber(value: BindingExpr) -> BindingExpr:
+        if id(value) not in renumbered:
+            renumbered[id(value)] = replace(
+                value,
+                port=ports.index(value.port) if value.operation == "input" else value.port,
+                operands=tuple(renumber(v) for v in value.operands),
+            )
+        return renumbered[id(value)]
+
     arguments = tuple(
-        binding_value(local_input(a), budget=budget, coordinates=coordinates, ranges=ranges)
-        for a in site.arguments
+        binding_value(renumber(a), budget=budget, coordinates=coordinates, ranges=ranges)
+        for a in bound
     )
     core_evidence = None
     if execution is None:
@@ -205,6 +290,7 @@ def _check_protocol(
             coordinates=coordinates,
             axis_ranges=ranges,
             execution_cores=execution_cores,
+            defer_padding=defer_padding,
         )
     else:
         projection, core_evidence = functionalize_core_execution(
@@ -223,11 +309,121 @@ def _check_protocol(
             1,
             call.kernel.origin.path,
             projection,
-            (),
+            (
+                _boundary(
+                    view,
+                    site,
+                    tuple(input_types[p] for p in ports),
+                    tuple(b.array for b in call.blocks[call.num_inputs :]),
+                    (ParameterView("source_input_ports", ports), ParameterView("axes", axes)),
+                ),
+            ),
             bindings=site.arguments,
+            deferred_padding=defer_padding,
+            execution_cores=execution_cores,
+            execution=execution,
         ),
         core_evidence,
     )
+
+
+def _remote_projection(
+    view: ProgramView,
+    site: CallSite,
+    budget: AnalysisBudget,
+    execution_cores: int | None,
+    execution: CoreExecutionBinding | None,
+) -> RewriteEvidence:
+    call = site.operation.call
+    assert call is not None
+    axes = _axes(site)
+    shards = [w.shard_map for w in site.wrappers if w.shard_map is not None]
+    parents = tuple(a.operands[0] if a.operation == "local_input" else a for a in site.arguments)
+    if any(a.operation != "input" or a.port is None for a in parents):
+        raise UnsupportedJaxprError(
+            "local.bindings", "remote computed inputs need a shard value proof"
+        )
+    ports = tuple(sorted({a.port for a in parents if a.port is not None}))
+    types = {a.port: cast(ArrayType, a.type) for a in parents}
+    shard = shards[0] if shards else None
+    if shard is not None:
+        if any(a.operation != "local_input" for a in site.arguments):
+            raise UnsupportedJaxprError("local.bindings", "missing input shard placement")
+        partitions = tuple(
+            cast(
+                tuple[tuple[str, ...], ...],
+                next(p.value for p in a.parameters if p.name == "input_partition"),
+            )
+            for a in site.arguments
+        )
+        shard = replace(shard, input_partitions=partitions)
+    projection, remote = functionalize_remote_call(
+        call,
+        shard,
+        tuple(a.type for a in parents),
+        tuple(b.array for b in call.blocks[call.num_inputs :]),
+        budget=budget,
+        execution_cores=execution_cores,
+        execution=execution,
+        scope="device_local",
+    )
+    mapping = tuple(ports.index(a.port) for a in parents)
+    cache: dict[int, Expression] = {}
+
+    def rebind(value: Expression) -> Expression:
+        if id(value) not in cache:
+            result = value
+            if isinstance(value, ValueExpr | Predicate):
+                result = replace(value, operands=tuple(rebind(a) for a in value.operands))
+                if isinstance(result, ValueExpr) and result.input is not None:
+                    result = replace(result, input=mapping[result.input])
+            cache[id(value)] = result
+        return cache[id(value)]
+
+    projection = replace(projection, outputs=tuple(rebind(v) for v in projection.outputs))
+    boundary = _boundary(
+        view,
+        site,
+        tuple(types[p] for p in ports),
+        tuple(call.blocks[call.num_inputs + p].array for p, _ in remote.local_outputs),
+        (
+            ParameterView("source_input_ports", ports),
+            ParameterView("axes", axes),
+            ParameterView("local_outputs", remote.local_outputs),
+        ),
+    )
+    return RewriteEvidence(
+        "device-local-remote-memory-to-values",
+        1,
+        call.kernel.origin.path,
+        projection,
+        (boundary,),
+        remote=remote,
+        bindings=site.arguments,
+        execution_cores=execution_cores,
+        execution=execution,
+    )
+
+
+def project_local_view(
+    view: ProgramView,
+    *,
+    budget: AnalysisBudget,
+    defer_padding: bool = False,
+    execution: CoreExecutionBinding | None = None,
+) -> tuple[CallSite, RewriteEvidence, CoreExecutionEvidence | None]:
+    """Project one bound kernel without imposing the parent output assembly."""
+    site = extract_call(view, budget=budget)
+    _axes(site)
+    try:
+        evidence, core = _check_protocol(view, site, budget, None, execution)
+    except UnsupportedJaxprError:
+        if not defer_padding:
+            raise
+        # A fully proved projection can finish at the semantic stage. Defer
+        # lane validity only when strict projection actually needs that proof.
+        evidence, core = _check_protocol(view, site, budget, None, execution, defer_padding=True)
+    return site, evidence, core
 
 
 def compare_pallas_kernels(
@@ -235,6 +431,7 @@ def compare_pallas_kernels(
     right: Any,
     *,
     check_protocol: bool = False,
+    equivalence: str = "structural",
     analysis_budget: int = 10000,
     execution_cores: int | None = None,
     execution: CoreExecutionBinding | None = None,
@@ -243,6 +440,8 @@ def compare_pallas_kernels(
 
     A DIFFERENT result is a structural diagnostic. Resource checking is optional
     and separate; unsupported peer/control proofs raise instead of being assumed.
+    equivalence="semantic" requires resource proofs and compares the complete
+    local value projections; it never invokes mathematical rewriting.
     execution_cores=1 binds the launch to core 0 on each device. This is a caller
     supplied execution condition, recorded and replayed with the result.
     execution supplies exact multi-core program streams for a conditional proof;
@@ -252,6 +451,9 @@ def compare_pallas_kernels(
     """
     if type(check_protocol) is not bool:
         raise ValueError("check_protocol must be a bool")
+    if equivalence not in ("structural", "semantic"):
+        raise ValueError("equivalence must be structural or semantic")
+    check_protocol |= equivalence == "semantic"
     if execution_cores is not None and (type(execution_cores) is not int or execution_cores != 1):
         raise ValueError("execution_cores currently requires an explicit single-core binding")
     if execution is not None and (
@@ -265,7 +467,13 @@ def compare_pallas_kernels(
         )
     try:
         return _compare_pallas_kernels(
-            left, right, check_protocol, AnalysisBudget(analysis_budget), execution_cores, execution
+            left,
+            right,
+            check_protocol,
+            AnalysisBudget(analysis_budget),
+            execution_cores,
+            execution,
+            equivalence,
         )
     except RecursionError as error:
         raise ComparisonBudgetError(
@@ -282,6 +490,7 @@ def _compare_pallas_kernels(
     budget: AnalysisBudget,
     execution_cores: int | None,
     execution: CoreExecutionBinding | None,
+    equivalence: str,
 ) -> LocalKernelComparison:
     a, b = (
         adapt(
@@ -301,7 +510,12 @@ def _compare_pallas_kernels(
         else ((None, None), (None, None))
     )
     equal = _key(x) == _key(y)
-    evidence = LocalKernelEvidence(x, y, _axes(x)) if equal else None
+    kind = "structural"
+    if equivalence == "semantic":
+        assert px is not None and py is not None
+        kind = "structural" if equal else "normalized"
+        equal = px.boundaries == py.boundaries and _outputs_equal(px, py, budget)
+    evidence = LocalKernelEvidence(x, y, _axes(x), kind) if equal else None
     result = LocalKernelComparison(
         Status.EQUIVALENT if equal else Status.DIFFERENT,
         evidence,
@@ -312,7 +526,24 @@ def _compare_pallas_kernels(
         execution=execution,
         left_execution=cx,
         right_execution=cy,
+        equivalence=equivalence,
     )
+    if check_protocol:
+        protocols = tuple(p for p in (px, py) if p is not None)
+        assumptions = tuple(
+            dict.fromkeys(value for proof in protocols for value in proof.projection.assumptions)
+        )
+        assumptions += tuple(
+            dict.fromkeys(
+                value
+                for proof in protocols
+                if proof.remote is not None
+                for value in proof.remote.protocol.protocol.assumptions
+            )
+        )
+        if any(p.projection.communication or p.remote for p in protocols):
+            assumptions = (DMA_PROGRESS_ASSUMPTION,) + assumptions
+        result = replace(result, assumptions=result.assumptions + assumptions)
     if execution_cores == 1:
         result = replace(
             result,
@@ -365,6 +596,7 @@ def verify_pallas_kernel_comparison(
         analysis_budget=analysis_budget,
         execution_cores=result.execution_cores,
         execution=result.execution,
+        equivalence=result.equivalence,
     )
     if (result.status, result.evidence, result.scope, result.assumptions) != (
         replay.status,

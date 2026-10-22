@@ -14,7 +14,13 @@ from ..errors import UnsupportedJaxprError
 from .index_domain import AnalysisBudget, IndexExpr, add, bounds, integer, substitute
 from .model import PallasCallView
 from .storage import Span
-from .tensor_domain import TensorDomain, coordinate, coordinate_ranges, prove_tensor_domain
+from .tensor_domain import (
+    TensorDomain,
+    coordinate,
+    coordinate_ranges,
+    mutable_prefetch,
+    prove_tensor_domain,
+)
 from .tensor_storage import Box
 
 
@@ -57,10 +63,23 @@ def _serial_axes(call: PallasCallView) -> tuple[int, ...]:
 
 
 def state_domains(
-    call: PallasCallView, budget: AnalysisBudget, *, banked_interleaving: bool = False
+    call: PallasCallView,
+    budget: AnalysisBudget,
+    *,
+    banked_interleaving: bool = False,
+    input_mappings: dict[int, tuple[IndexExpr, ...]] | None = None,
 ) -> GridPlan:
     grid = tuple(g.size for g in call.grid)
-    domains = tuple(prove_tensor_domain(b, grid, budget, writer=False) for b in call.blocks)
+    domains = tuple(
+        prove_tensor_domain(
+            block,
+            grid,
+            budget,
+            writer=False,
+            mapping=(input_mappings or {}).get(i) if i < call.num_inputs else None,
+        )
+        for i, block in enumerate(call.blocks)
+    )
     if banked_interleaving:
         serial = tuple(
             i for i, g in enumerate(call.grid) if g.size > 1 and g.semantics == "arbitrary"
@@ -140,7 +159,7 @@ def _axis_domains(
     # Outputs may stop changing at different grid depths. Their individually
     # proved trailing suffixes are nested; the union retains every dependency.
     replay = tuple(sorted(serial))
-    if call.scratch:
+    if call.scratch or mutable_prefetch(call):
         # Call-lifetime scratch also carries state between *different* output
         # windows. Replay the serial suffix while retaining symbolic owners in
         # the parallel prefix; this does not relax output staging continuity.
@@ -148,34 +167,43 @@ def _axis_domains(
     return GridPlan(domains[: call.num_inputs] + tuple(outputs), replay)
 
 
-def _expanded_domains(
-    call: PallasCallView,
-    domains: tuple[TensorDomain, ...],
-    serial: tuple[int, ...],
-    budget: AnalysisBudget,
-) -> GridPlan:
-    """Prove concrete serial windows while leaving parallel owners symbolic."""
-    path = call.kernel.origin.path
-    grid = tuple(g.size for g in call.grid)
-    budget.spend(path + ".serial_grid", prod(grid[i] for i in serial))
-    owner_grid = tuple(1 if i in serial else n for i, n in enumerate(grid))
-    ranges = coordinate_ranges("program", owner_grid)
-    outputs = domains[call.num_inputs :]
-    windows: list[list[OutputWindow]] = [[] for _ in outputs]
-    lattices: list[tuple[int, ...] | None] = [None for _ in outputs]
-    occupied: list[set[Box]] = [set() for _ in outputs]
-    seen_mappings: list[set[tuple[IndexExpr, ...]]] = [set() for _ in outputs]
-    for step, point in enumerate(product(*(range(grid[i]) for i in serial))):
-        coordinates = {f"program:{i}": integer(k) for i, k in zip(serial, point, strict=True)}
-        for j, (block, domain) in enumerate(
-            zip(call.blocks[call.num_inputs :], outputs, strict=True)
+class OutputWindowTracker:
+    """Prove output coverage as each serial program binds its output windows."""
+
+    def __init__(
+        self,
+        call: PallasCallView,
+        domains: tuple[TensorDomain, ...],
+        serial: tuple[int, ...],
+        budget: AnalysisBudget,
+    ) -> None:
+        self.call, self.domains, self.serial, self.budget = call, domains, serial, budget
+        self.grid = tuple(g.size for g in call.grid)
+        self.owner_grid = tuple(1 if i in serial else n for i, n in enumerate(self.grid))
+        self.ranges = coordinate_ranges("program", self.owner_grid)
+        self.windows: list[list[OutputWindow]] = [[] for _ in range(call.num_outputs)]
+        self.lattices: list[tuple[int, ...] | None] = [None] * call.num_outputs
+        self.occupied: list[set[Box]] = [set() for _ in range(call.num_outputs)]
+        self.seen_mappings: list[set[tuple[IndexExpr, ...]]] = [
+            set() for _ in range(call.num_outputs)
+        ]
+        self.steps = 0
+
+    def append(
+        self,
+        mappings: tuple[tuple[IndexExpr, ...], ...],
+        coordinates: dict[str, IndexExpr],
+    ) -> None:
+        """Bind this program before its kernel updates any scalar-prefetch state."""
+        outputs = self.domains[self.call.num_inputs :]
+        for j, (block, domain, mapping) in enumerate(
+            zip(self.call.blocks[self.call.num_inputs :], outputs, mappings, strict=True)
         ):
-            budget.spend(block.origin.path + ".window")
-            mapping = tuple(substitute(v, coordinates) for v in domain.mapping)
-            if windows[j] and windows[j][-1].mapping == mapping:
-                windows[j][-1] = replace(windows[j][-1], stop=step + 1)
+            self.budget.spend(block.origin.path + ".window")
+            if self.windows[j] and self.windows[j][-1].mapping == mapping:
+                self.windows[j][-1] = replace(self.windows[j][-1], stop=self.steps + 1)
                 continue
-            limits = tuple(bounds(v, ranges) for v in mapping)
+            limits = tuple(bounds(v, self.ranges) for v in mapping)
             box = Box(
                 tuple(
                     Span(lo * b, (hi + 1) * b)
@@ -187,8 +215,8 @@ def _expanded_domains(
             )
             owner = prove_tensor_domain(
                 replace(block, array=replace(block.array, shape=tuple(s.size for s in box.axes))),
-                owner_grid,
-                budget,
+                self.owner_grid,
+                self.budget,
                 writer=True,
                 mapping=shifted,
             )
@@ -196,37 +224,68 @@ def _expanded_domains(
             # proves overlap without comparing every pair of serial windows.
             shape = tuple(span.size for span in box.axes)
             aligned = all(span.start % span.size == 0 for span in box.axes)
-            if not windows[j] and aligned:
-                lattices[j] = shape
-            if lattices[j] == shape and aligned:
-                overlaps = box in occupied[j]
+            if not self.windows[j] and aligned:
+                self.lattices[j] = shape
+            if self.lattices[j] == shape and aligned:
+                overlaps = box in self.occupied[j]
             else:
-                lattices[j] = None
+                self.lattices[j] = None
                 overlaps = False
-                for previous in windows[j]:
-                    budget.spend(block.origin.path + ".window_overlap")
+                for previous in self.windows[j]:
+                    self.budget.spend(block.origin.path + ".window_overlap")
                     if box.intersection(previous.box) is not None:
                         overlaps = True
                         break
             if overlaps and not (
                 block.pipeline_mode is not None
                 and block.pipeline_mode.revisit == "any"
-                and mapping in seen_mappings[j]
+                and mapping in self.seen_mappings[j]
             ):
                 raise UnsupportedJaxprError(
                     block.origin.path,
                     "output windows overlap or revisit a block nonconsecutively; "
                     "redundant writers require a trailing serial grid suffix",
                 )
-            occupied[j].add(box)
-            seen_mappings[j].add(mapping)
-            windows[j].append(
-                OutputWindow(step, step + 1, mapping, owner, box, tuple(coordinates.items()))
+            self.occupied[j].add(box)
+            self.seen_mappings[j].add(mapping)
+            self.windows[j].append(
+                OutputWindow(
+                    self.steps, self.steps + 1, mapping, owner, box, tuple(coordinates.items())
+                )
             )
-    for domain, pieces in zip(outputs, windows, strict=True):
-        padded_size = prod(
-            ((n + b - 1) // b) * b for n, b in zip(domain.shape, domain.block_shape, strict=True)
+        self.steps += 1
+
+    def finish(self) -> tuple[tuple[OutputWindow, ...], ...]:
+        path = self.call.kernel.origin.path
+        if self.steps != prod(self.grid[i] for i in self.serial):
+            raise UnsupportedJaxprError(path, "output window replay is incomplete")
+        for domain, boxes in zip(self.domains[self.call.num_inputs :], self.occupied, strict=True):
+            padded_size = prod(
+                ((n + b - 1) // b) * b
+                for n, b in zip(domain.shape, domain.block_shape, strict=True)
+            )
+            if sum(box.size for box in boxes) != padded_size:
+                raise UnsupportedJaxprError(path, "expanded grid leaves an uncovered output block")
+        return tuple(tuple(windows) for windows in self.windows)
+
+
+def _expanded_domains(
+    call: PallasCallView,
+    domains: tuple[TensorDomain, ...],
+    serial: tuple[int, ...],
+    budget: AnalysisBudget,
+) -> GridPlan:
+    """Prove concrete serial windows while leaving parallel owners symbolic."""
+    grid = tuple(g.size for g in call.grid)
+    budget.spend(call.kernel.origin.path + ".serial_grid", prod(grid[i] for i in serial))
+    tracker = OutputWindowTracker(call, domains, serial, budget)
+    for point in product(*(range(grid[i]) for i in serial)):
+        coordinates = {f"program:{i}": integer(k) for i, k in zip(serial, point, strict=True)}
+        tracker.append(
+            tuple(
+                tuple(substitute(v, coordinates) for v in domain.mapping)
+                for domain in domains[call.num_inputs :]
+            ),
+            coordinates,
         )
-        if sum(box.size for box in {w.box for w in pieces}) != padded_size:
-            raise UnsupportedJaxprError(path, "expanded grid leaves an uncovered output block")
-    return GridPlan(domains, serial, tuple(tuple(w) for w in windows))
+    return GridPlan(domains, serial, tracker.finish())

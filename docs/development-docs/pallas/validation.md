@@ -1,12 +1,14 @@
 # Pallas 验证与当前边界
 
-从[任务入口](../pallas-jax-equivalence.md)到此；截至 2026-10-21，未声明任意合法 Pallas 语法全覆盖。
+从[任务入口](../pallas-jax-equivalence.md)到此；截至 2026-10-22，未声明任意合法 Pallas 语法全覆盖。
 
 ## 当前缺口与排除项
 
 | 范围 | 当前限制 | 处理位置/证据 |
 | --- | --- | --- |
-| 远端条件初始化 | 数据 mask 写入仍要求可能保留的 inactive 存储已初始化；相同 mask 后读取的安全场景可能被保守拒绝 | core；[阶段 26](history/stage-26.md) |
+| 数据条件证明 | 远端 masked store 可保留 inactive 条件未定义值；实际消费仍需证明，任意不同数据谓词之间的等价关系不作猜测 | core；[本轮修复](../../exec-plans/completed/pallas-local-equivalence-closure.md) |
+| 状态驱动映射 | 串行输入/输出 index_map 按上一 kernel 完成后的状态求值，结果显式保留该执行前提；活跃未知地址、有效并行共享状态仍拒绝，纯死计算只在数学 lowering 删减 | core；[顺序映射与删减](../../exec-plans/completed/pallas-output-map-and-pure-lowering.md) |
+| 动态页 DMA | 只读输入的有界页号支持多笔同时在途；未知范围、动态可写源/目标及任意数据控制流未普遍准入 | core 与数学地址 lowering；[范围与验收](../../exec-plans/completed/pallas-bounded-page-dma.md) |
 | 并行自动 staging | 独立 owner 间实际共享缓冲发生冲突则拒绝；不能把共享 Ref 私有化 | core；[阶段 27](history/stage-27.md) |
 | 执行条件 | 普通调用不自动提供 core 绑定；远端并行要求完整单 core 点流与各设备同序 | [执行绑定](communication.md) |
 | 索引/控制 | 远端非恒等向量索引、未证明动态地址、数据决定路由或终止仍非普遍支持 | core；[当前计划](../../exec-plans/active/pallas-semantic-layer.md) |
@@ -18,6 +20,8 @@
 
 本表是语义规范化/证明覆盖边界；不得据此断言相应源图都无法结构比较，也不能把拒绝等同程序不等价。
 历史包含受限 alias 试验，不能据此恢复一般输入输出共享 HBM 的支持承诺。
+2026-10-22 的设备局部入口、常见源码、条件初始化及开源数学完成率修复，见
+[修复与循环审查验收](../../exec-plans/completed/pallas-local-equivalence-closure.md)。
 
 ## 证据必须分别报告
 
@@ -62,6 +66,9 @@ CPU 的 `run_cpu` 入口与所属 case 放在一起；只有复用或独立职�
 
 | 阶段 | 准确摘要 | 打开原文的理由 |
 | --- | --- | --- |
+| [有界动态页 DMA](../../exec-plans/completed/pallas-bounded-page-dma.md) | 最终六批去重 721 项通过；真实动态页 attention 等价、倍 V、错 K 页数学结论均在默认预算内完成 | 逐笔在途 DMA、三输出 oracle、地址/反例安全检查与缓存边界 |
+| [顺序输出映射与纯死计算](../../exec-plans/completed/pallas-output-map-and-pure-lowering.md) | 最终两片 438 项通过；独立多维/尾块/无普通输入全坐标对照通过 | 输出窗口绑定、覆盖与重访，活跃依赖保留，反序坐标修复及测试命令 |
+| [设备局部等价收口](../../exec-plans/completed/pallas-local-equivalence-closure.md) | 冻结源码后四片去重 1,288 项全部通过；真实数学 6 例在默认预算/60 秒内完成；Ruff/格式/类型/tracing 通过 | 局部公开接口、完整 paged attention、求和域、条件初始化、历史失败与源码哈希 |
 | [27：远端多维 grid](history/stage-27.md) | 分批去重 1,183 项；6 份 AOT；CPU 20 项中 18 数值/race + 2 源限制 | 两份协议、单 core 反例、绑定篡改、原始日志 |
 | [26：尾块/mask](history/stage-26.md) | 分批去重 2,167 项；最终受影响 423 项 + 共享 core 368 项 | 初次 2 失败及修复、四缓冲预算、mask oracle、原生拒绝 |
 | [25：并行 ANY 尾块](history/stage-25.md) | 1,975 不同 pytest ID；9 份 AOT | 72 次完整参考、有限域 13,966 点、owner 证明与篡改 |

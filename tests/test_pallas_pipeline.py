@@ -13,6 +13,7 @@ from jax_reorder import (
     Status,
     UnsupportedJaxprError,
     compare_algebraic_jaxprs,
+    compare_pallas_kernels,
 )
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.index_domain import AnalysisBudget
@@ -111,13 +112,35 @@ def test_wrong_dma_source_is_legal_communication_but_changes_the_output():
 
 
 @pytest.mark.parametrize(
-    "mode,status", [("early_wait", Status.EQUIVALENT), ("wrong_block", Status.INEQUIVALENT)]
+    "scope,family,mode,status,budget",
+    [
+        (scope, "copy", mode, status, 10000)
+        for scope in ("function", "device_local")
+        for mode, status in (
+            ("early_wait", Status.EQUIVALENT),
+            ("wrong_block", Status.INEQUIVALENT),
+        )
+    ]
+    + [("device_local", "matmul", "early_wait", Status.EQUIVALENT, 100000)],
 )
-def test_real_pipeline_complete_values_reach_public_algebra_entry(mode, status):
+def test_real_pipeline_complete_values_reach_public_algebra_entry(
+    scope, family, mode, status, budget
+):
     with environment():
-        result = compare_algebraic_jaxprs(trace(), trace(mode=mode))
+        left, right = trace(family), trace(family, mode=mode)
+        if scope == "device_local":
+            expected = Status.EQUIVALENT if status is Status.EQUIVALENT else Status.DIFFERENT
+            options = {"analysis_budget": budget} if budget != 10000 else {}
+            assert (
+                compare_pallas_kernels(left, right, equivalence="semantic", **options).status
+                is expected
+            )
+        options = {"algebra_budget": budget} if budget != 10000 else {}
+        result = compare_algebraic_jaxprs(left, right, scope=scope, **options)
     assert result.status is status
-    assert result.backend_result is not None
+    assert result.backend_result is not None or (
+        scope == "device_local" and status is Status.EQUIVALENT
+    )
     if status is Status.INEQUIVALENT:
         assert any(
             q.answer is False and q.scope.startswith("output_coordinate=")

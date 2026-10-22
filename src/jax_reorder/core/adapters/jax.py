@@ -6,6 +6,7 @@ fail-closed: recognizing a primitive identity does not license unknown schemas.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, cast
 
 import jax
@@ -97,6 +98,7 @@ PURE_SCHEMAS = {
         "floor",
         "ceil",
         "is_finite",
+        "stop_gradient",
     )
 }
 PURE_SCHEMAS.update(
@@ -112,12 +114,17 @@ PURE_SCHEMAS.update(
         lax.iota_p: frozenset({"dtype", "shape", "dimension", "sharding"}),
         lax.transpose_p: frozenset({"permutation"}),
         lax.reshape_p: frozenset({"new_sizes", "dimensions", "sharding"}),
+        lax.slice_p: frozenset({"start_indices", "limit_indices", "strides"}),
+        lax.concatenate_p: frozenset({"dimension"}),
         sp.broadcast_to_p: frozenset({"shape"}),
         lax.dot_general_p: frozenset(
             {"dimension_numbers", "precision", "preferred_element_type", "out_sharding"}
         ),
         lax.reduce_sum_p: frozenset({"axes", "out_sharding"}),
         lax.reduce_max_p: frozenset({"axes", "out_sharding"}),
+        lax.reduce_min_p: frozenset({"axes", "out_sharding"}),
+        lax.reduce_and_p: frozenset({"axes"}),
+        lax.reduce_or_p: frozenset({"axes"}),
         lax.tile_p: frozenset({"reps"}),
         lax.gather_p: frozenset(
             {
@@ -164,7 +171,7 @@ def parameter(name: str, value: Any, path: str) -> ParameterView:
     if name in {"axis", "dimension", "y", "weak_type", "unique_indices", "indices_are_sorted"}:
         require(type(value) in (int, bool), path, "unexpected scalar parameter")
         result = value
-    elif name == "dimensions" and value is None:
+    elif name in ("dimensions", "strides") and value is None:
         result = ("none",)
     elif name in {
         "shape",
@@ -175,6 +182,9 @@ def parameter(name: str, value: Any, path: str) -> ParameterView:
         "reps",
         "slice_sizes",
         "dimensions",
+        "start_indices",
+        "limit_indices",
+        "strides",
     }:
         require(
             type(value) is tuple and all(type(v) is int for v in value),
@@ -444,7 +454,7 @@ class JaxAdapter:
                 p = eq.params
                 require(set(p) == JIT_SCHEMA, loc, "unaudited jit parameter schema")
                 require(
-                    not eff
+                    (not eff or self.in_pallas_kernel)
                     and all(s is UNSPECIFIED for s in (*p["in_shardings"], *p["out_shardings"]))
                     and all(s is None for s in (*p["in_layouts"], *p["out_layouts"]))
                     and all(s is False for s in p["donated_invars"])
@@ -456,15 +466,23 @@ class JaxAdapter:
                     "non-default JIT execution contract is not yet admitted",
                 )
                 child = self.region(p["jaxpr"], loc + ".call")
-                require(
-                    not child.effects and not child.is_high, loc, "effectful/high-level JIT region"
-                )
+                require(not child.is_high, loc, "high-level JIT region")
                 require(
                     tuple(v.type for v in child.inputs)
                     == tuple(self.value_type(v.aval, loc) for v in eq.invars),
                     loc,
                     "JIT argument binding types differ",
                 )
+                bindings = dict(zip((v.id for v in child.inputs), args, strict=True))
+                rebound = set()
+                for effect in child.effects:
+                    if isinstance(effect, EffectView):
+                        ref = bindings.get(effect.ref.id)
+                        require(isinstance(ref, ValueRef), loc, "JIT effect on captured Ref")
+                        rebound.add(EffectView(effect.kind, cast(ValueRef, ref)))
+                    else:
+                        rebound.add(effect)
+                require(set(eff) == rebound, loc, "JIT effects do not bind to operands")
                 params = tuple(
                     ParameterView(k, attribute(v, loc + "." + k))
                     for k, v in sorted(p.items())
@@ -512,8 +530,17 @@ class JaxAdapter:
                         not branch.is_high
                         and tuple(v.type for v in branch.inputs)
                         == tuple(self.value_type(v.aval, loc) for v in eq.invars[1:])
-                        and tuple(self.value_type(v.aval, loc) for v in source_branch.jaxpr.outvars)
-                        == tuple(self.value_type(v.aval, loc) for v in eq.outvars),
+                        and all(
+                            left == right
+                            or isinstance(left, ArrayType)
+                            and isinstance(right, ArrayType)
+                            and replace(left, weak_type=right.weak_type) == right
+                            for left, right in zip(
+                                (self.value_type(v.aval, loc) for v in source_branch.jaxpr.outvars),
+                                (self.value_type(v.aval, loc) for v in eq.outvars),
+                                strict=True,
+                            )
+                        ),
                         loc,
                         "conditional branch port types differ",
                     )

@@ -129,8 +129,15 @@ def extract_call(view: ProgramView, *, budget: AnalysisBudget) -> CallSite:
                     # The local interface is the shard-local value. Keep the
                     # original provenance underneath for replay and diagnostics.
                     values = tuple(
-                        BindingExpr("local_input", v.type, (a,))
-                        for v, a in zip(child.region.inputs, values, strict=True)
+                        BindingExpr(
+                            "local_input",
+                            v.type,
+                            (a,),
+                            (ParameterView("input_partition", partition),),
+                        )
+                        for v, a, partition in zip(
+                            child.region.inputs, values, op.shard_map.input_partitions, strict=True
+                        )
                     )
                 outputs = region(child.region, values, wrappers + (op,))
                 if op.shard_map is not None:

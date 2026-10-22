@@ -46,6 +46,9 @@ class PendingTransfer:
     source_versions: tuple[VersionSlice, ...]
     source_region: Region | None = None
     destination_region: Region | None = None
+    # A bounded source address protects the union above, but moves exactly one
+    # alternative. Keep the alternatives separate from the logical byte count.
+    source_alternatives: tuple[tuple[Box, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,7 @@ class LocalDmaState:
         source_region: Region | None = None,
         destination_region: Region | None = None,
         aligned_regions: bool | None = None,
+        source_alternatives: tuple[tuple[Box, ...], ...] = (),
     ) -> PendingTransfer:
         path = origin.path
         if dma.priority != 0 or dma.add is not False:
@@ -180,15 +184,24 @@ class LocalDmaState:
             else source_span.overlaps(destination_span)
         ):
             raise UnsupportedJaxprError(path, "overlapping DMA source and destination")
+        elements = (
+            sum(box.size for box in source_alternatives[0])
+            if source_alternatives
+            else sum(box.size for box in _boxes(source_region))
+            if source_region is not None
+            else source_span.size
+        )
+        if source_alternatives and any(
+            sum(box.size for box in choice) != elements for choice in source_alternatives
+        ):
+            raise UnsupportedJaxprError(path, "DMA source alternatives have different sizes")
         transfer = PendingTransfer(
             dma.source.id,
             dma.destination.id,
             dma.semaphore.id,
             self.generations[dma.semaphore.id],
             source_version,
-            sum(box.size for box in _boxes(source_region))
-            if source_region is not None
-            else source_span.size,
+            elements,
             logical_bytes,
             origin,
             self.next_id,
@@ -197,6 +210,7 @@ class LocalDmaState:
             source_versions,
             source_region,
             destination_region,
+            source_alternatives,
         )
         self.next_id += 1
         group.transfers.append(transfer)

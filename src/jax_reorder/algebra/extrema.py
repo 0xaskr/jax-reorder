@@ -32,14 +32,46 @@ class FlatMax(sp.Max):
     """SymPy Max with exact flattening but no pairwise symbolic comparisons."""
 
     def __new__(cls, *args: sp.Basic, **kwargs: Any) -> sp.Basic:
-        return sp.Max.__new__(cls, *_arguments(sp.Max, args), evaluate=False)
+        return _flat(cls, sp.Max, args)
 
 
 class FlatMin(sp.Min):
     """SymPy Min with the same bounded construction policy as FlatMax."""
 
     def __new__(cls, *args: sp.Basic, **kwargs: Any) -> sp.Basic:
-        return sp.Min.__new__(cls, *_arguments(sp.Min, args), evaluate=False)
+        return _flat(cls, sp.Min, args)
+
+
+def _flat(
+    cls: type[sp.Max] | type[sp.Min],
+    kind: type[sp.Max] | type[sp.Min],
+    args: Iterable[sp.Basic],
+) -> sp.Basic:
+    """Use SymPy's exact argument set/order with memoized DAG node counts.
+
+    MinMaxBase(evaluate=False) orders operands by recursive tree size before
+    default_sort_key. Shared paged-address subexpressions make that naive tree
+    traversal exponential. Memoization computes the same sizes and order,
+    preserving the complete argument set and the standard MinMaxBase layout.
+    """
+    values = frozenset(_arguments(kind, args))
+    if not values:
+        return kind.identity
+    if len(values) == 1:
+        return next(iter(values))
+    counts: dict[sp.Basic, int] = {}
+
+    def count(node: sp.Basic) -> int:
+        if node not in counts:
+            # SymPy counts Float as one half; scale all sizes by two to keep
+            # exact integer keys while retaining precisely the same ordering.
+            counts[node] = 1 if node.is_Float else 2 + sum(count(arg) for arg in node.args)
+        return counts[node]
+
+    ordered = sp.ordered(values, keys=[count, sp.default_sort_key], default=False)
+    result = sp.Expr.__new__(cls, *ordered)
+    result._argset = values
+    return result
 
 
 def maximum(*args: sp.Basic) -> sp.Basic:

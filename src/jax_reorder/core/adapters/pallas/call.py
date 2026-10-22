@@ -234,9 +234,10 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
         loc = f"{path}.blocks[{i}]"
         _schema(block, pc.BlockMapping, BLOCK_FIELDS, loc)
         _require(
-            bool(block.block_shape) and all(type(b) is pc.Blocked for b in block.block_shape),
+            bool(block.block_shape)
+            and all(type(b) in (pc.Blocked, pc.Squeezed) for b in block.block_shape),
             loc,
-            "only static Blocked mappings are adapted",
+            "only static Blocked or Squeezed mappings are adapted",
         )
         _require(block.transforms == (), loc, "block transforms are not yet adapted")
         pipeline_mode = _pipeline_mode(block.pipeline_mode, loc + ".pipeline_mode")
@@ -251,7 +252,9 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
             loc,
             "unexpected index map output bindings",
         )
-        shape = tuple(b.block_size for b in block.block_shape)
+        squeezed = tuple(i for i, b in enumerate(block.block_shape) if type(b) is pc.Squeezed)
+        shape = tuple(1 if type(b) is pc.Squeezed else b.block_size for b in block.block_shape)
+        local_shape = tuple(n for i, n in enumerate(shape) if i not in squeezed)
         _require(
             all(type(n) is int and n > 0 for n in shape),
             loc,
@@ -259,7 +262,9 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
         )
         ref = adapter.value_type(block.transformed_block_aval, loc)
         _require(
-            isinstance(ref, RefType) and ref.inner.shape == shape, loc, "block Ref shape mismatch"
+            isinstance(ref, RefType) and ref.inner.shape == local_shape,
+            loc,
+            "block Ref shape mismatch",
         )
         array = adapter.array_type(block.array_aval, loc)
         _require(
@@ -287,7 +292,11 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
             "index map input binding mismatch",
         )
         unbuffered = block.transformed_block_aval.memory_space == pc.MemorySpace.ANY
-        _require(not unbuffered or shape == array.shape, loc, "ANY storage requires a full Ref")
+        _require(
+            not unbuffered or shape == array.shape and not squeezed,
+            loc,
+            "ANY storage requires a full Ref",
+        )
         _require(
             not unbuffered or pipeline_mode is None,
             loc,
@@ -295,7 +304,14 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
         )
         blocks.append(
             BlockMappingView(
-                shape, array, cast(RefType, ref), region, Origin(loc), unbuffered, pipeline_mode
+                shape,
+                array,
+                cast(RefType, ref),
+                region,
+                Origin(loc),
+                unbuffered,
+                pipeline_mode,
+                squeezed,
             )
         )
     scratch = []

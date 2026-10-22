@@ -19,6 +19,16 @@
       "sha256": "7315cba9aa7bf9e0e9f9246f4b5e786e770fed48b1ae8e8f8ca3d682e3602c63",
       "git_blob": "1dba573080e2abcd8e8295fcc82a89c29d98341f",
       "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/experimental/pallas/ops/tpu/flash_attention.py"
+    },
+    {
+      "repository": "jax-ml/jax",
+      "revision": "32544801e26115ac1794926d027148abf3baf009",
+      "version": "0.11.2",
+      "module": "jax.experimental.pallas.ops.tpu.paged_attention.paged_attention_kernel",
+      "path": "jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py",
+      "sha256": "f1475a3f2b8c3561ef970fa44cb8d8c9226083a3bbfe616343a98f1cbd4a5383",
+      "git_blob": "49f7f65d17d4a7429f53e21b678c8e7ec42bd371",
+      "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/experimental/pallas/ops/tpu/paged_attention/paged_attention_kernel.py"
     }
   ]
 }

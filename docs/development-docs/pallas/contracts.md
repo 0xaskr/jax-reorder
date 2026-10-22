@@ -27,6 +27,8 @@ verify_pallas_kernel_comparison(left, right, result)
 ```
 
 默认 `check_protocol=False` 只比较局部结构；显式请求的协议检查无法完成时抛异常。
+`equivalence="semantic"` 自动完成资源检查后比较规范化的局部值图；成功的
+`equivalence_kind` 为 `structural` 或 `normalized`，`different` 仍不表示数学不等价。
 仅对等价结果重放；重放重新提取源绑定和相同规则，检查证据未被篡改，不冒充独立证明算法。
 执行绑定通过现有 `execution` 参数传入；含义与限制见[通信](communication.md)。
 源码入口：[local.py](../../../src/jax_reorder/core/local.py)、
@@ -37,6 +39,21 @@ verify_pallas_kernel_comparison(left, right, result)
 在 `equivalence="auto"` 的 forward 比较中传递该条件。显式绑定先完成协议校验，
 不能因结构相同而跳过；结果的 `normalizations` 和 `assumptions` 保留执行前提。
 绑定不配置调度，不适用于普通 JAX、未接入该证明的本地 kernel 或求导模式；这些情况明确拒绝。
+
+设备局部数学比较使用 `compare_algebraic_jaxprs(left, right, scope="device_local")`；
+`compare_functions` / `compare_function_traces` 在 forward 模式接受相同 `scope`。
+默认 `scope="function"` 保持完整父函数契约。局部结果带显式 `scope`，始终先验证
+kernel 资源义务，再报告结构、规范化或数学结果。父函数的输出包装、裁剪及后处理
+不属于局部结论；kernel 自身的全部有序输出仍比较，实际使用的外层输入端口和计算
+不能丢弃。函数入口仍核对输入 pytree、静态参数、变换和追踪环境。
+局部显式多 core 绑定另外在 `core_executions` 保留左右协议与各 program 的投影证据，
+协议的进展假设进入 `assumptions`；结构快路径和数学路径遵循相同规则。
+
+局部轴有有限绑定时，数学适配按该范围实例化，防止反例使用不存在的 device_id。
+远端局部投影保留全局输入分片来源及对端身份，输出按 `(kernel_output_port, device)`
+展开并在 `normalizations[*].remote.local_outputs` 留证；不要求父函数的 replicated
+out_specs 在所有设备上给出同一值，也不要求全局输出拼接成立。协议、DMA source
+版本和真实提交义务仍全部验证。远端 computed shard input 缺少来源证明时明确拒绝。
 
 ## 环境与来源
 
@@ -54,6 +71,22 @@ verify_pallas_kernel_comparison(left, right, result)
 `core/adapters` 唯一解释 JAX/Pallas 源对象与私有 schema；`ProgramView` 保存计算、区域、资源与来源事实。
 Graph、存储/协议分析和数学投影读取同一视图；algebra 不反向解析 GridMapping/Ref 来补语义。
 地址与初始化证明完成后才消去状态；浮点代数重排仍报告警告，不承诺逐位相同或误差很小。
+
+scalar-prefetch 参与串行输入/输出 `index_map` 时，首步读初值并绑定窗口；当前 kernel
+完成状态更新后才计算下一 program 的映射，本轮已绑定的读写地址不回溯改变。
+输出逐轮检查覆盖、窗口切换及已有 ANY 恢复规则，多个输出分别维护生命周期。
+该条件进入公开结果的 `assumptions`，不承诺默认自动流水线执行了同一预取时序；
+[实现与验证](../../exec-plans/completed/pallas-output-map-and-pure-lowering.md)按需查阅。
+
+纯计算是否可在数学 lowering 删减，取决于其结果是否被输出或副作用消费。
+未使用的 `counter & 1` 可以删；用它选择实际输入块则必须保留地址依赖。
+删减不能跳过读取初始化、地址合法性或通信义务检查。
+
+本地 DMA 的只读输入源允许有界运行时页号：每笔 start 捕获自己的页号、候选源值及
+版本，wait 提交该次捕获的值；多笔搬运可同时在途。候选窗口的保护足迹不能当作实际
+搬运字节数，动态可写源/目标及未知地址范围不因此获准。数学层只对已证明范围内的
+活跃整数地址作精确化简；[有界动态页 DMA](../../exec-plans/completed/pallas-bounded-page-dma.md)
+记录范围、真实 paged attention 正反例与验证。
 
 代数层可用已证明的输出坐标域及收缩输入域，证明整数坐标到 float16/bfloat16/float32/float64
 的 cast 在目标格式连续精确整数区间内保持值不变；任意整数输入不能从 shape 获得数据值域。

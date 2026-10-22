@@ -120,8 +120,8 @@ def _same_rewrite(left: RewriteEvidence, right: RewriteEvidence) -> bool:
         == (type(right.execution_cores), right.execution_cores)
         and left.execution == right.execution
         and same_remote_evidence(left.remote, right.remote)
-        and (a.domains, a.origins, a.conditions, a.communication, a.waits)
-        == (b.domains, b.origins, b.conditions, b.communication, b.waits)
+        and (a.domains, a.origins, a.conditions, a.communication, a.waits, a.assumptions)
+        == (b.domains, b.origins, b.conditions, b.communication, b.waits, b.assumptions)
         and expressions_equal(a.outputs, b.outputs)
         and tuple((v.storage, v.version, v.origin, v.span, v.rectangle) for v in a.versions)
         == tuple((v.storage, v.version, v.origin, v.span, v.rectangle) for v in b.versions)
@@ -220,10 +220,16 @@ def _extended_local(call: PallasCallView) -> bool:
     )
     while pending:
         region = pending.pop()
+        written_refs: set[int] = set()
         types = {v.id: v.type for v in region.inputs}
         types.update((v.id, v.type) for v, _ in region.constants)
         types.update((v.id, v.type) for op in region.operations for v in op.results)
         for op in region.operations:
+            if op.access is not None and op.access.value is not None:
+                # Sequential stores need versioned state even for full 1-D
+                # windows; interval assembly only accepts disjoint writes.
+                needed |= op.access.ref.id in written_refs
+                written_refs.add(op.access.ref.id)
             if (
                 op.dma
                 and (op.dma.device_coordinates is not None or op.dma.source_semaphore is not None)
@@ -617,6 +623,9 @@ def compare_program_views(
     )
     if a.projection.communication or b.projection.communication:
         assumptions += (DMA_PROGRESS_ASSUMPTION,)
+    assumptions += tuple(
+        dict.fromkeys(value for proof in (a, b) for value in proof.projection.assumptions)
+    )
     assumptions += tuple(
         dict.fromkeys(
             value

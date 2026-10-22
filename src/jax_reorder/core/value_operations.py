@@ -27,6 +27,10 @@ def pure_value(
     if len(typ.shape) > 1 or typ.sharding is None or any(typ.sharding.partitions):
         raise UnsupportedJaxprError(path, "value projection requires local scalars or vectors")
     p = {v.name: v.value for v in op.parameters}
+    if name == "stop_gradient":
+        if len(args) != 1 or p:
+            raise UnsupportedJaxprError(path, "stop_gradient requires one unmodified value")
+        return args[0]
     if name == "axis_index":
         key = str(p["axis_name"])
         if key not in coordinates:
@@ -87,7 +91,7 @@ def pure_value(
         if selected is not None and 0 <= selected < len(args) - 1:
             return args[selected + 1]
     if all(isinstance(v, IndexExpr) for v in args) and np.dtype(typ.dtype).kind in "iu":
-        if name in ("max", "min", "sign", "xor", "and", "or", "not"):
+        if name in ("max", "min", "clamp", "sign", "xor", "and", "or", "not"):
             if all(isinstance(v, IndexExpr) and v.kind == "constant" for v in args):
                 numbers = tuple(int(cast(IndexExpr, v).value) for v in args)
                 result = (
@@ -95,6 +99,8 @@ def pure_value(
                     if name == "max"
                     else min(numbers)
                     if name == "min"
+                    else min(max(numbers[1], numbers[0]), numbers[2])
+                    if name == "clamp"
                     else (numbers[0] > 0) - (numbers[0] < 0)
                     if name == "sign"
                     else numbers[0] ^ numbers[1]

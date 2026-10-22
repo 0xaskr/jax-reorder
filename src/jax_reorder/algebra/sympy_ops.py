@@ -252,6 +252,10 @@ def equal(
     if left.has(sp.nan, sp.zoo) or right.has(sp.nan, sp.zoo):
         steps.append("nonfinite_expression")
         return None
+    if left.has(sp.Sum, sp.Product) or right.has(sp.Sum, sp.Product):
+        # Fresh binders are deliberately different at every read. Normalize
+        # their lexical names before extrema congruence or expensive CAS work.
+        left, right = rename_bounds(left), rename_bounds(right)
     if left == right:
         steps.append("identity")
         return True

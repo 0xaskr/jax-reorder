@@ -9,8 +9,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal
+from dataclasses import replace
 
 from jax._src import core
 
@@ -28,68 +27,7 @@ from ..errors import (
 from ..status import Status
 from .adapter.calls import CommonCalls
 from .budget import Budget, validate_timeout
-
-if TYPE_CHECKING:
-    from ..core.normalization import RewriteEvidence
-    from .trusted import SympyResult
-
-# 每条代数结论都随结果一起报告这些前提；它们限定结论成立的范围，
-# 也说明结构快路径为何可以替换成不带浮点警告的结构等价。
-ASSUMPTIONS = (
-    "finite floating-point subexpressions are interpreted as ideal real numbers",
-    "expressions expanded algebraically are finite and defined in the declared real interpretation",
-    "negative infinity constants and possibly non-finite dependent operations "
-    "retain their semantics",
-    "only the supplied input signature, static arguments and trace environment are covered",
-)
-# 任何实际依赖代数改写的结论都必须携带这条浮点警告；结构等价不需要。
-FLOAT_WARNING = (
-    "Algebraic comparison uses ideal real arithmetic. Floating-point commutation, "
-    "reassociation and distribution may change rounding, overflow, NaN/Inf and signed zero; "
-    "neither small error nor bitwise equivalence is guaranteed."
-)
-
-
-@dataclass(frozen=True)
-class AlgebraComparison:
-    """结构对应或可信 SymPy 数学结果，按实际判定路径记录依据。
-
-    correspondence 只在结构快路径填充，backend_result 只在数学路径填充，
-    两者恰好有一个非 None。work 是实际消耗的预算单位数，不含结构比较。
-    assumptions 与 warnings 描述该条结论的适用边界；rules 记录用到的规则名。
-    normalizations 按左右侧保存 Pallas 的完整值投影及状态消除前提；普通 JAX
-    侧为 None，没有 Pallas 转换时为空。它不替代 backend_result 的数学判定。
-    失败（未完成、预算、超时、内部错误）不会进入本对象，而是抛出异常。
-    """
-
-    status: Status
-    rules: tuple[str, ...] = ()
-    assumptions: tuple[str, ...] = ASSUMPTIONS
-    warnings: tuple[str, ...] = (FLOAT_WARNING,)
-    correspondence: GraphCorrespondence | None = field(default=None, repr=False)
-    work: int = 0
-    backend_result: SympyResult | None = field(default=None, repr=False)
-    normalizations: tuple[RewriteEvidence | None, ...] = field(default=(), repr=False)
-
-    def __post_init__(self) -> None:
-        """拒绝未完成状态：失败只能经异常通道报告，不能伪装成结果。"""
-        # 未完成或失败必须走异常通道，不能退化成第四种结果状态被调用方忽略。
-        if self.status not in (Status.EQUIVALENT, Status.INEQUIVALENT):
-            raise ValueError(f"invalid complete comparison status: {self.status}")
-
-    @property
-    def equivalence_kind(self) -> Literal["structural", "algebraic"] | None:
-        """区分结构证据与可信 SymPy 数学结论。"""
-        if self.status != Status.EQUIVALENT:
-            return None
-        return "structural" if self.correspondence is not None else "algebraic"
-
-    @property
-    def output(self) -> int | None:
-        """数学路径判定所用的完整输出坐标；结构路径没有单一输出，返回 None。"""
-        if self.backend_result is not None:
-            return self.backend_result.output
-        return None
+from .result import ASSUMPTIONS, AlgebraComparison
 
 
 def _prepare(graph: core.Jaxpr) -> tuple[core.Jaxpr, GraphCorrespondence]:
@@ -111,6 +49,7 @@ def compare_algebraic_jaxprs(
     *,
     algebra_budget: int = 10000,
     algebra_timeout: float = 60.0,
+    scope: str = "function",
     execution: CoreExecutionBinding
     | tuple[CoreExecutionBinding, CoreExecutionBinding]
     | None = None,
@@ -123,15 +62,22 @@ def compare_algebraic_jaxprs(
     唯一数学结论，失败以异常报告。algebra_timeout 只覆盖 worker 内的转换
     与查询，不包含 JAX tracing 和父进程结构比较。
 
+    scope="device_local" 比较完整父图中提取的一个 Pallas kernel，保留实参来源、
+    有界设备环境与协议证明；不把父函数输出组装或后处理作为局部等价的前提。
+    此模式先完成资源证明，再尝试局部结构/语义快路径，最后才进入数学 worker。
+
     execution 为两侧共用的远端单 core 绑定，或分别属于左/右侧的绑定；调用方
     必须保证实际执行遵守该顺序。显式绑定时，两侧都先完成协议投影并保留证据，
-    包括结构相同的情况；本地 Pallas 或普通 JAX 不接受该条件。
+    包括结构相同的情况；scope="device_local" 另接受已接入证明的本地多 core
+    条件并保留 core_executions，普通 JAX 不接受该条件。
     """
     from .adapter.transport import freeze
     from .trusted import isolated_compare
 
     Budget(algebra_budget)
     validate_timeout(algebra_timeout)
+    if scope not in ("function", "device_local"):
+        raise ValueError("scope must be function or device_local")
     if execution is None:
         executions = (None, None)
     elif isinstance(execution, CoreExecutionBinding):
@@ -147,6 +93,16 @@ def compare_algebraic_jaxprs(
     for binding in executions:
         if binding is not None:
             validate_binding_shape(binding)
+    if scope == "device_local":
+        from .local import compare_local_values
+
+        return compare_local_values(
+            left,
+            right,
+            algebra_budget=algebra_budget,
+            algebra_timeout=algebra_timeout,
+            executions=executions,
+        )
     structural = compare_jaxprs(left, right, include_derivative_rules=False)
     if structural.status == Status.EQUIVALENT and execution is None:
         return AlgebraComparison(
@@ -212,6 +168,14 @@ def compare_algebraic_jaxprs(
                 from ..core.communication import DMA_PROGRESS_ASSUMPTION
 
                 assumptions += (DMA_PROGRESS_ASSUMPTION,)
+            assumptions += tuple(
+                dict.fromkeys(
+                    value
+                    for proof in evidence
+                    if proof is not None
+                    for value in proof.projection.assumptions
+                )
+            )
             assumptions += tuple(
                 dict.fromkeys(
                     value

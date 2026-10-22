@@ -25,6 +25,8 @@ from jax_reorder.algebra.expression import SymbolicTensor, coordinates
 from jax_reorder.algebra.symbolic import SymbolicBuilder
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.index_domain import AnalysisBudget
+from jax_reorder.core.index_domain import integer as index_integer
+from jax_reorder.core.memory import MemoryProjection, ScalarType, ValueExpr
 from jax_reorder.core.normalization import (
     NormalizedEvidence,
     _same_rewrite,
@@ -34,6 +36,94 @@ from jax_reorder.core.normalization import (
 from tests.pallas_padding_cases import native_tail, padded_consumer, padded_reduction
 from tests.pallas_projection_oracle import at_point
 from tests.test_pallas_padding_resources import padded_resources
+
+
+def lowered_address(address, *, obligation=None):
+    from jax_reorder.algebra.pallas import projected_outputs
+
+    builder = SymbolicBuilder(10000)
+    index = builder.input(jax.ShapeDtypeStruct((), jnp.int32), 0)
+    if obligation == "defined":
+        index = replace(index, defined=sp.false)
+    elif obligation == "memory":
+        index = replace(index, memory_validity=sp.false)
+    source = builder.input(jax.ShapeDtypeStruct((8,), jnp.float32), 1)
+    root = ValueExpr("input", ScalarType("float32", False, ()), (address,), input=1)
+    equation = cast(
+        Equation,
+        SimpleNamespace(
+            params={"projection": MemoryProjection((root,), (), (), (), ()), "rule": "test"},
+            outvars=(SimpleNamespace(aval=jax.ShapeDtypeStruct((), jnp.float32)),),
+        ),
+    )
+    (result,) = projected_outputs(builder, equation, (index, source))
+    return result
+
+
+@pytest.mark.parametrize("mask", [0, 1, 7])
+def test_bounded_address_masks_keep_exact_signed_page_indices(mask):
+    typ = ScalarType("int32", False, ())
+    page = ValueExpr("input", typ, input=0)
+    address = ValueExpr("and", typ, (page, index_integer(mask)))
+    formula = lowered_address(address)
+    (read,) = formula.expression.atoms(sp.Indexed)
+    (symbol,) = read.indices[0].free_symbols if mask else (sp.Symbol("unused"),)
+    for raw in (-2147483648, -9, -1, 0, 1, 7, 9, 2147483647):
+        assert read.indices[0].subs(symbol, raw) == raw & mask
+
+
+@pytest.mark.parametrize("mode", ["complement", "permutation"])
+def test_bounded_address_arithmetic_and_page_permutations_keep_correlations(mode):
+    typ = ScalarType("int32", False, ())
+    page = ValueExpr("input", typ, input=0)
+    selected = ValueExpr("and", typ, (page, index_integer(7)))
+    address = (
+        ValueExpr("sub", typ, (index_integer(7), selected))
+        if mode == "complement"
+        else ValueExpr("select_n", typ, (selected, *(index_integer((i + 1) % 8) for i in range(8))))
+    )
+    result = lowered_address(address)
+    assert result.defined == result.memory_validity == sp.true
+    (read,) = result.expression.atoms(sp.Indexed)
+    (symbol,) = read.indices[0].free_symbols
+    for raw in range(-8, 16):
+        expected = 7 - (raw & 7) if mode == "complement" else ((raw & 7) + 1) % 8
+        assert read.indices[0].subs(symbol, raw) == expected
+
+
+@pytest.mark.parametrize("obligation", ["defined", "memory"])
+def test_constant_address_mask_does_not_erase_address_read_obligations(obligation):
+    typ = ScalarType("int32", False, ())
+    address = ValueExpr("and", typ, (ValueExpr("input", typ, input=0), index_integer(0)))
+    result = lowered_address(address, obligation=obligation)
+    assert (result.defined if obligation == "defined" else result.memory_validity) == sp.false
+
+
+@pytest.mark.parametrize("operation", ["non_low_mask", "overflow", "narrowing"])
+def test_unproved_address_arithmetic_stays_opaque(operation):
+    from sympy.core.function import AppliedUndef
+
+    from jax_reorder.core.model import ParameterView
+
+    typ = ScalarType("int32", False, ())
+    page = ValueExpr("input", typ, input=0)
+    if operation == "non_low_mask":
+        address = ValueExpr("and", typ, (page, index_integer(5)))
+    else:
+        changed = (
+            ValueExpr("add", typ, (page, index_integer(1)))
+            if operation == "overflow"
+            else ValueExpr(
+                "convert_element_type",
+                ScalarType("int8", False, ()),
+                (page,),
+                (ParameterView("new_dtype", "int8"),),
+            )
+        )
+        address = ValueExpr("and", typ, (changed, index_integer(7)))
+    result = lowered_address(address)
+    assert result.expression.has(AppliedUndef)
+    assert result.defined != sp.true
 
 
 def trace(function, *, rank=2, size=5):
@@ -402,3 +492,116 @@ def test_large_row_extrema_on_different_reduction_intervals_cannot_match():
     x = np.broadcast_to(np.arange(4, dtype=np.float32)[:, None], (4, 40))
     assert np.max(x[:2], axis=1).sum() == 1
     assert np.max(x[2:], axis=1).sum() == 5
+
+
+@pytest.mark.parametrize("scope", ["function", "device_local"])
+@pytest.mark.parametrize("invalid_output_first", [False, True])
+def test_a_value_counterexample_cannot_skip_another_outputs_initialization(
+    scope, invalid_output_first
+):
+    def function(offset, leak):
+        def kernel(x, first, second):
+            raw = x[...]
+            values = (
+                jnp.full((2, 1), offset, jnp.float32),
+                jnp.sum(
+                    raw if leak else jnp.where(jnp.arange(8) < 5, raw, 0),
+                    axis=1,
+                    keepdims=True,
+                ),
+            )
+            first[...], second[...] = values[::-1] if invalid_output_first else values
+
+        shape = jax.ShapeDtypeStruct((2, 1), jnp.float32)
+        spec = pl.BlockSpec((2, 1), lambda: (0, 0))
+        return pl.pallas_call(
+            kernel,
+            out_shape=(shape, shape),
+            in_specs=(pl.BlockSpec((2, 8), lambda: (0, 0)),),
+            out_specs=(spec, spec),
+        )
+
+    from jax.experimental import pallas as pl
+
+    with pytest.raises(MathematicalUndecidedError, match="memory initialization"):
+        compare_algebraic_jaxprs(
+            trace(function(0, True)),
+            trace(function(1, False)),
+            scope=scope,
+            algebra_budget=100000,
+        )
+
+
+def partial_domain_outputs(size, *, pallas, count_nonpositive, packaging):
+    from jax.experimental import pallas as pl
+
+    def calculate(x):
+        logarithms = jnp.log(x)
+        count = (
+            jnp.sum(jnp.where(x > 0, jnp.float32(0), jnp.float32(1)))
+            if count_nonpositive
+            else jnp.float32(0)
+        ).reshape(1)
+        return logarithms, count
+
+    if not pallas:
+
+        def function(x):
+            logarithms, count = calculate(x)
+            if packaging == "combined":
+                return (jnp.concatenate((logarithms, count)),)
+            return (logarithms, count) if packaging == "log_first" else (count, logarithms)
+
+        return function
+
+    def kernel(x, *outputs):
+        logarithms, count = calculate(x[...])
+        if packaging == "combined":
+            outputs[0][:size] = logarithms
+            outputs[0][size:] = count
+            return
+        values = (logarithms, count) if packaging == "log_first" else (count, logarithms)
+        for output, value in zip(outputs, values, strict=True):
+            output[...] = value
+
+    shapes = (
+        ((size + 1,),)
+        if packaging == "combined"
+        else ((size,), (1,))
+        if packaging == "log_first"
+        else ((1,), (size,))
+    )
+    return pl.pallas_call(
+        kernel,
+        out_shape=tuple(jax.ShapeDtypeStruct(shape, jnp.float32) for shape in shapes),
+    )
+
+
+@pytest.mark.parametrize(
+    "pallas,scope", [(False, "function"), (True, "function"), (True, "device_local")]
+)
+@pytest.mark.parametrize("size", [2, 1024])
+@pytest.mark.parametrize("packaging", ["log_first", "log_last", "combined"])
+def test_counterexamples_require_one_input_in_every_outputs_original_domain(
+    pallas, scope, size, packaging
+):
+    # The complete real-function domain requires every x[i] > 0, on which
+    # count_nonpositive is identically zero. A one-hot witness has undefined
+    # log(0) lanes, including when they precede the differing lane in one output.
+    signature = jax.ShapeDtypeStruct((size,), jnp.float32)
+    sources = tuple(
+        jax.make_jaxpr(
+            partial_domain_outputs(
+                size,
+                pallas=pallas,
+                count_nonpositive=wrong,
+                packaging=packaging,
+            )
+        )(signature)
+        for wrong in (True, False)
+    )
+    try:
+        result = compare_algebraic_jaxprs(*sources, scope=scope, algebra_budget=100000)
+    except MathematicalUndecidedError:
+        return
+    assert result.status is Status.EQUIVALENT

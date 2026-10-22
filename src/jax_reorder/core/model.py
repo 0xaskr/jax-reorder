@@ -266,6 +266,9 @@ class BlockMappingView:
     origin: Origin = field(compare=False)
     unbuffered: bool = False
     pipeline_mode: PipelineModeView | None = None
+    # Array axes indexed by one program coordinate and absent from the local Ref.
+    # Their physical window width remains one in block_shape.
+    squeezed_axes: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

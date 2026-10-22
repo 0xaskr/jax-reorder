@@ -36,6 +36,8 @@ def tensor_value(
     coordinates: dict[str, IndexExpr],
     grid: tuple[int, ...],
     budget: AnalysisBudget,
+    *,
+    tensor_depths: dict[int, tuple[Expression, int]] | None = None,
 ) -> Expression:
     path, name = op.origin.path, op.primitive
     if len(op.results) != 1 or not isinstance(op.results[0].type, ArrayType):
@@ -62,24 +64,32 @@ def tensor_value(
                 coordinate("program", dimension) if grid[dimension] > 1 else integer(0),
             )
         )
-    if name in ("dot_general", "reduce_sum", "reduce_max"):
+    if name in ("dot_general", "reduce_sum", "reduce_max", "reduce_min", "reduce_and", "reduce_or"):
         # The operands are functions of bound input coordinates. Output-address
         # substitution must never capture a reduction/contraction coordinate.
-        pending, seen, depth = list(args), set(), 0
+        depths = {} if tensor_depths is None else tensor_depths
+        pending = [(item, False) for item in args]
         while pending:
-            item = pending.pop()
-            if id(item) in seen:
+            item, ready = pending.pop()
+            if id(item) in depths:
                 continue
-            seen.add(id(item))
-            budget.spend(path + ".tensor_bindings")
+            if not ready:
+                budget.spend(path + ".tensor_bindings")
+                pending.append((item, True))
+                if isinstance(item, ValueExpr):
+                    pending.extend((child, False) for child in item.operands)
+                continue
+            depth = (
+                cast(int, dict((p.name, p.value) for p in item.parameters)["__depth"])
+                if isinstance(item, ValueExpr) and item.operation.startswith("tensor.")
+                else 0
+            )
             if isinstance(item, ValueExpr):
-                if item.operation.startswith("tensor."):
-                    depth = max(
-                        depth,
-                        cast(int, dict((p.name, p.value) for p in item.parameters)["__depth"]),
-                    )
-                pending.extend(item.operands)
-        depth += 1
+                depth = max(depth, *(depths[id(child)][1] for child in item.operands), 0)
+            # Keep the immutable source alive with its metadata, preventing an
+            # unrelated later object from reusing a memoized Python identity.
+            depths[id(item)] = item, depth
+        depth = max((depths[id(item)][1] for item in args), default=0) + 1
         axes = tuple(
             tuple(f"tensor:{depth}:{i}:{shape}:{j}" for j in range(len(shape)))
             for i, shape in enumerate(input_shapes)
@@ -130,6 +140,69 @@ def tensor_value(
         permutation = cast(tuple[int, ...], p["permutation"])
         return _substitute(
             args[0], {f"local:{d}": coordinate("local", i) for i, d in enumerate(permutation)}
+        )
+    if name == "concatenate":
+        dimension = p["dimension"]
+        rank = len(typ.shape)
+        if (
+            not args
+            or len(args) != len(input_types)
+            or type(dimension) is not int
+            or not 0 <= dimension < rank
+            or any(
+                value.dtype != typ.dtype
+                or len(value.shape) != rank
+                or any(n != typ.shape[i] for i, n in enumerate(value.shape) if i != dimension)
+                for value in input_types
+            )
+            or sum(shape[dimension] for shape in input_shapes) != typ.shape[dimension]
+        ):
+            raise UnsupportedJaxprError(path, "invalid static concatenate interface")
+        position = coordinate("local", dimension)
+        offset = 0
+        pieces = []
+        for value, shape in zip(args, input_shapes, strict=True):
+            pieces.append(
+                (
+                    offset + shape[dimension],
+                    _substitute(value, {f"local:{dimension}": add(position, integer(-offset))}),
+                )
+            )
+            offset += shape[dimension]
+        result = pieces[-1][1]
+        for stop, value in reversed(pieces[:-1]):
+            result = ValueExpr(
+                "select_n",
+                scalar_type(typ),
+                (Predicate("lt", (position, integer(stop))), result, value),
+            )
+        return result
+    if name == "slice":
+        original = input_shapes[0]
+        starts = cast(tuple[int, ...], p["start_indices"])
+        limits = cast(tuple[int, ...], p["limit_indices"])
+        strides = (
+            (1,) * len(original)
+            if p["strides"] in (None, ("none",))
+            else cast(tuple[int, ...], p["strides"])
+        )
+        if not len(starts) == len(limits) == len(strides) == len(original) == len(typ.shape):
+            raise UnsupportedJaxprError(path, "slice coordinate rank mismatch")
+        if any(
+            not 0 <= start <= limit <= extent
+            or stride <= 0
+            or size != (limit - start + stride - 1) // stride
+            for start, limit, stride, extent, size in zip(
+                starts, limits, strides, original, typ.shape, strict=True
+            )
+        ):
+            raise UnsupportedJaxprError(path, "invalid static value slice")
+        return _substitute(
+            args[0],
+            {
+                f"local:{i}": add(integer(start), scale(coordinate("local", i), stride))
+                for i, (start, stride) in enumerate(zip(starts, strides, strict=True))
+            },
         )
     if name == "tile":
         shape = input_shapes[0]
@@ -202,26 +275,12 @@ def project_coordinates(
     """Apply proved address identities and bounded integer rules, never CAS queries."""
     root = _substitute(value, bindings)
     cache: dict[int, Expression] = {}
-    # Binder names include their shapes, so each name has one exact range even
+    # A tensor's bound coordinates only occur inside its operands. Install
+    # their ranges on entry, in the same traversal that projects coordinates;
+    # rescanning the entire DAG beforehand repeats work for every output.
+    # Names include shapes, so these ranges cannot shadow one another even
     # when distinct tensor operations share a lexical depth.
     ranges = dict(ranges)
-    pending, seen = [root], set()
-    while pending:
-        item = pending.pop()
-        if id(item) in seen:
-            continue
-        seen.add(id(item))
-        budget.spend("tensor.binders")
-        if isinstance(item, ValueExpr | Predicate):
-            pending.extend(item.operands)
-            if isinstance(item, ValueExpr) and item.operation.startswith("tensor."):
-                p = dict((a.name, a.value) for a in item.parameters)
-                for names, shape in zip(
-                    cast(tuple[tuple[str, ...], ...], p["__input_axes"]),
-                    cast(tuple[tuple[int, ...], ...], p["__input_shapes"]),
-                    strict=True,
-                ):
-                    ranges.update((key, (0, n - 1)) for key, n in zip(names, shape, strict=True))
 
     def visit(item: Expression) -> Expression:
         if id(item) in cache:
@@ -265,6 +324,14 @@ def project_coordinates(
             if known is not None:
                 result = known
         elif isinstance(item, ValueExpr):
+            if item.operation.startswith("tensor."):
+                p = dict((a.name, a.value) for a in item.parameters)
+                for names, shape in zip(
+                    cast(tuple[tuple[str, ...], ...], p["__input_axes"]),
+                    cast(tuple[tuple[int, ...], ...], p["__input_shapes"]),
+                    strict=True,
+                ):
+                    ranges.update((key, (0, n - 1)) for key, n in zip(names, shape, strict=True))
             if item.operation == "select_n":
                 selector = visit(item.operands[0])
                 selected = (

@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 import traceback
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import islice, product
 from math import prod
@@ -24,6 +24,7 @@ from typing import cast
 
 import numpy as np
 import sympy as sp
+from sympy.core.function import AppliedUndef
 
 from ..errors import (
     ComparisonContractError,
@@ -37,7 +38,7 @@ from ..errors import (
 )
 from ._typing import SymbolicGraph
 from .budget import validate_timeout
-from .expression import coordinates
+from .expression import SymbolicTensor, coordinates, dag_atoms, same_bound_expression
 from .symbolic import SymbolicBuilder
 from .sympy_ops import (
     boolean_piecewise,
@@ -112,6 +113,21 @@ class RemoteWorkerError(RuntimeError):
     """只作为父进程异常的 cause 保存远端原始异常链，不代表比较结论。"""
 
 
+def _witness_points(shape: tuple[int, ...]) -> Iterator[tuple[int, ...]]:
+    """Visit each axis before a Cartesian prefix can exhaust the search limit."""
+    origin = (0,) * len(shape)
+    seen: set[tuple[int, ...]] = {origin}
+    yield origin
+    for axis, size in enumerate(shape):
+        for position in sorted({min(1, size - 1), size // 2, size - 1} - {0}):
+            point = origin[:axis] + (position,) + origin[axis + 1 :]
+            seen.add(point)
+            yield point
+    for point in product(*(sorted({0, min(1, n - 1), n // 2, n - 1}) for n in shape)):
+        if point not in seen:
+            yield point
+
+
 def compare_symbolic(
     left: SymbolicGraph, right: SymbolicGraph, algebra_budget: int = 10000
 ) -> SympyResult:
@@ -163,6 +179,45 @@ def compare_symbolic(
             definitions=tuple((index, repr(key)) for key, index in builder.definitions.items()),
         )
 
+    def witness_at(
+        output: int, point: tuple[int, ...], x: SymbolicTensor, y: SymbolicTensor
+    ) -> SympyResult | None:
+        """Find an exact counterexample before an expensive whole-formula CAS query."""
+        from .witnesses import exact_witness
+
+        ex, dx = x.read(point)
+        ey, dy = y.read(point)
+        witness = exact_witness(
+            ex,
+            ey,
+            (*full_domains, dx, dy),
+            [var.aval for var in left.invars],
+            builder.budget,
+            builder.element_casts,
+            finite_values=x.finite and y.finite,
+        )
+        if witness is None:
+            return None
+        pattern, a_value, b_value = witness
+        records.append(
+            SympyQuery(
+                output,
+                f"output_coordinate={point}",
+                False,
+                f"exact representable input witness: {pattern}",
+                str(a_value),
+                str(b_value),
+            )
+        )
+        return report(
+            "inequivalent",
+            tuple(records),
+            output=output,
+            work=builder.budget.used,
+            rules=tuple(sorted(builder.rules)),
+            elapsed_seconds=time.monotonic() - started,
+        )
+
     try:
         a, b = builder.graph(left), builder.graph(right)
         # 两侧输出数量、shape、dtype 必须一致；构造后再检查一次，防止适配器改变形状。
@@ -170,12 +225,11 @@ def compare_symbolic(
             x.shape != y.shape or x.dtype != y.dtype for x, y in zip(a, b, strict=True)
         ):
             raise ComparisonContractError("algebra.outputs", "output abstract contracts differ")
-        undecided, domain_unknown = False, False
+        # Preflight every output before any negative result can return. An
+        # earlier unequal output cannot hide an uninitialized later output.
         for output, (x, y) in enumerate(zip(a, b, strict=True)):
             if prod(x.shape) == 0:
-                # 空输出没有元素可比较；shape/dtype 已在上方核对。
                 continue
-            # coordinates 已声明为非负整数；定义条件和值都只比较合法输出坐标。
             bounds = sp.And(*(i < n for i, n in zip(coordinates(x.shape), x.shape, strict=True)))
             # Memory initialization must hold everywhere in each output,
             # independently of matching partial real-function domains. Two
@@ -195,8 +249,120 @@ def compare_symbolic(
                         "algebra.pallas.initialization",
                         "complete output memory initialization is not proved",
                     )
-            if x.defined == y.defined:
-                da, db = x.defined, y.defined
+        # Search complete-output witnesses across all ports before allowing an
+        # undecidable opaque port to consume the CAS budget for later ports.
+        full_domains = tuple(
+            builder.universal(
+                value.defined,
+                tuple(
+                    (coordinate, 0, size - 1)
+                    for coordinate, size in zip(coordinates(value.shape), value.shape, strict=True)
+                    if size > 1
+                ),
+            )
+            for value in (*a, *b)
+            if prod(value.shape)
+        )
+        unconditionally_defined = all(domain == sp.true for domain in full_domains)
+        totality_checked = unconditionally_defined
+
+        def complete_domains_true() -> bool:
+            nonlocal totality_checked, unconditionally_defined
+            if not totality_checked:
+                # Prove the original domain under each complete output's
+                # coordinate bounds. Simplifying a quantified indicator first
+                # can lose the bounds needed for branch-coverage tautologies.
+                unconditionally_defined = True
+                for output, pair in enumerate(zip(a, b, strict=True)):
+                    for side, value in zip(("left", "right"), pair, strict=True):
+                        if not prod(value.shape):
+                            continue
+                        defined = domain_condition(value.defined, builder.budget)
+                        if defined == sp.true:
+                            continue
+                        bounds = sp.And(
+                            *(
+                                i < n
+                                for i, n in zip(coordinates(value.shape), value.shape, strict=True)
+                            )
+                        )
+                        answer = query(
+                            output,
+                            f"{side}_complete_domain",
+                            sp.And(bounds, boolean_piecewise(defined, builder.budget)),
+                            bounds,
+                        )
+                        if answer is not True:
+                            unconditionally_defined = False
+                            totality_checked = True
+                            return False
+                totality_checked = True
+            return unconditionally_defined
+
+        # Prefer a scalar formula around shared extrema, or a dynamic-read
+        # formula whose page dependence can be exposed by an exact input.
+        # Otherwise keep output order: a later scale may be invariant even when
+        # an earlier quantized value changes. All original domains still apply.
+        indirect_outputs = {
+            output
+            for output, pair in enumerate(zip(a, b, strict=True))
+            if any(
+                index.has(sp.Indexed)
+                for value in pair
+                for read in dag_atoms(value.expression, sp.Indexed)
+                for index in read.indices
+            )
+        }
+
+        def preferred_witness(item: tuple[int, tuple[SymbolicTensor, SymbolicTensor]]) -> bool:
+            output, pair = item
+            opaque = set().union(*(dag_atoms(v.expression, AppliedUndef) for v in pair))
+            extrema = [dag_atoms(v.expression, sp.Max, sp.Min) for v in pair]
+            if not opaque and extrema[0] == extrema[1]:
+                return True
+            # A page-dependent extremum can expose a different source before
+            # nonlinear consumers. Known casts remain checked by exact_witness;
+            # their presence is not a reason to search only the later consumer.
+            return (
+                output in indirect_outputs
+                and any(extrema)
+                and not any(v.expression.has(sp.exp) for v in pair)
+                and all(node.func.__name__ in builder.element_casts for node in opaque)
+            )
+
+        candidates = sorted(
+            enumerate(zip(a, b, strict=True)),
+            key=lambda item: not preferred_witness(item),
+        )
+        for output, (x, y) in candidates:
+            if prod(x.shape) == 0:
+                continue
+            large_formula = any(
+                len(node.args) > 32
+                for node in dag_atoms(x.expression, sp.Max, sp.Min)
+                | dag_atoms(y.expression, sp.Max, sp.Min)
+            )
+            if large_formula and not same_bound_expression(x.expression, y.expression):
+                # A shared, defined input with unequal output values is a
+                # counterexample even if equality of the entire domains is
+                # not yet established. The witness checks both original
+                # domains exactly; it never treats unknown conditions as true.
+                point = (
+                    tuple(size // 2 for size in x.shape)
+                    if output not in indirect_outputs
+                    and (x.expression.has(AppliedUndef) or y.expression.has(AppliedUndef))
+                    else (0,) * len(x.shape)
+                )
+                witnessed = witness_at(output, point, x, y)
+                if witnessed is not None:
+                    return witnessed
+        undecided, domain_unknown = False, False
+        for output, (x, y) in enumerate(zip(a, b, strict=True)):
+            if prod(x.shape) == 0:
+                continue
+            bounds = sp.And(*(i < n for i, n in zip(coordinates(x.shape), x.shape, strict=True)))
+            if same_bound_expression(x.defined, y.defined):
+                da = db = x.defined
             else:
                 da = domain_condition(x.defined, builder.budget)
                 db = domain_condition(y.defined, builder.budget)
@@ -242,13 +408,10 @@ def compare_symbolic(
             # 完整枚举上限 64 个点；大输出域取端点和中点、最多 16 个。
             # 分块计数等差异可能在前两个坐标尚未出现。这些点只用于找反例，
             # 不能作为“全部输出通过”的依据，输入值仍保持符号形式。
-            points = product(
-                *(
-                    range(size)
-                    if fully_enumerated
-                    else sorted({0, min(1, size - 1), size // 2, size - 1})
-                    for size in x.shape
-                )
+            points = (
+                product(*(range(size) for size in x.shape))
+                if fully_enumerated
+                else _witness_points(x.shape)
             )
             for point in islice(points, 64 if fully_enumerated else 16):
                 indices = tuple(map(sp.Integer, point))
@@ -259,15 +422,24 @@ def compare_symbolic(
                     # 该坐标下两侧定义条件不一致或未建立，不能比较值。
                     concrete_answers.append(None)
                     continue
-                if not (
-                    finite_expansion(ex, builder.budget) and finite_expansion(ey, builder.budget)
+                expandable = finite_expansion(ex, builder.budget) and finite_expansion(
+                    ey, builder.budget
+                )
+                if not expandable or any(
+                    len(node.args) > 32
+                    for node in dag_atoms(ex, sp.Max, sp.Min) | dag_atoms(ey, sp.Max, sp.Min)
                 ):
+                    witnessed = witness_at(output, point, x, y)
+                    if witnessed is not None:
+                        return witnessed
+                if not expandable:
                     # Compare the complete output difference before expanding
                     # two overlapping contractions. Prefix sums may cancel,
                     # leaving a small, exactly expandable counterexample.
                     if (
                         x.finite
                         and y.finite
+                        and complete_domains_true()
                         and dx == dy == sp.true
                         and np.dtype(x.dtype).kind == "f"
                     ):
@@ -307,10 +479,21 @@ def compare_symbolic(
                     decision = (
                         True if equal(ex, ey, builder.budget, methods=methods) is True else None
                     )
+                    if decision is None:
+                        # Dynamic array addresses cannot become independent
+                        # scalar symbols. Specialize their source inputs and
+                        # validate every read/domain before accepting a witness.
+                        witnessed = witness_at(output, point, x, y)
+                        if witnessed is not None:
+                            return witnessed
                 else:
                     decision = equal(*explicit, builder.budget, methods=methods)
-                if decision is False and (dx != sp.true or dy != sp.true):
-                    # 条件未完全建立时，False 不能提升为源程序的不等价结论。
+                if decision is False and not complete_domains_true():
+                    # A symbolic counterexample may violate another output's
+                    # domain. Require one shared, exactly valid source input.
+                    witnessed = witness_at(output, point, x, y)
+                    if witnessed is not None:
+                        return witnessed
                     decision = None
                 concrete_answers.append(decision)
                 records.append(

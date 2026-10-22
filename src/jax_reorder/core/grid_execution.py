@@ -101,4 +101,5 @@ def functionalize_banked_grid(
         ),
         tuple(t for _, p in projections for t in p.communication),
         tuple(w for _, p in projections for w in p.waits),
+        assumptions=tuple(dict.fromkeys(a for _, p in projections for a in p.assumptions)),
     )

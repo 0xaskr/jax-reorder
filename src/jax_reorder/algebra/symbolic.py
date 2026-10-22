@@ -51,7 +51,17 @@ from numpy.typing import ArrayLike
 from ..errors import UnsupportedJaxprError
 from ._typing import ArrayAtom, ArrayAval, ArrayLiteral, Equation, Shape, SymbolicGraph
 from .budget import Budget
-from .expression import SymbolicTensor, _exact_array, coordinates, rename_bounds
+from .expression import (
+    SymbolicTensor,
+    _exact_array,
+    coordinates,
+    dag_atoms,
+    finite_product,
+    finite_sum,
+    indicator,
+    rename_bounds,
+    substitute,
+)
 from .extrema import maximum, minimum
 from .finiteness import Finiteness, Source
 from .indices import Index
@@ -81,7 +91,7 @@ def normalize_coordinates(expression: sp.Basic, shape: Shape) -> sp.Basic:
     }
     # Index 的域用半开区间 (start, stop)；Sum/Product 的上下限是闭区间。
     domains = {index: (0, shape[index.number]) for index in symbols.values()}
-    for node in expression.atoms(sp.Sum, sp.Product):
+    for node in dag_atoms(expression, sp.Sum, sp.Product):
         for symbol, start, stop in node.limits:
             if start.is_Integer and stop.is_Integer and symbol not in symbols:
                 index = Index("sum", len(symbols))
@@ -126,13 +136,13 @@ def normalize_coordinates(expression: sp.Basic, shape: Shape) -> sp.Basic:
         raise ValueError("unknown coordinate kind")
 
     replacements = {}
-    for read in expression.atoms(sp.Indexed):
+    for read in dag_atoms(expression, sp.Indexed):
         try:
             replacements[read] = read.base[tuple(emit(parse(i)) for i in read.indices)]
         except ValueError:
             # 只替换能完整解释的读取；其余保留原始坐标，避免丢失映射。
             continue
-    return expression.xreplace(replacements)
+    return substitute(expression, replacements)
 
 
 # 已核对语义的逐点原语到 SymPy 函数的映射；这里只建立数学表达式。
@@ -201,6 +211,7 @@ class SymbolicBuilder:
         self.definitions: dict[tuple[Any, ...], int] = {}
         # 规范化表达式缓存；键含 shape，只影响构造成本，不改变运算身份。
         self.canonical_values: dict[tuple[sp.Basic, Shape], sp.Basic] = {}
+        self.element_casts: dict[str, tuple[str, str]] = {}
 
     def input(self, aval: ArrayAval, position: int) -> SymbolicTensor:
         """为第 position 个函数输入建立符号值。
@@ -384,14 +395,17 @@ class SymbolicBuilder:
                 )
                 opaque_guard = any(
                     condition.has(AppliedUndef)
-                    for pw in expression.atoms(sp.Piecewise)
+                    for pw in dag_atoms(expression, sp.Piecewise)
                     for _, condition in pw.args
+                )
+                large_extrema = any(
+                    len(node.args) > 32 for node in dag_atoms(expression, sp.Max, sp.Min)
                 )
                 # 整数/布尔表达式没有编码溢出语义，含不透明函数的条件缺少实数
                 # 不等式模型；这两类只统一绑定名，不做实数化简。
                 self.canonical_values[cache_key] = (
                     rename_bounds(expression)
-                    if dtype_kind(value.dtype) in "biu" or opaque_guard
+                    if dtype_kind(value.dtype) in "biu" or opaque_guard or large_extrema
                     else simplify(expression, self.budget, assumptions=bounds)
                 )
             canonical = self.canonical_values[cache_key].xreplace(replacements)
@@ -414,9 +428,13 @@ class SymbolicBuilder:
                     value.shape,
                     str(value.dtype),
                     canonical,
-                    rename_bounds(domain_condition(value.defined, self.budget)).xreplace(
-                        replacements
-                    ),
+                    rename_bounds(
+                        value.defined
+                        if any(
+                            len(node.args) > 32 for node in dag_atoms(value.defined, sp.Max, sp.Min)
+                        )
+                        else domain_condition(value.defined, self.budget)
+                    ).xreplace(replacements),
                 )
             )
         key = (
@@ -464,15 +482,18 @@ class SymbolicBuilder:
             self.budget.spend(max(1, count), path="algebra.conditions")
             return sp.And(
                 *(
-                    condition.xreplace(
-                        dict(zip((limit[0] for limit in limits), point, strict=True))
+                    substitute(
+                        condition,
+                        dict(
+                            zip((limit[0] for limit in limits), map(sp.Integer, point), strict=True)
+                        ),
                     )
                     for point in product(
                         *(range(int(start), int(stop) + 1) for _, start, stop in limits)
                     )
                 )
             )
-        return sp.Eq(sp.Product(sp.Piecewise((1, condition), (0, True)), *limits), 1)
+        return sp.Eq(finite_product(indicator(condition), *limits), 1, evaluate=False)
 
     def finite_reduction(
         self,
@@ -486,7 +507,10 @@ class SymbolicBuilder:
         self.budget.spend(count, path=path)
         return function(
             *(
-                expression.xreplace(dict(zip((lim[0] for lim in limits), point, strict=True)))
+                substitute(
+                    expression,
+                    dict(zip((lim[0] for lim in limits), map(sp.Integer, point), strict=True)),
+                )
                 for point in product(
                     *(range(int(start), int(stop) + 1) for _, start, stop in limits)
                 )
@@ -506,17 +530,19 @@ class SymbolicBuilder:
         singletons = {
             variable: sp.sympify(start) for variable, start, stop in limits if start == stop
         }
-        expression = expression.xreplace(singletons)
+        expression = substitute(expression, singletons)
         limits = tuple(limit for limit in limits if limit[1] != limit[2])
         if not limits:
             return expression
-        node = sp.Sum(expression, *limits)
+        from .sum_domains import compact_domain
+
+        node = compact_domain(finite_sum(expression, *limits), self.budget)
         # 部分函数在未定义点不能按实数恒等式改写；非有限值同理。
         if defined != sp.true or expression.has(sp.oo, -sp.oo, sp.nan, sp.zoo):
             return node
         for variable, _, _ in tuple(node.limits):
             offsets = set()
-            for read in node.function.atoms(sp.Indexed):
+            for read in dag_atoms(node.function, sp.Indexed):
                 for coordinate in read.indices:
                     if coordinate.has(variable):
                         offset = coordinate - variable
@@ -533,7 +559,7 @@ class SymbolicBuilder:
                 continue
             if start < 0:
                 return node
-            for read in node.function.atoms(sp.Indexed):
+            for read in dag_atoms(node.function, sp.Indexed):
                 for coordinate, extent in zip(read.indices, read.base.shape, strict=True):
                     if coordinate.has(variable) and (coordinate != variable or stop >= extent):
                         return node
@@ -546,7 +572,7 @@ class SymbolicBuilder:
         return sp.Add(
             *(
                 prod(sign for sign, _ in selection)
-                * sp.Sum(node.function, *(limit for _, limit in selection))
+                * finite_sum(node.function, *(limit for _, limit in selection))
                 for selection in product(*choices)
             )
         )
@@ -608,6 +634,38 @@ class SymbolicBuilder:
                 source.finite = True
             sources.append(source)
         self.rules.update(self.finiteness.rules)
+        # Online softmax initializes its running maximum to -inf. These three
+        # exact extended-real steps do not use finite-real cancellation; every
+        # nonconstant operand must already be finite on its retained domain.
+        infinity_value = None
+        if len(eq.outvars) == 1 and dtype_kind(eq.outvars[0].aval.dtype) == "f":
+            shape = tuple(eq.outvars[0].aval.shape)
+            if name == "max" and len(values) == 2:
+                for infinite, finite in (values, values[::-1]):
+                    if infinite.expression == -sp.oo and finite.finite:
+                        infinity_value = self.broadcast(finite, shape)[0]
+                        break
+            elif (
+                name == "sub"
+                and len(values) == 2
+                and values[0].expression == -sp.oo
+                and values[1].finite
+            ):
+                infinity_value = -sp.oo
+            elif name == "exp" and len(values) == 1 and values[0].expression == -sp.oo:
+                infinity_value = sp.S.Zero
+            if infinity_value is not None:
+                self.rules.add("negative-infinity-initialization")
+                return [
+                    SymbolicTensor(
+                        shape,
+                        eq.outvars[0].aval.dtype,
+                        infinity_value,
+                        sp.And(*(self.broadcast(value, shape)[1] for value in values)),
+                        finite=infinity_value != -sp.oo,
+                        source=sources[0],
+                    )
+                ]
         # 纯布局/视图原语：输出元素与输入元素一一对应，有限性只取决于输入。
         layouts = {
             "broadcast_in_dim",
@@ -638,11 +696,20 @@ class SymbolicBuilder:
             # 浮点窄化 cast 可能把有限输入变成 inf；不能用实数恒等式表示，
             # 改为逐元素不透明函数，并把“该点转换有定义”作为条件保留。
             value = values[0]
+            # Paged copies have many nested selects. Keep their exact DAG;
+            # eager Piecewise normalization distributes the full address tree.
+            # Retain ordinary algebraic canonicalization for small arguments,
+            # including shared-call and derivative contexts.
             bounds = sp.And(
                 *(i < n for i, n in zip(coordinates(value.shape), value.shape, strict=True))
             )
-            argument = simplify(value.expression, self.budget, assumptions=bounds)
+            argument = (
+                rename_bounds(value.expression)
+                if len(dag_atoms(value.expression, sp.Piecewise)) > 4
+                else simplify(value.expression, self.budget, assumptions=bounds)
+            )
             label = f"cast_{value.dtype}_to_{eq.outvars[0].aval.dtype}"
+            self.element_casts[label] = str(value.dtype), str(eq.outvars[0].aval.dtype)
             domain = sp.And(value.defined, sp.Eq(sp.Function("defined_" + label)(argument), 1))
             self.rules.add("scalar:convert_element_type")
             return [
@@ -651,6 +718,31 @@ class SymbolicBuilder:
                     eq.outvars[0].aval.dtype,
                     sp.Function(label, real=True)(argument),
                     domain,
+                    True,
+                    sources[0],
+                )
+            ]
+        if (
+            name == "convert_element_type"
+            and values[0].finite
+            and dtype_kind(values[0].dtype) == "f"
+            and dtype_kind(eq.outvars[0].aval.dtype) in "iu"
+            and values[0].expression.free_symbols
+        ):
+            # Finite float-to-integer conversion is a deterministic, total
+            # element operation, but is not a real identity. Retain its exact
+            # operand and dtype-specific function. Witness evaluation may only
+            # discharge a concrete in-range integer, never rounding/overflow.
+            value = values[0]
+            label = f"cast_{value.dtype}_to_{eq.outvars[0].aval.dtype}"
+            self.element_casts[label] = str(value.dtype), str(eq.outvars[0].aval.dtype)
+            self.rules.add("scalar:float-to-integer-cast")
+            return [
+                SymbolicTensor(
+                    value.shape,
+                    eq.outvars[0].aval.dtype,
+                    sp.Function(label, integer=True)(rename_bounds(value.expression)),
+                    value.defined,
                     True,
                     sources[0],
                 )
@@ -845,7 +937,30 @@ class SymbolicBuilder:
             # 为部分函数补上原始定义条件；条件成立前不做实数化简。
             domain = sp.And(*conditions)
             if name == "div":
-                domain &= sp.Ne(args[1], 0)
+
+                def positive(value: sp.Basic) -> bool:
+                    if value.func == sp.exp:
+                        return True
+                    if value.is_Rational:
+                        return value > 0
+                    if isinstance(value, sp.Piecewise):
+                        return value.args[-1].cond == sp.true and all(
+                            positive(pair.expr) for pair in value.args
+                        )
+                    if isinstance(value, sp.Sum):
+                        return all(
+                            start.is_Integer and stop.is_Integer and start <= stop
+                            for _, start, stop in value.limits
+                        ) and positive(value.function)
+                    return False
+
+                if values[1].finite and positive(args[1]):
+                    # Under the retained operand domains, finite real exp is
+                    # positive, as is its nonempty finite sum. This proves
+                    # nonzero without expanding a coordinate-dependent mask.
+                    self.rules.add("positive-finite-denominator")
+                else:
+                    domain &= sp.Ne(args[1], 0, evaluate=not args[1].has(sp.Sum, sp.Product))
             elif name == "log":
                 domain &= args[0] > 0
             elif name == "sqrt":
@@ -877,7 +992,12 @@ class SymbolicBuilder:
                 if all(dtype_kind(v.dtype) == "b" for v in values)
                 else SCALAR[name]
             )
-            expression = sp.sympify(function(*scalar_args))
+            if name == "exp" and args[0].has(sp.Sum, sp.Product):
+                expression = sp.exp(*scalar_args, evaluate=False)
+            elif name == "div" and any(arg.has(sp.Sum, sp.Product) for arg in args):
+                expression = sp.Mul(args[0], sp.Pow(args[1], -1, evaluate=False), evaluate=False)
+            else:
+                expression = sp.sympify(function(*scalar_args))
             if dtype_kind(aval.dtype) in "iu" and not expression.free_symbols:
                 # 常量整数运算按 dtype 值域检查；溢出值没有可表示的数学结果。
                 limits = np.iinfo(aval.dtype)
@@ -922,7 +1042,9 @@ class SymbolicBuilder:
                 return result(_exact_array(converted).item(), domain)
             if dtype_kind(value.dtype) == dtype_kind(aval.dtype) == "f":
                 # 不同浮点格式之间的舍入没有实数恒等式，只能逐元素保留为不透明函数。
-                function = sp.Function(f"cast_{value.dtype}_to_{aval.dtype}", real=True)
+                label = f"cast_{value.dtype}_to_{aval.dtype}"
+                self.element_casts[label] = str(value.dtype), str(aval.dtype)
+                function = sp.Function(label, real=True)
                 self.rules.add("scalar:convert_element_type")
                 return result(function(expression), domain)
             raise UnsupportedJaxprError(
@@ -1127,7 +1249,11 @@ class SymbolicBuilder:
                 a = sp.Piecewise((1, a), (0, True))
                 b = sp.Piecewise((1, b), (0, True))
             return result(
-                self.summation(a * b, limits, domain),
+                self.summation(
+                    sp.Mul(a, b, evaluate=False) if a.has(sp.Sum) or b.has(sp.Sum) else a * b,
+                    limits,
+                    domain,
+                ),
                 self.universal(domain, limits),
             )
         if name == "select_n":

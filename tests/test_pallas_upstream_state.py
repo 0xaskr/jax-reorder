@@ -98,20 +98,30 @@ def test_existing_open_source_mutations_also_pass_through_state_projection(
     assert all(matches) == equivalent
 
 
-@pytest.mark.parametrize("target", ["jax", "retile"])
-def test_upstream_serial_matmul_positive_algebra(target):
+@pytest.mark.parametrize(
+    "target,scope", [("jax", "function"), ("retile", "function"), ("retile", "device_local")]
+)
+def test_upstream_serial_matmul_positive_algebra(target, scope):
     right = (
         jax.make_jaxpr(lambda a, b: a @ b)(*inputs("jax_matmul"))
         if target == "jax"
         else trace("jax_matmul", block_k=256)
     )
-    result = compare_algebraic_jaxprs(trace("jax_matmul"), right)
+    left = trace("jax_matmul")
+    if scope == "device_local":
+        assert (
+            compare_pallas_kernels(left, right, equivalence="semantic").status is Status.DIFFERENT
+        )
+    result = compare_algebraic_jaxprs(left, right, scope=scope)
     assert result.status is Status.EQUIVALENT
     assert result.backend_result is not None and result.warnings
 
 
 def test_original_attention_moves_kv_iteration_between_grid_and_kernel_loop():
-    a, b = (adapt(trace("jax_attention", block_k=k)).view for k in (128, 256))
+    left, right = (trace("jax_attention", block_k=k) for k in (128, 256))
+    assert compare_pallas_kernels(left, right, equivalence="semantic").status is Status.EQUIVALENT
+    assert compare_algebraic_jaxprs(left, right, scope="device_local").status is Status.EQUIVALENT
+    a, b = (adapt(source).view for source in (left, right))
     result = compare_program_views(a, b)
     assert result.status is Status.EQUIVALENT and result.equivalence_kind == "normalized"
     verify_normalized_evidence(a, b, result.evidence, budget=AnalysisBudget())
@@ -125,9 +135,15 @@ def test_original_attention_moves_kv_iteration_between_grid_and_kernel_loop():
         )
 
 
+@pytest.mark.parametrize("scope", ["function", "device_local"])
 @pytest.mark.parametrize("mode", ["reset_each", "overwrite", "double_state"])
-def test_upstream_serial_matmul_mutation_has_complete_output_counterexample(mode):
-    result = compare_algebraic_jaxprs(trace("jax_matmul"), trace("jax_matmul", mode))
+def test_upstream_serial_matmul_mutation_has_complete_output_counterexample(mode, scope):
+    left, right = trace("jax_matmul"), trace("jax_matmul", mode)
+    if scope == "device_local":
+        assert (
+            compare_pallas_kernels(left, right, equivalence="semantic").status is Status.DIFFERENT
+        )
+    result = compare_algebraic_jaxprs(left, right, scope=scope)
     assert result.status is Status.INEQUIVALENT
     assert any(
         q.answer is False and q.scope.startswith("output_coordinate=")
@@ -264,3 +280,56 @@ def test_upstream_kernel_actual_cpu_execution_and_mutation_witnesses(family, mod
         )
         == expected
     )
+
+
+def lane_review_indices(lane, mode):
+    return {
+        "signed_div": lambda: jax.lax.div(lane - 63, jnp.int32(-3)) + 32,
+        "signed_rem": lambda: jax.lax.rem(lane - 63, jnp.int32(-3)) + 4,
+        "signed_sign": lambda: jnp.sign(lane - 64) + 1,
+        "boolean": lambda: jnp.logical_xor(lane > 20, jnp.logical_not(lane < 80)).astype(jnp.int32),
+        "min_max": lambda: jnp.minimum(jnp.maximum(lane - 32, 0), 63),
+        "unsigned": lambda: (lane.astype(jnp.uint8) ^ jnp.uint8(1)).astype(jnp.int32),
+        "overflow_add": lambda: jax.lax.rem(lane + jnp.int32(2**31 - 1), jnp.int32(128)),
+        "overflow_div": lambda: (
+            jax.lax.div(jnp.minimum(lane, jnp.int32(-(2**31))), jnp.int32(-1)) & 127
+        ),
+        "zero_divisor": lambda: jax.lax.div(lane, lane - lane),
+        "out_of_bounds": lambda: lane + 1,
+    }[mode]()
+
+
+def lane_review_source(mode):
+    gather = upstream(0)["_lane_gather"]
+
+    def kernel(x, y):
+        lane = jnp.maximum(jnp.arange(128), 0)
+        y[...] = gather(x[...], lane_review_indices(lane, mode))
+
+    signature = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+    return jax.make_jaxpr(pl.pallas_call(kernel, out_shape=signature))(signature)
+
+
+@pytest.mark.parametrize(
+    "mode", ["signed_div", "signed_rem", "signed_sign", "boolean", "min_max", "unsigned"]
+)
+def test_vector_lane_proof_matches_signed_and_boolean_jax_semantics(mode):
+    proof = normalize_view(adapt(lane_review_source(mode)).view, budget=AnalysisBudget())
+    x = np.arange(1024, dtype=np.float32).reshape((8, 128))
+    expected = x[3, np.asarray(lane_review_indices(jnp.arange(128), mode))]
+    actual = [at_point(proof.projection.outputs[0], (x,), (3, i)) for i in range(128)]
+    np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "mode,reason",
+    [
+        ("overflow_add", "overflow"),
+        ("overflow_div", "overflow"),
+        ("zero_divisor", "zero divisor"),
+        ("out_of_bounds", "in-bounds promise"),
+    ],
+)
+def test_vector_lane_proof_preserves_intermediate_integer_and_address_rejections(mode, reason):
+    with pytest.raises(UnsupportedJaxprError, match=reason):
+        normalize_view(adapt(lane_review_source(mode)).view, budget=AnalysisBudget())
