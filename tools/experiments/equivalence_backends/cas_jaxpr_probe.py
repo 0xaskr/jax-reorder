@@ -25,7 +25,7 @@ import jax.numpy as jnp
 import sympy as sp
 from jax._src import compiler, core, dispatch
 
-from examples import glm52_decode_dsa_mla as layer
+from tests import glm52_decode_dsa_mla as layer
 
 
 class Unsupported(ValueError):
@@ -219,7 +219,7 @@ def compare(name, left, right, args, *, negative=False):
 def run():
     """追踪 GLM helper 与最小控制用例，断言预期状态并返回报告。
 
-    使用 examples/glm52_decode_dsa_mla.py 的 glm profile 真实 helper shape；
+    使用 tests/glm52_decode_dsa_mla.py 的 glm profile 真实 helper shape；
     断言只覆盖本探针声明支持域内的 7 个用例，结果写入报告。不执行模型。
     """
     p = layer.PROFILES["glm"]

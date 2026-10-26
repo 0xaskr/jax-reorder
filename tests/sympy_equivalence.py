@@ -1,6 +1,6 @@
 """比较 exp(x + y) 与 exp(x) * exp(y)，追踪后直接采用 SymPy 数学结论。
 
-在仓库根目录运行：uv run python examples/sympy_equivalence.py
+在仓库根目录运行：uv run python tests/sympy_equivalence.py
 预期结构比较为 different（两份代码的计算图不同），数学比较为 equivalent
 （信赖 SymPy 的实数恒等式判定）。脚本只做抽象追踪，不编译、不执行数值；
 结论限定在理想实数解释，不表示浮点逐位一致或误差很小。

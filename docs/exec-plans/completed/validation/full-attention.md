@@ -2,9 +2,9 @@
 
 > 状态：历史验证与固定测试资产说明；原数字、接口口径和“当前缺口”属于记录时点，归档不表示测试资产废弃。现行支持状态见[贡献者指南](../../../../CONTRIBUTING.md)，现行契约见[设计索引](../../../design-docs/index.md)。
 
-在 SGLang-JAX 提交 `c98ced4a7a64e83261f6672937ce41f0095828ba` 上验证原始类，不用简化的 attention 核心代替原调用链。[来源快照](../../../../tests/fixtures/sglang_jax/README.md)保留完整原文件和独立摘要；[加载器](../../../../examples/full_layers/upstream.py)提取未改写的原始定义并注入实际依赖。硬件内核依赖直接加载原文件。
+在 SGLang-JAX 提交 `c98ced4a7a64e83261f6672937ce41f0095828ba` 上验证原始类，不用简化的 attention 核心代替原调用链。[来源快照](../../../../tests/fixtures/sglang_jax/README.md)保留完整原文件和独立摘要；[加载器](../../../../tests/full_layers/upstream.py)提取未改写的原始定义并注入实际依赖。硬件内核依赖直接加载原文件。
 
-候选由 AI 直接编写，源码、预判和理由全部 [hardcode](../../../../examples/full_layers/candidates.py)。脚本只准备参数、数值输入和报告。原构造函数中固定的 head/LoRA 维度保持不变，仅缩小合法 token、head、hidden 配置。权重来自独立非对称随机值，以动态数组输入；cache、position、length、mask 也保留真实接口。
+候选由 AI 直接编写，源码、预判和理由全部 [hardcode](../../../../tests/full_layers/candidates.py)。脚本只准备参数、数值输入和报告。原构造函数中固定的 head/LoRA 维度保持不变，仅缩小合法 token、head、hidden 配置。权重来自独立非对称随机值，以动态数组输入；cache、position、length、mask 也保留真实接口。
 
 ## 已验证的 CPU 前向路径
 
@@ -55,10 +55,10 @@ GLM5 Pallas 配置只显式给定原后端允许的 block/VMEM 参数以避免�
 
 ```bash
 uv run pytest tests/test_full_attention.py
-uv run python -m examples.full_layers.runner --supplemental --report /tmp/full-layers.json
-uv run python -m examples.full_layers.runner --family glm5 --samples 3
+uv run python -m tests.full_layers.runner --supplemental --report /tmp/full-layers.json
+uv run python -m tests.full_layers.runner --family glm5 --samples 3
 ```
 
-[运行器](../../../../examples/full_layers/runner.py)报告 `cases` 与前向 `counts`；`supplemental` 分别保存 derivatives、indexer、boundaries、unverified，`supplemental_counts` 单独统计。unknown、CPU 拒绝和未验证不会并入 equivalent。每条包含来源、配置、模式、实际/预期结论、差异和数值证据。大权重不嵌入 JSON，使用固定输入生成 seed、签名和逐叶 SHA-256 精确重放；错误输出保存端口、索引和实际值。
+[运行器](../../../../tests/full_layers/runner.py)报告 `cases` 与前向 `counts`；`supplemental` 分别保存 derivatives、indexer、boundaries、unverified，`supplemental_counts` 单独统计。unknown、CPU 拒绝和未验证不会并入 equivalent。每条包含来源、配置、模式、实际/预期结论、差异和数值证据。大权重不嵌入 JSON，使用固定输入生成 seed、签名和逐叶 SHA-256 精确重放；错误输出保存端口、索引和实际值。
 
 报告是本地 CPU 证据；GitHub CI 是否通过须查实际运行结果。总体回归见[验证矩阵](../../../design-docs/current/verification-matrix.md)。

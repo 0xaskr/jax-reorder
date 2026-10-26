@@ -48,7 +48,7 @@ JAX 的 `free_ref` 虽报告空 effects，仍按资源失效操作加顺序边�
 [来源清单](../../../../tests/fixtures/pallas_kernels/manifest.json)固定 commit、git blob、SHA-256 和原 URL，
 保存完整原文件及各项目 Apache-2.0 许可证。加载器仅提取完整函数定义，注入实际 JAX/Pallas 与
 原常量，不安装上游服务、不导入调参器、不替换原计算。候选由 AI 本地逐个编写，
-位于 [examples/pallas_kernels.py](../../../../examples/pallas_kernels.py)，预期标签固定在源码中。
+位于 [tests/pallas_kernels.py](../../../../tests/pallas_kernels.py)，预期标签固定在源码中。
 
 17 组结果：6 组结构 equivalent，11 组结构 different。三个真正重排的正例确认原方程顺序发生改变；
 另三个未使用 `sin` 在 **Pallas tracing 阶段**就被上游 DCE，传给比较器的图已经相同。
@@ -70,7 +70,7 @@ Attention/Decoder 的四个配置遇到 8 个歧义 carry 槽位，排列数超�
 可复现入口：
 
 ```bash
-uv run python -m examples.pallas_kernels
+uv run python -m tests.pallas_kernels
 uv run pytest -q tests/test_pallas_structural.py tests/test_pallas_upstream.py
 uv run pytest -q tests/test_pallas_*.py
 ```

@@ -6,7 +6,7 @@
   对照原始函数数值与规范化图执行结果。
 - 附加：比较前后 schedule（原始 Primitive 顺序）必须不同，防止“只改 Python 名字”被当成
   改写覆盖；jaxpr 仍需通过 core.check_jaxpr。
-- 前置条件：CPU 平台（check_cpu=True）；固定源码来自 examples/mixed_regions.py。
+- 前置条件：CPU 平台（check_cpu=True）；固定源码来自 tests/mixed_regions.py。
 - 三种组合与两种分支不覆盖所有嵌套区域顺序。
 """
 
@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from examples import mixed_regions as cases
+from tests import mixed_regions as cases
 from jax_reorder import Status, compare_functions
 
 

@@ -19,7 +19,7 @@ from dataclasses import replace
 import jax
 import jax.numpy as jnp
 import pytest
-from lax_cases import cases, trace_case
+from tests.lax_cases import cases, trace_case
 
 from jax_reorder import (
     CorrespondenceError,

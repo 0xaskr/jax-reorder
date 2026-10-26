@@ -14,9 +14,9 @@ import numpy as np
 from jax._src import core
 from jax.sharding import NamedSharding
 
-from examples.sglang_layers.builders import cpu_mesh
-from examples.sglang_layers.runner import close
-from examples.sglang_layers.upstream import REVISION
+from tests.sglang_layers.builders import cpu_mesh
+from tests.sglang_layers.runner import close
+from tests.sglang_layers.upstream import REVISION
 from jax_reorder import (
     Status,
     canonicalize,

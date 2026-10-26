@@ -1,6 +1,6 @@
 """重放逐元素分配律与矩阵乘法/广播乘加互认，分别报告结构与代数证据。
 
-运行：uv run python examples/algebraic_equivalence.py
+运行：uv run python tests/algebraic_equivalence.py
 两个正例都要求 forward/JVP/VJP 三种模式为 equivalent：分配律依赖逐元素
 代数规则，矩阵乘与广播乘加归约依赖同一索引连接。脚本同时打印浮点警告，
 说明数学等价只在理想实数解释下成立；CPU 编译只用于确认两侧可执行。

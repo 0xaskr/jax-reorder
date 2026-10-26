@@ -1,6 +1,6 @@
 """用 GLM-5.2 纯 JAX DSA/MLA 核心的 5+5 手写改写检查 jaxpr 比较器。
 
-uv run python -m examples.glm52_decode_dsa_mla --json /tmp/glm52-jaxpr.json
+uv run python -m tests.glm52_decode_dsa_mla --json /tmp/glm52-jaxpr.json
 只构造 ShapeDtypeStruct、追踪和比较；不编译、不执行 layer、不采样数值。
 5 个正例是循环内换序或理想实数恒等式，5 个负例改变公式；预期关系由公式
 推导预先标注，不是比较器的输出。退出码：0=全部完成且无预期冲突，1=误接受

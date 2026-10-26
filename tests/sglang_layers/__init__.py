@@ -5,6 +5,6 @@ upstream.py 从已校验快照抽取原始定义并解析注册关系；catalog.
 保存 AI 候选与人工预判；oracles.py 用 NumPy 独立重算；runner.py 逐层比较、
 核对数值见证并生成报告。
 
-入口：`uv run python -m examples.sglang_layers.runner --report /tmp/sglang-layers.json`。
+入口：`uv run python -m tests.sglang_layers.runner --report /tmp/sglang-layers.json`。
 结论覆盖固定提交的 36 个选定层、声明签名与 CPU 环境，不是完整模型推理。
 """

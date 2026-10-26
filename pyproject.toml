@@ -21,10 +21,15 @@ Issues = "https://github.com/0xaskr/jax-reorder/issues"
 [dependency-groups]
 dev = [
     "basedpyright>=1.40.2",
-    "flax>=0.12.10",
-    "pytest>=8",
     "ruff>=0.11",
 ]
+test = [
+    "flax>=0.12.10",
+    "pytest>=8",
+]
+
+[tool.uv]
+default-groups = ["dev", "test"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jax_reorder"]
@@ -40,7 +45,6 @@ select = ["E", "F", "I", "UP", "B", "ANN"]
 # Any 仅用于异构 primitive 参数、编码载荷及任意 Python pytree。
 "src/jax_reorder/**/*.py" = ["ANN401"]
 "tests/**/*.py" = ["ANN"]
-"examples/**/*.py" = ["ANN"]
 "tools/**/*.py" = ["ANN"]
 
 [tool.basedpyright]

@@ -65,7 +65,7 @@ switch 记录在 `/tmp/review-cond-switch-final-aot.log`。
 计入通过。原空 dot/reshape 探针也已从内部异常恢复为正确的等价结论。
 
 `.venv/bin/ruff check .`、`.venv/bin/ruff format --check .`、
-`.venv/bin/basedpyright`、`.venv/bin/python examples/inspect_jaxpr.py`、
+`.venv/bin/basedpyright`、`.venv/bin/python tests/inspect_jaxpr.py`、
 `.venv/bin/python tools/check_docs.py --changed` 与 `git diff --check` 通过。
 本轮以进入时快照为边界复核，其他 27 份已有文件保持原 SHA256；未改受保护文档、
 依赖与环境配置，未提交或推送。

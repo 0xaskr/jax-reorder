@@ -40,7 +40,7 @@
 - 收紧数学拒绝断言后的 8 文件回归：**352 passed / 4 failed，445.85 秒**。四项分别是两种实际超时、未决大 Sum 的异常类型断言，以及上述布尔 Piecewise 错误。修正后前述三项 **3 passed**，布尔/部分定义域相关 **12 passed**。
 - 最后命令 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache python3 /tmp/rerun_comparison_failures.py` 组装全部首轮失败节点（按最新测试名称）、完整 `test_trusted_sympy.py`、`test_comparison_errors.py`，以及捕获数组、部分函数、GLM CLI 和全部 DeepSeek 负例：**110 passed，191.95 秒**。全部 34 个首轮失败均包含在内，包含完整文件时不重复选择其节点。
 - `uv run --no-sync --offline pytest --collect-only -q`：当前 **1950 tests collected**，比迁移时首轮全量新增 21 项异常/逻辑条件回归。完成后没有再重复整套全量；以上记录区分全量与分组复测，计数不可相加。
-- `uv run --no-sync --offline ruff check .`、`ruff format --check .`、`python tests/adapter_inventory.py`、`python examples/inspect_jaxpr.py`、`python examples/bfs_reordering.py`、`python examples/sympy_equivalence.py`、`python examples/check_correctness.py --trials 1`、`python tools/check_docs.py --changed` 和 `git diff --check` 通过。
+- `uv run --no-sync --offline ruff check .`、`ruff format --check .`、`python tests/adapter_inventory.py`、`python tests/inspect_jaxpr.py`、`python tests/bfs_reordering.py`、`python tests/sympy_equivalence.py`、`python tests/check_correctness.py --trials 1`、`python tools/check_docs.py --changed` 和 `git diff --check` 通过。
 - 命令均使用 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`。首轮与复测日志、复测节点清单及组装脚本在 `/tmp/jax-reorder-exceptions-*` 和 `/tmp/rerun_comparison_failures.py`，属于本地临时证据，不纳入仓库。唯一 warning 是原有上游 Pallas 弃用提示。
 
 ## 未解决问题

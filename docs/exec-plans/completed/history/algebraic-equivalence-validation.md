@@ -41,7 +41,7 @@ Python 3.12、JAX 0.11.2、SymPy 1.14.0 下，对 `sum(x*x)` 的一次实测如�
 
 数值实验单独保存实数等价但浮点不同的见证，不作为证明替代品。[结构蕴含回归](../../../../tests/test_algebra_structural.py)把原有 182 组公开原语 IR 与其结构规范化结果成对送入代数入口，全部要求等价；其中 155 组另外直接通过转换、展开和独立证明，其余 27 组明确断言适配边界。加上预算直通、函数三模式和篡改证据，共 371 项通过。
 
-初期代数功能阶段的全量 pytest 为 **1600 passed，1 warning，426.75 秒**；Ruff、格式、tracing/BFS/cond 示例、原语及适配清单、双/四 CPU 各 22 组通信验证均通过。唯一 warning 来自保留的上游 Pallas 弃用接口。具体命令记录在执行计划中。[代数示例](../../../../examples/algebraic_equivalence.py)的分配律、矩阵与乘加归约均通过 forward/JVP/VJP 证明、独立复核及 CPU 编译。
+初期代数功能阶段的全量 pytest 为 **1600 passed，1 warning，426.75 秒**；Ruff、格式、tracing/BFS/cond 示例、原语及适配清单、双/四 CPU 各 22 组通信验证均通过。唯一 warning 来自保留的上游 Pallas 弃用接口。具体命令记录在执行计划中。[代数示例](../../../../tests/algebraic_equivalence.py)的分配律、矩阵与乘加归约均通过 forward/JVP/VJP 证明、独立复核及 CPU 编译。
 
 ## 2026-10-15 CAS 阶段验收
 

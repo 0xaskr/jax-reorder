@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from examples.pallas_kernels import (
+from tests.pallas_kernels import (
     CASES,
     MANIFEST,
     expected_status,

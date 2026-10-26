@@ -16,7 +16,7 @@ import jax
 import numpy as np
 import pytest
 from jax._src import core
-from lax_cases import cases, trace_case
+from tests.lax_cases import cases, trace_case
 
 from jax_reorder import Status, canonicalize, compare_jaxprs
 

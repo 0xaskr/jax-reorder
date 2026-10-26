@@ -2,7 +2,7 @@
 
 ## 目标与完成条件
 
-用户澄清目标是利用 GLM-5.2 MLA/DSA layer 的 jaxpr 检验当前比较器，不需要在 CPU 编译或执行层。修正 `examples/glm52_decode_dsa_mla.py`：只构造抽象签名，追踪固定上游 base 与 5 个等价 / 5 个不等价的手写核心改写，再比较图并报告能力缺口。
+用户澄清目标是利用 GLM-5.2 MLA/DSA layer 的 jaxpr 检验当前比较器，不需要在 CPU 编译或执行层。修正 `tests/glm52_decode_dsa_mla.py`：只构造抽象签名，追踪固定上游 base 与 5 个等价 / 5 个不等价的手写核心改写，再比较图并报告能力缺口。
 
 ## 已确认问题
 
@@ -34,12 +34,12 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| `python -m examples.glm52_decode_dsa_mla --profile small --json /tmp/glm52-jaxpr-small.json --jaxpr-dir /tmp/glm52-review-jaxprs` | 完成 10 组图对比，2 个结构正例、8 个 unknown；按能力缺口契约退出 2 |
+| `python -m tests.glm52_decode_dsa_mla --profile small --json /tmp/glm52-jaxpr-small.json --jaxpr-dir /tmp/glm52-review-jaxprs` | 完成 10 组图对比，2 个结构正例、8 个 unknown；按能力缺口契约退出 2 |
 | 默认 `glm` 签名的同一入口，报告 `/tmp/glm52-jaxpr-glm.json`、图目录 `/tmp/glm52-jaxpr-glm` | 同样 2 equivalent / 8 unknown，导出 base 与 10 个候选的 jaxpr，未编译/执行 layer |
 | `pytest -q tests/test_glm52_decode_dsa_mla.py --tb=short` | 41 passed，283.53 秒；small/FP32、glm/FP32、glm/BF16 全部在禁止后端编译及 eager 运算的条件下对比 |
 | `pytest -q tests/test_functions.py tests/test_algebra_common_calls.py --tb=short` | 35 passed，7.99 秒 |
 | `ruff check .` / `ruff format --check .` | 通过 |
-| `python examples/inspect_jaxpr.py` | 通过 |
+| `python tests/inspect_jaxpr.py` | 通过 |
 | `tools/check_docs.py --changed` / `git diff --check` | 通过 |
 
 回归通过只证明测试工具、两种结构换序和当前拒绝原因符合已记录事实，不表示 8 个 unknown 的公式关系已得到证明。没有运行 GLM 层数值计算，也没有运行全仓 pytest。

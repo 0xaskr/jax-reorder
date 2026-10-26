@@ -81,7 +81,7 @@ Nerva 组合是验证资产，生产比较器仍接收任意受支持的 JAX 图
 
 - [x] 读取权限、工作区及历史评估，确认生产迁移暂停。
 - [x] 固定已下载源码的 commit 和许可证；保存原版副本。
-- [x] 保留 `examples/sympy_equivalence.py` 及用户已有文档改动。
+- [x] 保留 `tests/sympy_equivalence.py` 及用户已有文档改动。
 - [x] 更新评价前提：可以 fork，可以修改；不以缺陷数量作选型依据。
 - [x] 新增 nerva-jax，与 nerva-sympy 按成套资产评估。
 
@@ -360,7 +360,7 @@ git diff --check
 - Ruff、格式检查（186 文件）、tracing 示例、新 SymPy 示例通过。离线 sdist/wheel 构建、许可证/manifest 入包、临时目录独立导入及数学比较通过。
 - 稳定版本全量：**2166 passed，1 warning，1403.69 秒**。唯一 warning 是既有 SGLang fixture 的 Pallas reciprocal 弃用提示，不是本轮引入的后端。
 - 本轮新增 71 项测试（41 新后端、29 Nerva、1 项包含 23 场景的上游基线）；旧证据兼容、结构比较和一阶求导回归均通过。
-- `examples/algebraic_equivalence.py` 的 forward/JVP/VJP 与已有 CPU 编译检查通过；新 `examples/sympy_equivalence.py` 只抽象追踪和符号比较。
+- `tests/algebraic_equivalence.py` 的 forward/JVP/VJP 与已有 CPU 编译检查通过；新 `tests/sympy_equivalence.py` 只抽象追踪和符号比较。
 - 文档链接、空白检查及归档引用检查通过；未修改受保护文档、正式依赖或锁文件；后续用户已授权提交远端。
 
 本轮主要命令（已有锁定依赖的本地环境）：
@@ -369,9 +369,9 @@ git diff --check
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline pytest -q --tb=short
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline ruff check .
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline ruff format --check .
-UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python examples/inspect_jaxpr.py
-UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python examples/sympy_equivalence.py
-UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python examples/algebraic_equivalence.py
+UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python tests/inspect_jaxpr.py
+UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python tests/sympy_equivalence.py
+UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python tests/algebraic_equivalence.py
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python tools/experiments/equivalence_backends/trusted_sympy_scaling.py
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv build --offline --out-dir /tmp/jax-reorder-trusted-wheel
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline python tools/check_docs.py --changed

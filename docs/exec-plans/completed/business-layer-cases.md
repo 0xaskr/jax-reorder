@@ -21,13 +21,13 @@
 
 ## 决策与进展
 
-2026-10-11 完成。五个 base 各配四个 AI 直接手写候选：两个独立定义换序正例、两个有数值反例的业务负例。所有源码、预判及理由写入 `examples/business_layer_cases.py`，无脚本生成改写。来源版本、文件摘要、固定配置与许可证已记录；KV 样本选取展平更新核心，MoE 样本止于 router，不冒充完整 attention runtime 或专家层。
+2026-10-11 完成。五个 base 各配四个 AI 直接手写候选：两个独立定义换序正例、两个有数值反例的业务负例。所有源码、预判及理由写入 `tests/business_layer_cases.py`，无脚本生成改写。来源版本、文件摘要、固定配置与许可证已记录；KV 样本选取展平更新核心，MoE 样本止于 router，不冒充完整 attention runtime 或专家层。
 
 ## 验证结果
 
 - `uv sync --locked`：通过。
 - 默认脚本：20 个候选 × 3 种签名 ×（2 个边界 + 3 个随机输入），300 次样本检查通过；JSON 报告保存 30 个负例组合的完整数值反例。
-- `uv run python examples/business_layer_cases.py --trials 10 --seed 42 --report /tmp/jax-reorder-business-seed42.json`：720 次样本检查通过。
+- `uv run python tests/business_layer_cases.py --trials 10 --seed 42 --report /tmp/jax-reorder-business-seed42.json`：720 次样本检查通过。
 - `uv run pytest tests/test_business_layers.py -q`：67 passed，含原图确实不同、故意错误预判和两边同时错误的检测。
 - `uv run pytest -q`：632 passed。
 - `uv run ruff check .`、`uv run ruff format --check .`、`git diff --check`：通过。

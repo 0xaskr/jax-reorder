@@ -6,7 +6,7 @@ dtype 和调用接口不变，但临时张量大小与舍入顺序改变，实�
 由独立数值参照、编译器报告与计时分别测量。wrong_* 是形状相同而计算
 错误的反例，用于确认比较器不会把数值接近或接口相同当成等价。
 
-运行方式与报告字段见 `python -m examples.deepseek_v41.runner`。
+运行方式与报告字段见 `python -m tests.deepseek_v41.runner`。
 """
 
 import jax

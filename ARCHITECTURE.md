@@ -4,7 +4,7 @@
 
 ## 当前实现
 
-已实现完整计算图规范化、精确比较和函数/一阶求导入口，基线为 Python 3.12、锁定的 JAX/jaxlib 0.11.2 和 CPU。实现位于 [src/jax_reorder](src/jax_reorder/)，[tracing 与重排示例](examples/inspect_jaxpr.py)展示 BFS 编号和最终排列，[AI 组合示例](examples/bfs_reordering.py)展示经典案例及 SGLang-JAX LlamaMLP 正反例。
+已实现完整计算图规范化、精确比较和函数/一阶求导入口，基线为 Python 3.12、锁定的 JAX/jaxlib 0.11.2 和 CPU。实现位于 [src/jax_reorder](src/jax_reorder/)，[tracing 与重排示例](tests/inspect_jaxpr.py)展示 BFS 编号和最终排列，[AI 组合示例](tests/bfs_reordering.py)展示经典案例及 SGLang-JAX LlamaMLP 正反例。
 
 当前没有代数模式。新增的 `compare_functions` 核对给定签名的函数契约，并分别追踪前向/JVP/VJP；它不证明一般 Python 等价。[两轮结果参考](docs/references/equivalence-results.md)中的四类结果描述后续完整流程；图接口仍返回计算图等价、计算图不等价或无法判定。
 

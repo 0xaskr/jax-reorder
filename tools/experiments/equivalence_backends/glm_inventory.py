@@ -4,7 +4,7 @@
   python -m tools.experiments.equivalence_backends.glm_inventory \
       --json /tmp/jax-reorder-equivalence-eval/glm-inventory.json
 
-追踪 examples/glm52_decode_dsa_mla.py 的 base 与全部固定改写，递归统计
+追踪 tests/glm52_decode_dsa_mla.py 的 base 与全部固定改写，递归统计
 嵌套图（cond/scan/jit 等）中的方程出现次数、primitive 集合与关键参数。
 统计是语法出现次数，不是执行次数；不编译、不执行数组运算，也不判断
 等价。输出 JSON；--profile/--dtype 选择签名，参数非法时 parser.error。
@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 from jax._src import compiler, dispatch
 
-from examples import glm52_decode_dsa_mla as layer
+from tests import glm52_decode_dsa_mla as layer
 from jax_reorder import trace_function
 
 

@@ -1,7 +1,7 @@
 """四层复杂 cond 的完整路径回归；预期由手写候选的计算关系决定。
 
 覆盖：
-- 正例与标签：examples/nested_cond_four_levels 的场景在全部 profile 与变体下重放 80 个
+- 正例与标签：tests/nested_cond_four_levels 的场景在全部 profile 与变体下重放 80 个
   样本，比较标签与手写候选一致，不生成候选。
 - 实际改写：每层分支数应为 2^level，且规范化结构中第 1 至 4 层都确实发生了换序
   （防止改写被追踪消去后只剩下自比较）。
@@ -18,7 +18,7 @@ import jax
 import numpy as np
 import pytest
 
-from examples import nested_cond_four_levels as case
+from tests import nested_cond_four_levels as case
 
 
 @pytest.mark.parametrize("profile", case.business.PROFILES)

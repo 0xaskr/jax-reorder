@@ -23,7 +23,7 @@ from jax import lax
 from jax._src import core
 from jax._src import custom_derivatives as cd
 
-from examples import custom_derivative_cases as cases
+from tests import custom_derivative_cases as cases
 from jax_reorder import (
     ComparisonBudgetError,
     Status,

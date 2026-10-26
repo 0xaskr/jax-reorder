@@ -12,13 +12,16 @@ cd jax-reorder
 uv sync --locked
 
 # 查看原始 jaxpr、BFS 编号与重排结果
-uv run python examples/inspect_jaxpr.py
+uv run python tests/inspect_jaxpr.py
 
 # 检查图比较、重排前后执行与数值反例
-uv run python examples/check_correctness.py
+uv run python tests/check_correctness.py
 ```
 
-`uv sync` 创建 `.venv` 并安装开发依赖。缓存不可写时，设置 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`。
+`uv sync` 创建 `.venv`，默认同时安装 `dev` 和 `test` 两组依赖：
+`dev` 包含 Ruff、basedpyright，`test` 包含 pytest 和真实模型层验证使用的 Flax。
+只安装运行时和测试依赖可用 `uv sync --locked --no-default-groups --group test`。
+缓存不可写时，设置 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`。
 
 使用函数入口比较两个函数，并分别检查前向与一阶求导：
 
@@ -51,8 +54,8 @@ for mode in report.modes:
 ```
 
 默认 `equivalence="auto"` 先比较结构，结构不同后尝试数学比较；只检查完整图可设置
-`equivalence="structural"`。更多示例见[集合通信](examples/collective_jaxpr.py)、
-[业务改写](examples/business_layer_cases.py)和[真实模型层](docs/exec-plans/completed/validation/full-attention.md)。
+`equivalence="structural"`。更多示例见[集合通信](tests/collective_jaxpr.py)、
+[业务改写](tests/business_layer_cases.py)和[真实模型层](docs/exec-plans/completed/validation/full-attention.md)。
 
 ## 当前选择暂不支持
 
@@ -145,15 +148,36 @@ for mode in report.modes:
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run python examples/inspect_jaxpr.py
+uv run python tests/inspect_jaxpr.py
 uv run pytest
 uv run python tools/check_docs.py --changed
 git diff --check
 ```
 
-依赖通过 `uv add` / `uv add --dev` 管理，并同步 `uv.lock`。原语与适配清单可运行
+运行时、开发工具、测试依赖分别通过 `uv add`、`uv add --dev`、`uv add --group test` 管理，
+并同步 `uv.lock`。原语与适配清单可运行
 `uv run python tests/lax_inventory.py`、`uv run python tests/adapter_inventory.py`；
 测试分组与环境边界见[系统验证矩阵](docs/design-docs/current/verification-matrix.md)。
+
+## 测试用例来源与组织
+
+允许使用已有开源软件栈中的模型层、子模块、Pallas kernel 或单个函数作为基准，
+提取所需代码及依赖上下文，配合 AI 生成的正例和反例，验证 jax-reorder 的 JAX 与 Pallas
+结构、资源语义和代数比较。用例可以针对某一层级或函数，不要求运行完整模型。
+
+- **来源可追溯：**记录上游仓库、固定提交、文件与符号、许可证，以及提取时必要的适配。
+  原始快照与清单放在 `tests/fixtures/`，保留许可证和来源校验信息。
+- **候选固定保存：**将 AI 生成的正反例源码、预期结论及理由提交到仓库；测试运行时不调用 AI，
+  不根据比较器的实际输出反向生成标签。预期由原始语义、公式推导或独立参照核对。
+- **覆盖实际语义：**正例注明保持图结构还是仅保持数学关系；反例区分结构不同、数学不等价和
+  应当拒绝的输入。JAX 保留签名、静态参数与求导模式；Pallas 还需保留 grid、内存、mask、
+  DMA/通信及执行绑定等必要上下文，不能把 kernel 换成纯 JAX 参照后声称覆盖了 Pallas 路径。
+- **分开记录证据：**需要数值验收的用例提供独立参照或反例见证；只做追踪的用例注明限制。
+  抽样相同不证明等价，结构不同也不证明数学不等价；CPU、解释器、AOT 和实机证据分别记录。
+
+可复用候选、模型层与可运行入口统一放在 `tests/`，pytest 断言放在 `test_*.py`。
+现有入口包括 [SGLang 层](tests/sglang_layers/)、[完整 Attention/block](tests/full_layers/)、
+[DeepSeek 层](tests/deepseek_v41/)和 [Pallas kernel](tests/pallas_kernels.py)。
 
 更多约定见 [AGENTS.md](AGENTS.md)，比较契约见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 架构文档中的旧接口说明尚待同步，当前接口与异常行为以本页链接的现行设计文档及源码为准。

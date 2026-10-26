@@ -1,7 +1,7 @@
 """回放预标注的 AI 改写用例，并用独立 CPU 执行核对标签。
 
 覆盖：
-- 正例：examples/bfs_reordering.py 的 ai_cases 固定 18 个用例（换序、代数恒等以及应判
+- 正例：tests/bfs_reordering.py 的 ai_cases 固定 18 个用例（换序、代数恒等以及应判
   different 的改写），由 verify_case 复核预期标签；每个 case 两侧的 jaxpr 都重新 jit
   执行，与原始 Python 函数按 rtol/atol=1e-6 数值对照，并要求规范化幂等。
 - 手动构造的 Llama MLP：非平凡分片 shape 上只交换独立投影的定义顺序，比较 equivalent
@@ -20,7 +20,7 @@ from jax._src import core
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from examples.bfs_reordering import ai_cases, llama_mlp, model_mesh, verify_case
+from tests.bfs_reordering import ai_cases, llama_mlp, model_mesh, verify_case
 from jax_reorder import Status, canonicalize, compare_jaxprs
 
 

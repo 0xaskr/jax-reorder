@@ -10,7 +10,7 @@
 | --- | --- |
 | 公开 lax 身份、参数与 CPU 能力 | [逐原语清单](../../references/lax-coverage.md)、[原语测试](../../../tests/test_lax_primitives.py)：171 个身份，169 个有 CPU 执行证据；另列追踪消去与 CPU 拒绝 |
 | 链、菱形、扇入/扇出、多输出、共享、常量、顺序 effects | [图回归](../../../tests/test_canonical.py)、[语义字段](../../../tests/test_semantics.py)、[AI 固定组合](../../../tests/test_ai_cases.py) |
-| conv/dot/广播、QR/Cholesky、多结果与 precision | [新增组合](../../../examples/combination_matrix.py)、[验收](../../../tests/test_combination_matrix.py)：FP32/FP64，合法 conv/dot BF16，非方阵与三种固定调度，检查对称/传递性及 NumPy 参照 |
+| conv/dot/广播、QR/Cholesky、多结果与 precision | [新增组合](../../../tests/combination_matrix.py)、[验收](../../../tests/test_combination_matrix.py)：FP32/FP64，合法 conv/dot BF16，非方阵与三种固定调度，检查对称/传递性及 NumPy 参照 |
 | cond、switch、scan/while 捕获和循环反馈 | [区域绑定](region-bindings.md)、[捕获测试](../../../tests/test_region_bindings.py)、[反馈测试](../../../tests/test_feedback_bindings.py)：零/一/多次，FP32/BF16，私有槽位联动和错接反例 |
 | jit 结果及 donation、shard_map 接口、混合控制流 | [调用测试](../../../tests/test_call_bindings.py)、[分片测试](../../../tests/test_shard_bindings.py)、[混合测试](../../../tests/test_mixed_regions.py)：cond→scan→while→cond、scan→cond→scan、jit→cond→scan |
 | 函数 pytree、静态参数、环境与模式 | [函数测试](../../../tests/test_functions.py)、[契约](function-and-derivative-contract.md) |
@@ -18,7 +18,7 @@
 | 完整无根图、对称接口、预算 | [无根图](../../../tests/test_unrooted.py)、[cond](../../../tests/test_cond_bindings.py)：共享差异、未使用常量、有限精确搜索，无 DCE |
 | 独立原图复核和故意破坏证据 | [对应关系测试](../../../tests/test_correspondence.py)：遗漏节点、共享、端口、分支、effects，以及规范化器漏参数、相同非法图、冒名 Primitive |
 | 压力 | [深度](../../../tests/test_depth.py)、[规模](../../../tests/test_stress.py)：8/16/32 层受控共享区域、2000 层参数、6000 节点长链、512 路扇出 |
-| 单进程双/四 CPU 通信 | [通信记录](../../exec-plans/completed/validation/collective-jaxpr.md)、[脚本](../../../examples/collective_jaxpr.py)：22 个固定组合、参数反例和规范化前后执行 |
+| 单进程双/四 CPU 通信 | [通信记录](../../exec-plans/completed/validation/collective-jaxpr.md)、[脚本](../../../tests/collective_jaxpr.py)：22 个固定组合、参数反例和规范化前后执行 |
 | AI 错标签、两侧共同错误、独立参照 | [业务验收](../../../tests/test_business_layers.py)、[SGLang 层验收](../../../tests/test_sglang_model_layers.py) |
 | 完整真实业务层及硬件拒绝 | [完整层](../../exec-plans/completed/validation/full-attention.md)、[测试](../../../tests/test_full_attention.py)：原 GLM5/Llama/CLIP/Flux、索引器、JVP/VJP、真实 Pallas 调用 |
 
@@ -46,8 +46,8 @@ uv run pytest -m stress
 uv run pytest -m pallas_communication
 uv run python tests/adapter_inventory.py --report /tmp/adapter-inventory.json
 uv run python tests/lax_inventory.py
-uv run python examples/inspect_jaxpr.py
-uv run python examples/collective_jaxpr.py --devices 4
+uv run python tests/inspect_jaxpr.py
+uv run python tests/collective_jaxpr.py --devices 4
 uv run python tools/check_docs.py --changed
 git diff --check
 ```

@@ -1,4 +1,4 @@
-"""手动验证图比较与重排：uv run python examples/check_correctness.py。
+"""手动验证图比较与重排：uv run python tests/check_correctness.py。
 
 可修改 original、各候选函数和 make_inputs 来测试自己的计算。
 选项：--trials 每个案例的数值样本数，--seed 为 NumPy 随机种子，

@@ -1,7 +1,7 @@
 """交叉原语、精度、拓扑三元组与独立数值参照；AI 标签可被测试否定。
 
 覆盖：
-- 正例：examples/combination_matrix 的固定三元组（合法 conv/dot、多结果、QR/Cholesky 等）
+- 正例：tests/combination_matrix 的固定三元组（合法 conv/dot、多结果、QR/Cholesky 等）
   在 float32/float64 与 bfloat16 下两两比较都 equivalent，并检查对称性与传递一致性；
   每张图做 jaxpr 校验、规范化幂等、重排后执行与原始函数数值对照。
 - 反例：第四个程序是故意写错的变体，必须判 DIFFERENT；数值见证不因前三个正例被掩盖。
@@ -16,9 +16,9 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from examples.combination_matrix import CASES, reference, sample
-from examples.full_layers.runner import numerical_witness, raw_schedule
-from examples.sglang_layers.runner import close
+from tests.combination_matrix import CASES, reference, sample
+from tests.full_layers.runner import numerical_witness, raw_schedule
+from tests.sglang_layers.runner import close
 from jax_reorder import Status, canonicalize, compare_jaxprs
 
 

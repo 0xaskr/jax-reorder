@@ -8,6 +8,7 @@
 | 计划 | 当前重点 |
 | --- | --- |
 | [JAX / Pallas 语义层](active/pallas-semantic-layer.md) | 优先修复整数归约/点积的数学语义；继续扩展数据条件、动态地址、并行共享 staging、索引/路由/终止及布局证明 |
+| [测试资产与依赖分组整理](active/test-assets-consolidation.md) | 合并示例与测试目录，分离 dev/test 依赖，明确真实开源代码与 AI 正反例的测试方式 |
 
 尚未解决事项统一维护在下方[待处理清单](#待处理)，具体复现和修复要求放入对应计划。
 具体支持状态及范围取舍见[贡献者指南](../../CONTRIBUTING.md)。

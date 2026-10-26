@@ -55,7 +55,7 @@ SymEngine 实测 E2、E5 为零，`exp(-oo)=0`。安装版本的顶层 Python AP
 
 ## 追加：真实 JAX → SymPy 端到端探针
 
-[cas_jaxpr_probe.py](../../../../../tools/experiments/equivalence_backends/cas_jaxpr_probe.py) 直接导入 [GLM 脚本](../../../../../examples/glm52_decode_dsa_mla.py) 的 `_qk`、`_qk_scale_first`、`_qk_without_scale`、`_pv`、`_pv_reduce`，以 `glm` profile 的真实 helper shape 创建 `ShapeDtypeStruct`。实际经过 `jax.make_jaxpr`，读取原始方程的输入输出绑定、shape、dtype、`dimension_numbers`、`axes` 和 `broadcast_dimensions`，再构造索引表达式。这里没有把手写数学式冒充转换结果。
+[cas_jaxpr_probe.py](../../../../../tools/experiments/equivalence_backends/cas_jaxpr_probe.py) 直接导入 [GLM 脚本](../../../../../tests/glm52_decode_dsa_mla.py) 的 `_qk`、`_qk_scale_first`、`_qk_without_scale`、`_pv`、`_pv_reduce`，以 `glm` profile 的真实 helper shape 创建 `ShapeDtypeStruct`。实际经过 `jax.make_jaxpr`，读取原始方程的输入输出绑定、shape、dtype、`dimension_numbers`、`axes` 和 `broadcast_dimensions`，再构造索引表达式。这里没有把手写数学式冒充转换结果。
 
 ```bash
 PYTHONPATH=/tmp/jax-reorder-equivalence-eval/cas/venv/lib/python3.12/site-packages .venv/bin/python -m tools.experiments.equivalence_backends.cas_jaxpr_probe > /tmp/jax-reorder-equivalence-eval/cas/jaxpr-result.json

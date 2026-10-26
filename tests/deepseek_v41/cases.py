@@ -6,7 +6,7 @@ PROFILES 描述 (batch, sequence, streams, hidden)，其中 (1, 1, 4, 5120) 是
 不调用候选、上游 hc_post 或 jaxpr 比较器。in_context 使用上游 hc_mixes
 产生真实混合系数，把 hc_post 或候选放回 20 次 Sinkhorn 的完整上下文。
 
-复现入口见 `python -m examples.deepseek_v41.runner`；这里的容差是采样
+复现入口见 `python -m tests.deepseek_v41.runner`；这里的容差是采样
 回归阈值，不是浮点误差界或逐位等价承诺。
 """
 

@@ -12,7 +12,7 @@
 
 ## 实验与验收
 
-用例保存在 [collective_jaxpr.py](../../../../examples/collective_jaxpr.py)，回归在 [test_collectives.py](../../../../tests/test_collectives.py)。AI 预先给出图标签及样本相同/不同的预期，脚本分别执行原函数和规范化后的完整 jaxpr，验证完整结构幂等性；负例打印实际数值反例或明确记录样本相同。
+用例保存在 [collective_jaxpr.py](../../../../tests/collective_jaxpr.py)，回归在 [test_collectives.py](../../../../tests/test_collectives.py)。AI 预先给出图标签及样本相同/不同的预期，脚本分别执行原函数和规范化后的完整 jaxpr，验证完整结构幂等性；负例打印实际数值反例或明确记录样本相同。
 
 首次运行发现：`check_vma=True` 的通信结果与 varying 本地值组合、或拼接输出时，JAX 插入 `core.pvary_p`；当前发现机制只扫描 lax、pjit 及 shard_map 节点，遗漏定义于 core 的该辅助原语，导致返回 `unknown`。锁定版本的 `parallel.py` 将其 lowering 为原值，但抽象求值将指定轴从 invariant 改成 varying，轴参数与输出抽象值仍必须保留，不能删除此节点。修复只显式登记该 Primitive 对象，沿用完整参数编码、轴环境与 JAX 类型检查；不扩大到任意 core 原语。
 
@@ -41,8 +41,8 @@
 新增 49 项 pytest：20 个基础组合分别在 `check_vma=False/True` 的配置下验证（设备子组用例固定关闭检查，符合 JAX 要求）；独立通信另覆盖 int32、float16、float32；分片矩阵乘法正反例与 NumPy 参照；通信轴名字、mesh 设备顺序、输出分片接口变化；`pvary` 保留与身份拒绝。全部输出均检查 dtype、shape 和容差内数值，不宣称跨平台逐位一致。
 
 ```bash
-uv run python examples/collective_jaxpr.py --show-jaxpr
-uv run python examples/collective_jaxpr.py --devices 4
+uv run python tests/collective_jaxpr.py --show-jaxpr
+uv run python tests/collective_jaxpr.py --devices 4
 uv run pytest tests/test_collectives.py -q
 uv run pytest -q
 ```

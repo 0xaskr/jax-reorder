@@ -1,6 +1,6 @@
 """手写四层 cond：完整分支树、独立计算换序、显式绑定和最深层错误。
 
-运行：uv run python examples/nested_cond_four_levels.py [--show-jaxpr] [--report PATH]
+运行：uv run python tests/nested_cond_four_levels.py [--show-jaxpr] [--report PATH]
 运行时只生成数值样本，不生成候选或修改 AST/jaxpr。四个布尔输入决定
 16 条路径，结果中的整数编号能检查每条路径确实被执行。SCENARIO 含一个
 equivalent 正例和两个 different 负例；入口先断言 15 个 cond 节点、深度 4，

@@ -5,8 +5,8 @@
 --show-jaxpr 打印原图与候选图，--report 写 JSON（含四类注册映射）。
 
 运行：
-  uv run python -m examples.sglang_layers.runner --report /tmp/sglang-layers.json
-  uv run python -m examples.sglang_layers.runner --layer llama --profile bf16 --show-jaxpr
+  uv run python -m tests.sglang_layers.runner --report /tmp/sglang-layers.json
+  uv run python -m tests.sglang_layers.runner --layer llama --profile bf16 --show-jaxpr
 
 成功时逐层打印 PASS 并返回 0；断言失败或参数非法时退出码非零。结论只
 覆盖选定层、声明签名和 CPU 环境。

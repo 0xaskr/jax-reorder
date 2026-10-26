@@ -12,7 +12,7 @@
 
 输入为子层输出 `x[..., D]`、残差 `r[..., H, D]`、`post[..., H]`、`comb[..., H, H]`。完整输出为 `cast_x_dtype(post[j] * x[d] + sum_i comb[i,j] * r[i,d])`；所有参与值先按原代码转为 FP32，最后一次类型转换保持原位。
 
-AI 手写候选放在 [candidates.py](../../../../examples/deepseek_v41/candidates.py)：
+AI 手写候选放在 [candidates.py](../../../../tests/deepseek_v41/candidates.py)：
 
 - `post_matmul`：把显式 `H×H×D` 广播乘积与归约替换为 `comb.T @ residual`，保留 post 分支和最终转换。代数依据为相同有限收缩索引，收缩规模仍为 `O(H²D)`，逻辑中间张量由 `H²D` 降到 `HD`。是否降低实际内存和延迟必须通过编译结果与计时确认。
 - `post_blocked`：把来源流归约拆成两个连续区间，再结合两段与 post 分支。逻辑广播中间张量最大约减半；验证区间覆盖、无重叠及下标绑定。
@@ -93,7 +93,7 @@ bash tools/verify_deepseek_v41.sh
 
 [验证脚本](../../../../tools/verify_deepseek_v41.sh)只运行真实 DeepSeek-V4.1-Flash mHC 层的来源校验、三模式证明、错误反例及独立数值参照，不运行全仓测试。可追加 `--benchmark --repeats 200` 测量 CPU 性能，或用 `--json /tmp/deepseek-v41.json` 指定报告路径。默认 JSON 写入 `/tmp/jax-reorder-deepseek-v41.json`，任一步失败返回非零状态。脚本使用锁定依赖；已缓存依赖时可设置 `UV_OFFLINE=1`。
 
-只运行层验证时仍可使用 `uv run python -m examples.deepseek_v41.runner --json /tmp/deepseek-v41.json`。
+只运行层验证时仍可使用 `uv run python -m tests.deepseek_v41.runner --json /tmp/deepseek-v41.json`。
 
 ## CPU 性能与取舍
 

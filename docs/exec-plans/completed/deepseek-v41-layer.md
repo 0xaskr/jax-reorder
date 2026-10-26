@@ -47,16 +47,16 @@ H=3 的额外测试发现单位分块的梯度索引需在前缀指标约束下�
 | `pytest -q --tb=short` | 1869 passed、1 failed、1 warning，555.56 秒；唯一失败为上述旧 FFT 手工构造测试 |
 | 修正构造后的 `pytest -q tests/test_algebra_structural.py --tb=short` | 371 passed，8.77 秒；保留全部原有断言 |
 | 全量结束后 `pytest --lf --last-failed-no-failures=none -q --tb=short` | 1 passed，0.95 秒；无遗留失败，1870 个用例均有通过记录 |
-| `python -m examples.deepseek_v41.runner --json /tmp/jax-reorder-deepseek-v41-final.json` | 独立层与完整 mHC 上下文 24 组正例模式通过；18 组错误候选模式拒绝；NumPy 前向/JVP/VJP 参照通过 |
+| `python -m tests.deepseek_v41.runner --json /tmp/jax-reorder-deepseek-v41-final.json` | 独立层与完整 mHC 上下文 24 组正例模式通过；18 组错误候选模式拒绝；NumPy 前向/JVP/VJP 参照通过 |
 | `ruff check .` / `ruff format --check .` | 通过，142 个 Python 文件格式一致 |
 | tracing、BFS、cond、algebraic 示例 | 全部通过 |
 | `tests/adapter_inventory.py` / `tests/lax_inventory.py` | 锁定环境清单一致 |
-| `examples/collective_jaxpr.py --devices 2` / `--devices 4` | 各 22 个通信组合通过 |
+| `tests/collective_jaxpr.py --devices 2` / `--devices 4` | 各 22 个通信组合通过 |
 | `tools/check_docs.py` / `--changed`、`git diff --check` | 通过；新增文件与归档链接纳入检查 |
 
 唯一 warning 为保留上游的 Pallas reciprocal 弃用提示。本次算法及模型测试没有遗留失败。
 
-独立性能阶段在所有上述进程退出后调用 `examples.deepseek_v41.runner.benchmark(profile, dtype, 200)`，形状依次为 `(1,1,4,5120)`、`(8,1,4,5120)`、`(1,128,4,5120)`，dtype 为 FP32/BF16；写回同一临时 JSON 的 `benchmarks`。与公开 `--benchmark --repeats 200` 入口使用相同函数。
+独立性能阶段在所有上述进程退出后调用 `tests.deepseek_v41.runner.benchmark(profile, dtype, 200)`，形状依次为 `(1,1,4,5120)`、`(8,1,4,5120)`、`(1,128,4,5120)`，dtype 为 FP32/BF16；写回同一临时 JSON 的 `benchmarks`。与公开 `--benchmark --repeats 200` 入口使用相同函数。
 
 matmul 的单 token 中位加速比为 FP32 1.053×、BF16 1.109×，其他形状更慢；blocked 全部更慢。base 的临时缓冲为 0，两候选均增加临时空间，不能宣称普遍加速或实际省内存。完整工作量、误差、延迟和内存表见[开发记录](validation/deepseek-v41-layer.md)。JSON 原始数据位于 `/tmp`，未纳入仓库。
 

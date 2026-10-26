@@ -8,7 +8,7 @@
 - 反例与拒绝：错误循环绑定既有图差异也有数值见证；未知循环元数据与缺失实参显式抛
   InvalidJaxprError / UnsupportedJaxprError。
 
-前置条件：CPU 平台；固定源码来自 examples/region_bindings.py，不涉及多设备。
+前置条件：CPU 平台；固定源码来自 tests/region_bindings.py，不涉及多设备。
 有限步数与形状不证明任意循环反馈拓扑。
 """
 
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from examples import region_bindings as cases
+from tests import region_bindings as cases
 from jax_reorder import (
     InvalidJaxprError,
     Status,

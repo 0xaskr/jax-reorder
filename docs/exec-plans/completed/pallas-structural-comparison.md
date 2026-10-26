@@ -70,12 +70,12 @@
 - 新结构/开源/无根搜索三文件：`pytest -q tests/test_pallas_structural.py
   tests/test_pallas_upstream.py tests/test_unrooted.py --tb=short`：**79 passed，32.54s**。
   其中开源固定内核 **19 项**（2 个来源摘要、17 个候选），Pallas 结构 **47 项**。
-- `examples.full_layers.evidence.verify_boundaries()`：8 条边界记录全部符合预期，
+- `tests.full_layers.evidence.verify_boundaries()`：8 条边界记录全部符合预期，
   GLM5 四条预算异常、Wan/EPMoE 自比较、两个原始追踪拒绝；EPMoE 数值参照通过。
 - `pytest tests/test_full_attention.py -k 'original_glm5 or original_cross or original_moe'`：
   **10 passed，21 deselected，121.73s**，一个上游 reciprocal 迁移弃用警告。
 - Ruff、格式检查（229 文件）、basedpyright（0 errors、0 warnings）、adapter/lax inventory 通过。
-  `python -m examples.pallas_kernels` 的 17 行结构矩阵通过；tracing 与 BFS 示例通过。
+  `python -m tests.pallas_kernels` 的 17 行结构矩阵通过；tracing 与 BFS 示例通过。
 - 结构相关 23 文件最终回归：**1029 passed，244.87s**。文件为 adapter_guards、ai_cases、
   call_bindings、canonical、collectives、combination_matrix、comparison_errors、cond_bindings、
   correspondence、custom_derivatives、feedback_bindings、functions、lax_primitives、mixed_regions、

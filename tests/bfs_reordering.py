@@ -1,6 +1,6 @@
 """重放预先保存的 AI 图变换、判断及 CPU 数值反例，不调用在线 AI。
 
-运行：uv run python examples/bfs_reordering.py
+运行：uv run python tests/bfs_reordering.py
 LlamaMLP 提取自 SGLang-JAX（Apache-2.0），提交为
 538abe3fdba84b586a6a2fd151cac67cc974d35f，来源与配置见
 docs/exec-plans/completed/validation/bfs-cases.md。以下函数保存变换前后的代码；预期标签和

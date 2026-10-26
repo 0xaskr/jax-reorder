@@ -19,11 +19,11 @@ import jax
 import pytest
 from jax._src import core
 
-from examples.full_layers.builders import BLOCK_PROFILES, PROFILES, BlockCase, Glm5Case
-from examples.full_layers.runner import FAMILIES, verify
-from examples.full_layers.upstream import original_imports
-from examples.sglang_layers.builders import cpu_mesh
-from examples.sglang_layers.upstream import ROOT
+from tests.full_layers.builders import BLOCK_PROFILES, PROFILES, BlockCase, Glm5Case
+from tests.full_layers.runner import FAMILIES, verify
+from tests.full_layers.upstream import original_imports
+from tests.sglang_layers.builders import cpu_mesh
+from tests.sglang_layers.upstream import ROOT
 from jax_reorder import Status, TraceError, compare_functions, compare_jaxprs
 
 pytestmark = pytest.mark.filterwarnings(
@@ -91,7 +91,7 @@ def test_attention_dependencies_match_independent_git_blob_digests():
 @pytest.mark.parametrize("decoder", [False, True], ids=["attention", "decoder"])
 @pytest.mark.parametrize("mode", ["EXTEND", "DECODE"])
 def test_original_glm5_absorbed_path_rejects_cpu_lowering(decoder, mode):
-    from examples.full_layers.blocked import glm5_absorbed, mla_original_imports
+    from tests.full_layers.blocked import glm5_absorbed, mla_original_imports
 
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), mla_original_imports():
@@ -105,7 +105,7 @@ def test_original_glm5_absorbed_path_rejects_cpu_lowering(decoder, mode):
 
 
 def test_original_cross_attention_is_structurally_comparable_but_cpu_rejected():
-    from examples.full_layers.blocked import cross_attention
+    from tests.full_layers.blocked import cross_attention
 
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), cross_attention(mesh) as (fn, args):
@@ -117,7 +117,7 @@ def test_original_cross_attention_is_structurally_comparable_but_cpu_rejected():
 
 @pytest.mark.parametrize("family", FAMILIES)
 def test_forward_and_jvp_do_not_imply_identical_vjp_accumulation(family):
-    from examples.full_layers.evidence import verify_derivatives
+    from tests.full_layers.evidence import verify_derivatives
 
     rows = verify_derivatives(family)
     assert [row["actual"] for row in rows] == ["equivalent", "equivalent", "different"]
@@ -126,7 +126,7 @@ def test_forward_and_jvp_do_not_imply_identical_vjp_accumulation(family):
 
 @pytest.mark.parametrize("profile", (PROFILES[0], PROFILES[3]), ids=lambda p: p.name)
 def test_complete_indexer_is_retained_even_when_outputs_do_not_use_it(profile):
-    from examples.full_layers.evidence import verify_indexer
+    from tests.full_layers.evidence import verify_indexer
 
     rows = verify_indexer(profile)
     assert [row["actual"] for row in rows] == ["equivalent", "different"]
@@ -134,9 +134,9 @@ def test_complete_indexer_is_retained_even_when_outputs_do_not_use_it(profile):
 
 
 def test_original_moe_executes_in_cpu_interpret_and_matches_structurally():
-    from examples.full_layers.blocked import original_moe
-    from examples.full_layers.oracles import moe
-    from examples.sglang_layers.runner import close
+    from tests.full_layers.blocked import original_moe
+    from tests.full_layers.oracles import moe
+    from tests.sglang_layers.runner import close
 
     mesh = cpu_mesh()
     with jax.set_mesh(mesh), original_moe(mesh) as (fn, args):

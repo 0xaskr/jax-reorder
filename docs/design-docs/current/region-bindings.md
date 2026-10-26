@@ -6,7 +6,7 @@
 
 [执行计划](../../exec-plans/completed/graph-equivalence-validation.md)要求同时保留图语义并消除内部槽位换序导致的漏认。这里逐项记录区域适配；尚未实现的区域不因出现在设计中就算支持。
 
-已接入 scan/while 捕获、jit/cond/shard_map 私有端口以及循环反馈接口。示例位于 [region_bindings.py](../../../examples/region_bindings.py)、[call_bindings.py](../../../examples/call_bindings.py) 和 [feedback_bindings.py](../../../examples/feedback_bindings.py)，正反例全部由 AI 手写。
+已接入 scan/while 捕获、jit/cond/shard_map 私有端口以及循环反馈接口。示例位于 [region_bindings.py](../../../tests/region_bindings.py)、[call_bindings.py](../../../tests/call_bindings.py) 和 [feedback_bindings.py](../../../tests/feedback_bindings.py)，正反例全部由 AI 手写。
 
 ## 捕获槽位规则
 

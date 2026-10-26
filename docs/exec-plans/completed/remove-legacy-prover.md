@@ -53,9 +53,9 @@ uv run pytest -q
 uv run pytest -q tests/test_algebra.py tests/test_algebra_abs_where.py tests/test_algebra_array_conversion.py tests/test_algebra_jit_composition.py tests/test_algebra_negative_infinity.py tests/test_algebra_sympy.py tests/test_nerva_symbolic.py tests/test_trusted_sympy.py
 uv run ruff check .
 uv run ruff format --check .
-uv run python examples/inspect_jaxpr.py
-uv run python examples/sympy_equivalence.py
-uv run python examples/algebraic_equivalence.py
+uv run python tests/inspect_jaxpr.py
+uv run python tests/sympy_equivalence.py
+uv run python tests/algebraic_equivalence.py
 uv run python tools/check_docs.py --changed
 uv build --offline --out-dir /tmp/jax-reorder-without-legacy-verified
 git diff --check

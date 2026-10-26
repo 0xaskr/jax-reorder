@@ -63,7 +63,7 @@
 - CAS + 独立 proof + `-inf`：96 passed。负证据 + proof：75 passed；交叉审查另有禁止编译/eager 的真实 JAX 探针。
 - 最终有限性 + 原 `-inf`：82 passed；独立复核共同 JIT/scan 隐藏部分性路径 15 passed。
 - 代码冻结后全量 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline pytest`：**2095 passed，1 warning，944.74 秒**。唯一警告来自既有 SGLang-JAX Pallas fixture 的弃用接口，GLM-5.2 新核心及其比较回归无 Pallas。
-- `uv sync --locked --offline`、`ruff check .`、`ruff format --check .`（169 个 Python 文件）、`python examples/inspect_jaxpr.py`、`python tools/check_docs.py --changed` 与 `git diff --check` 全部通过。核心保护文档及 `.codex`/`.agents` 无改动。
+- `uv sync --locked --offline`、`ruff check .`、`ruff format --check .`（169 个 Python 文件）、`python tests/inspect_jaxpr.py`、`python tools/check_docs.py --changed` 与 `git diff --check` 全部通过。核心保护文档及 `.codex`/`.agents` 无改动。
 - GLM 回归覆盖 small/FP32、glm/FP32、glm/BF16，禁止后端编译/eager；每组 5 个正例全部通过，5 个负例 unknown。CLI JSON/jaxpr 导出及退出码 2 均已验证。
 
 ## 保留的能力边界

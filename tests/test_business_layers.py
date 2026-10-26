@@ -1,7 +1,7 @@
 """重放 AI hardcode 的真实业务改写，不在测试阶段生成候选或推导预期标签。
 
 覆盖：
-- 正例与标签核对：examples/business_layer_cases 中全部场景 × 变体 × profile；基准先与
+- 正例与标签核对：tests/business_layer_cases 中全部场景 × 变体 × profile；基准先与
   独立 NumPy 参照核对，再验证图预判、候选数值、两侧重排执行与规范化幂等。
 - 反例：报告数值见证时必须给出足够重放的输入与两侧输出，不能只记录一个布尔值；把负例
   故意预判成 equivalent 时运行器必须报错。
@@ -16,8 +16,8 @@ import json
 import jax
 import pytest
 
-from examples import business_layer_cases as business
-from examples import cond_bindings
+from tests import business_layer_cases as business
+from tests import cond_bindings
 
 
 @pytest.mark.parametrize(

@@ -6,7 +6,7 @@
 
 ## 固定代码与判断
 
-[examples/bfs_reordering.py](../../../../examples/bfs_reordering.py) 保存完整基准和候选代码、输入、静态参数、判断与理由。`reverse=True` 为独立定义换序，`wrong=True` 为表中的负例。`verify_case` 先复现预先写下的数值证据，再检查图比较结果。[测试](../../../../tests/test_ai_cases.py) 还执行两个重排后的 jaxpr，并检查幂等性。
+[tests/bfs_reordering.py](../../../../tests/bfs_reordering.py) 保存完整基准和候选代码、输入、静态参数、判断与理由。`reverse=True` 为独立定义换序，`wrong=True` 为表中的负例。`verify_case` 先复现预先写下的数值证据，再检查图比较结果。[测试](../../../../tests/test_ai_cases.py) 还执行两个重排后的 jaxpr，并检查幂等性。
 
 每类有一个图等价正例和一个图不等价负例，共 18 例。所有正例按中间值角色一一对应：a 与 a、b 与 b、共享前驱与共享前驱、gate/up/down 与同名投影；定义的文本位置改变，使用关系不变。静态标志仅决定追踪时选择哪段代码，不属于运行时输入。
 
@@ -29,7 +29,7 @@
 - 来源：本地 `/home/askr/work/sglang-jax-private`，提交 `538abe3fdba84b586a6a2fd151cac67cc974d35f`。
 - `python/sgl_jax/srt/models/llama.py`：`LlamaMLP` 的三次投影、`silu` 及中间乘法；源文件 SHA-256：`1ec85cab1d3a6c6aa9faeac5474d75af95f049c3566110d7332007a7e07c840e`。
 - `python/sgl_jax/srt/layers/linear.py`：`LinearBase.__call__` 的 `dot_general`、`preferred_element_type` 和默认 `out_sharding`；SHA-256：`da2fbba0348c665a8d1020415587ac05ac7489f19b95ee74e111953c49643006`。
-- 原项目使用 Apache-2.0，许可证副本位于 [examples/LICENSE.sglang-jax](../../../../examples/LICENSE.sglang-jax)。示例重写为纯函数，移除模块构造、权重加载及日志，保留下面选定配置的计算。
+- 原项目使用 Apache-2.0，许可证副本位于 [tests/LICENSE.sglang-jax](../../../../tests/LICENSE.sglang-jax)。示例重写为纯函数，移除模块构造、权重加载及日志，保留下面选定配置的计算。
 
 选定无偏置、无量化、全部投影 `params_dtype=float32` 的 LlamaMLP。CPU mesh 为 `(data=1, tensor=1)`，两轴均 Explicit。输入采用 `P("data", None)`；gate/up 权重为 `P(None, "tensor")`；down 权重为 `P("tensor", None)`。投影按输入最后一维与权重第零维收缩，输出分片与原 `LinearBase` 的 `kernel_axes[-1]` 规则一致。`jax.nn.silu` 产生的 jit 子图保留并递归比较。
 
@@ -40,7 +40,7 @@
 [原语清单](../../../references/lax-coverage.md)覆盖模型未用到的原语；每个 CPU 可运行固定原语用例还加入一个独立 neg 分支，在两种语句顺序下比较。另有合法方程排列、变量重命名、共享/重复节点、长链、常量字节、多输出端口及嵌套图性质测试。这些检查与 AI 判断互相补充，不称为全部计算图的穷举。
 
 ```bash
-uv run python examples/bfs_reordering.py
+uv run python tests/bfs_reordering.py
 uv run pytest
 uv run python tests/lax_inventory.py
 ```

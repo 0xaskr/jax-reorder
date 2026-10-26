@@ -23,11 +23,11 @@
 ## 验证结果
 
 - 修复前，RMSNorm 闭包候选的 FP32、BF16、小形状三个回归均失败，实际状态为 different。
-- 修复后，`uv run python examples/cond_bindings.py --show-jaxpr`：三个候选 × 三个签名 × 十组输入，90 次样本检查通过，含真假分支、独立 NumPy 参照与两侧重排执行。
+- 修复后，`uv run python tests/cond_bindings.py --show-jaxpr`：三个候选 × 三个签名 × 十组输入，90 次样本检查通过，含真假分支、独立 NumPy 参照与两侧重排执行。
 - `uv run pytest tests/test_cond_bindings.py -q`：20 passed；业务测试新增 10 项，本次共新增 30 项回归。
 - 首次全量中发现测试构造污染 JAX 缓存图：破坏性测试直接修改追踪结果，后续参数化用例受到影响。改成只修改副本并断言原图不变。
 - 最终 `uv run pytest -q`：662 passed（46.45 秒）。
-- 双设备通信由 pytest 验证；`uv run python examples/collective_jaxpr.py --devices 4`：22 个组合通过，含修正后的闭包等价案例。
+- 双设备通信由 pytest 验证；`uv run python tests/collective_jaxpr.py --devices 4`：22 个组合通过，含修正后的闭包等价案例。
 - Ruff、格式检查、tracing 示例、原语清单一致性与 `git diff --check` 通过。在线 CI 未运行。
 
 ## 未解决问题

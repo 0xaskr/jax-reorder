@@ -69,7 +69,7 @@
 | 既有本地/远端官方通信回归 | 31 passed，68.26s，包含已有的等待环预期超时检查 |
 | `ruff check .` / `ruff format --check .` | 通过，244 个 Python 文件格式通过 |
 | `basedpyright` | 0 errors / warnings / notes |
-| `python -m tests.adapter_inventory` / `python examples/inspect_jaxpr.py` | 快照与原图追踪比较通过 |
+| `python -m tests.adapter_inventory` / `python tests/inspect_jaxpr.py` | 快照与原图追踪比较通过 |
 | `python tools/check_docs.py --changed` / `git diff --check` | 归档后通过，11 份 Markdown、202 个本地链接目标 |
 
 四项完成条件逐项对应：

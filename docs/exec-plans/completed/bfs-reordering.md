@@ -108,7 +108,7 @@ AI 为用例给出的“等价”也采用上述图等价含义。若另称某�
 - [x] 在 `src/jax_reorder/` 实现依赖索引、BFS 编号、深度计算、层内排序和完整结构比较；按原语补齐嵌套语义、参数类型及顺序依赖。
 - [x] 从 `sglang-jax` 的模型层提取可在 CPU 运行的基准，固定来源版本、输入和参数，并记录与源实现的对应关系。
 - [x] 由 AI 生成经典组合和模型层的正反例，先写出图等价判断、理由及实际不等价反例，再固化进 `tests/`；补齐未被模型层覆盖的 CPU 原语用例。
-- [x] 在 `examples/` 展示基准、AI 变换、AI 判断和程序比较结果；在 CI 中运行固化用例与必要的算法性质检查，不依赖在线 AI 重新作答。
+- [x] 在 `tests/` 展示基准、AI 变换、AI 判断和程序比较结果；在 CI 中运行固化用例与必要的算法性质检查，不依赖在线 AI 重新作答。
 - [x] 同步 README 中英文入口与架构当前状态，区分已实现能力和未完成项。
 - [x] 运行所需检查、审查差异；实现完成后归档计划，登记剩余缺口。
 
@@ -233,8 +233,8 @@ uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
-uv run python examples/inspect_jaxpr.py
-uv run python examples/bfs_reordering.py
+uv run python tests/inspect_jaxpr.py
+uv run python tests/bfs_reordering.py
 uv run python tests/lax_inventory.py
 git diff --check
 ```
@@ -260,8 +260,8 @@ git diff --check
 | `uv run ruff check .` | 通过 |
 | `uv run ruff format --check .` | 35 个 Python 文件格式通过 |
 | `uv run pytest -q` | 516 通过，无跳过或 xfail |
-| `uv run python examples/inspect_jaxpr.py` | 输出一致的图规范形式与 equivalent |
-| `uv run python examples/bfs_reordering.py` | 18 个预先标记案例通过，9 个实际不等价反例复现 |
+| `uv run python tests/inspect_jaxpr.py` | 输出一致的图规范形式与 equivalent |
+| `uv run python tests/bfs_reordering.py` | 18 个预先标记案例通过，9 个实际不等价反例复现 |
 | `uv run python tests/lax_inventory.py` | 清单与锁定 JAX 一致，无公开原语遗漏 |
 | 新增或修改的本地链接、`git diff --check`（含暂存区） | 通过；没有宣称全仓库链接已修复 |
 

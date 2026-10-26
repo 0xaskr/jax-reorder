@@ -1,6 +1,6 @@
 # SGLang-JAX 模型与层覆盖清单
 
-固定提交：`c98ced4a7a64e83261f6672937ce41f0095828ba`。每个条目执行所选层的上游原方法，AI 候选在 [candidates.py](../../examples/sglang_layers/candidates.py) 中固定保存。运行与验收标准见 [开发记录](../exec-plans/completed/validation/sglang-model-layers.md)。
+固定提交：`c98ced4a7a64e83261f6672937ce41f0095828ba`。每个条目执行所选层的上游原方法，AI 候选在 [candidates.py](../../tests/sglang_layers/candidates.py) 中固定保存。运行与验收标准见 [开发记录](../exec-plans/completed/validation/sglang-model-layers.md)。
 
 ## 选定的 36 个层
 

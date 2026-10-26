@@ -28,10 +28,10 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| `python -m examples.glm52_decode_dsa_mla --json /tmp/jax-reorder-glm52.json` | 默认 GLM 内部维度、两个种子，5+5 全部通过；1 个结构正例、4 个代数正例；每个反例都记录实际输出差异 |
+| `python -m tests.glm52_decode_dsa_mla --json /tmp/jax-reorder-glm52.json` | 默认 GLM 内部维度、两个种子，5+5 全部通过；1 个结构正例、4 个代数正例；每个反例都记录实际输出差异 |
 | `pytest -q tests/test_glm52_decode_dsa_mla.py tests/test_sglang_model_layers.py::test_snapshot_is_complete_and_unmodified tests/test_full_attention.py::test_attention_dependencies_match_independent_git_blob_digests --tb=short` | 31 passed，80.01 秒；其中新增 29 项，另 2 项覆盖完整来源清单 |
 | `ruff check .` / `ruff format --check .` | 全部通过，146 个 Python 文件格式一致 |
-| `python examples/inspect_jaxpr.py` | tracing 示例通过 |
+| `python tests/inspect_jaxpr.py` | tracing 示例通过 |
 | 新脚本 `--help`、`tools/check_docs.py --changed`、`git diff --check` | 通过 |
 
 初次运行的新测试遍历器遇到 JAX 0.11 的 `jaxpr` 自引用属性，现已先访问 `eqns`，最终整组回归通过。没有修改比较器算法或原始 reference，也未删除来源中的动态索引、近似选择或 mask。

@@ -4,7 +4,7 @@
 
 ## 实施与验证结果
 
-2026-10-11 修复完成。修复前，RMSNorm 三个签名的门控提前案例均被判 different；修复后全部判 equivalent，错误绑定仍判 different。可重放 [cond_bindings.py](../../../../examples/cond_bindings.py)（支持 `--show-jaxpr`）。九个候选/签名组合共 90 次样本检查，包含 NumPy 参照与真假分支执行。
+2026-10-11 修复完成。修复前，RMSNorm 三个签名的门控提前案例均被判 different；修复后全部判 equivalent，错误绑定仍判 different。可重放 [cond_bindings.py](../../../../tests/cond_bindings.py)（支持 `--show-jaxpr`）。九个候选/签名组合共 90 次样本检查，包含 NumPy 参照与真假分支执行。
 
 新增 20 项 [绑定测试](../../../../tests/test_cond_bindings.py) 和 10 项 [业务回归](../../../../tests/test_business_layers.py)，全量 **662 passed**。覆盖父图生产者编号、多层 cond、三分支 switch、多输出、不同类型和形状、重复实参、常量、调试参数名称、错误绑定、未使用部分和非法图。通信闭包例同时通过双/四设备验证，四设备脚本共 22 例通过。
 
@@ -12,13 +12,13 @@ Ruff、格式检查、tracing 示例、原语清单一致性与 `git diff --chec
 
 ## 四层复杂 cond 的额外验证
 
-[四层重放脚本](../../../../examples/nested_cond_four_levels.py)完全由 AI 手写并固定保存，原版及正负候选均不通过脚本、AST 或 IR 变换生成。每层的真假分支都进入下一层，实际追踪结果是 15 个 `cond` 节点、最大深度 4、16 条可执行路径；不是连续调用四次浅层 cond。
+[四层重放脚本](../../../../tests/nested_cond_four_levels.py)完全由 AI 手写并固定保存，原版及正负候选均不通过脚本、AST 或 IR 变换生成。每层的真假分支都进入下一层，实际追踪结果是 15 个 `cond` 节点、最大深度 4、16 条可执行路径；不是连续调用四次浅层 cond。
 
 案例包含共享中间结果、闭包数组常量、广播、sin/cos/tanh、平方、归约、残差，以及矩阵、行统计、整数路径编号三个输出。正例在四层内部都重排独立运算，提前不依赖嵌套结果的归约，并在第四层同步置换显式实参/形参。负例分别交换最深真分支的 sin/cos 输入、取反第三层条件。
 
 ```bash
-uv run python examples/nested_cond_four_levels.py --report /tmp/four-level-cond.json
-uv run python examples/nested_cond_four_levels.py --show-jaxpr
+uv run python tests/nested_cond_four_levels.py --report /tmp/four-level-cond.json
+uv run python tests/nested_cond_four_levels.py --show-jaxpr
 uv run pytest tests/test_nested_cond_four_levels.py -q
 ```
 

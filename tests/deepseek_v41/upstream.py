@@ -3,7 +3,7 @@
 固定来源是 Inferact/tpu-megakernels PR #3 的 DeepSeek-V4.1-Flash 参考实现；
 提交、PR 状态与逐文件 SHA-256 记录在 tests/fixtures/deepseek_v41/manifest.json。
 本模块只加载 mHC 的四个函数并核对来源，不验证数值等价性，也不代表上游
-其他函数或配置可用。运行入口见 `python -m examples.deepseek_v41.runner`。
+其他函数或配置可用。运行入口见 `python -m tests.deepseek_v41.runner`。
 """
 
 import __future__

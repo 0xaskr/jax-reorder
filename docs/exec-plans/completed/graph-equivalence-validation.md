@@ -251,9 +251,9 @@ UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run ruff check .
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run ruff format --check .
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run pytest
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python tests/lax_inventory.py
-UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python examples/inspect_jaxpr.py
-UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python examples/nested_cond_four_levels.py
-UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python examples/collective_jaxpr.py --devices 4
+UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python tests/inspect_jaxpr.py
+UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python tests/nested_cond_four_levels.py
+UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python tests/collective_jaxpr.py --devices 4
 git diff --check
 ```
 
@@ -342,7 +342,7 @@ print(result.status.value, result.difference)
 | CI 配置 | YAML 与各 run 的 Bash 语法通过；快速/业务/压力分组及双/四设备配置已写入，远端工作流未触发 |
 | 文档 | 中英文 README、架构、开发记录、索引和技术债同步；本地链接与 `git diff --check` 通过 |
 
-报告由 `uv run python -m examples.full_layers.runner --supplemental --report /tmp/jax-reorder-full-layers.json` 生成；JSON 保存来源、配置、签名/输入摘要、模式、预期/实际、差异路径、拒绝原因和重放所需 seed。全部检查的等价/图差异标签均命中预期，unknown 和 JAX 拒绝不计作等价成功。详细覆盖表见[完整层记录](validation/full-attention.md)与[验证矩阵](../../design-docs/current/verification-matrix.md)。
+报告由 `uv run python -m tests.full_layers.runner --supplemental --report /tmp/jax-reorder-full-layers.json` 生成；JSON 保存来源、配置、签名/输入摘要、模式、预期/实际、差异路径、拒绝原因和重放所需 seed。全部检查的等价/图差异标签均命中预期，unknown 和 JAX 拒绝不计作等价成功。详细覆盖表见[完整层记录](validation/full-attention.md)与[验证矩阵](../../design-docs/current/verification-matrix.md)。
 
 自审已补强：原图证据独立检查 SSA/支持域；上下文描述符子类不能隐藏继承字段；symbolic 模式重新物化保持 fwd 残差树一致；动态规则捕获须还原真实输入边；延迟有序规则不能漏掉父级顺序。前向及 JVP 一致但 VJP 累加顺序改变的业务实例被保留为正确图差异，没有放宽 add_any 或应用代数规则。
 

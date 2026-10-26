@@ -1,6 +1,6 @@
 """在多个逻辑 CPU 设备上验证带通信的 jaxpr。
 
-运行：uv run python examples/collective_jaxpr.py --show-jaxpr
+运行：uv run python tests/collective_jaxpr.py --show-jaxpr
 默认创建两个 CPU 设备，也可用 --devices 4 检查四设备通信；--trials/--seed
 控制每个组合的数值样本。共 20 个基础组合加 2 个分片矩阵乘法用例：每个用例
 同时检查图标签、重排图的可执行性与数值证据，断言失败即非零退出。

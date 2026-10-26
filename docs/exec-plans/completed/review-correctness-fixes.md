@@ -37,8 +37,8 @@
 - `pytest -q tests/test_custom_derivatives.py tests/test_unrooted.py`：首批修复后 61 passed，14.87 秒；随后追加 2 项拒绝回归，一并纳入全量测试。
 - `pytest -q`：1802 passed、1 warning，414.62 秒；warning 来自上游 `jax.experimental.pallas.reciprocal` 弃用入口，与审查基线一致。
 - `ruff check .`、`ruff format --check .`：通过。
-- `python examples/inspect_jaxpr.py`、`python examples/bfs_reordering.py`：通过。
-- `python examples/collective_jaxpr.py --devices 2` 和 `--devices 4`：各 22 个通信组合通过，每个组合 4 组数值样本；图比较与执行抽样分别验证。
+- `python tests/inspect_jaxpr.py`、`python tests/bfs_reordering.py`：通过。
+- `python tests/collective_jaxpr.py --devices 2` 和 `--devices 4`：各 22 个通信组合通过，每个组合 4 组数值样本；图比较与执行抽样分别验证。
 - `python tests/adapter_inventory.py`、`python tests/lax_inventory.py`：与锁定环境一致。
 - `python tools/check_docs.py --changed`：4 个 Markdown 文件、25 个本地链接通过；`git diff --check` 通过。
 

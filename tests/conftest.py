@@ -3,7 +3,7 @@
 本文件在测试收集阶段生效，不包含断言：
 - 平台固定为 CPU，避免在带有 GPU/TPU 的机器上切换到未审查的 lowering。
 - 用 XLA_FLAGS 强制暴露 2 个 host 设备，使集合通信与 shard_map 测试可以在
-  单进程内运行；需要 4 设备的组合由 examples/collective_jaxpr.py --devices 4 单独验证。
+  单进程内运行；需要 4 设备的组合由 tests/collective_jaxpr.py --devices 4 单独验证。
 - 按文件名把业务层验收标为 ``business``，把深度/规模测试标为 ``stress``，供 CI 分任务运行。
 
 这里只影响本地默认值，不构成对比较算法本身的证明：分组正确不代表测试通过，

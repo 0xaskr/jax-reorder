@@ -9,7 +9,7 @@ import pytest
 from jax._src import core
 from jax.experimental import pallas as pl
 
-from examples.pallas_kernels import CASES, upstream
+from tests.pallas_kernels import CASES, upstream
 from jax_reorder import (
     ComparisonBudgetError,
     Status,

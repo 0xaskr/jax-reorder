@@ -31,14 +31,14 @@ jobs:
           uv run pytest -m 'not business and not stress and not pallas_communication'
           uv run python tests/adapter_inventory.py --report /tmp/adapter-inventory.json
           uv run python tests/lax_inventory.py
-          uv run python examples/inspect_jaxpr.py
-          uv run python examples/bfs_reordering.py
-          uv run python examples/cond_bindings.py
+          uv run python tests/inspect_jaxpr.py
+          uv run python tests/bfs_reordering.py
+          uv run python tests/cond_bindings.py
       - if: matrix.suite == 'business'
         run: |
           uv run pytest -m business
-          uv run python examples/business_layer_cases.py --trials 1 --report /tmp/business-layer-cases.json
-          uv run python -m examples.full_layers.runner --supplemental --report /tmp/full-layers.json
+          uv run python tests/business_layer_cases.py --trials 1 --report /tmp/business-layer-cases.json
+          uv run python -m tests.full_layers.runner --supplemental --report /tmp/full-layers.json
       - if: matrix.suite == 'stress'
         run: uv run pytest -m stress
       - uses: actions/upload-artifact@v4
@@ -85,4 +85,4 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run python examples/collective_jaxpr.py --devices ${{ matrix.devices }}
+      - run: uv run python tests/collective_jaxpr.py --devices ${{ matrix.devices }}

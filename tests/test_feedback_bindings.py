@@ -7,7 +7,7 @@
 - 反例：错误的反馈或结果绑定必须有数值见证；VJP 中因槽位顺序导致的 `add_any` 累加顺序
   变化不能被当成端口重命名（结构模式判 different）。
 - 附加：reordered scan 在 jit 内与 reverse 模式下仍保持。
-- 前置条件：CPU 平台；固定源码来自 examples/feedback_bindings.py，不涉及多设备。
+- 前置条件：CPU 平台；固定源码来自 tests/feedback_bindings.py，不涉及多设备。
 - 有限步骤与槽位组合不证明任意反馈拓扑。
 """
 
@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from examples import feedback_bindings as cases
+from tests import feedback_bindings as cases
 from jax_reorder import Status, canonicalize, compare_jaxprs
 from jax_reorder.functions import compare_functions
 

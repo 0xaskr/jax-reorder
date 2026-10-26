@@ -6,8 +6,8 @@ IR 检查、原图对应证据、对称性、规范化幂等、两侧规范化�
 derivatives、indexer、boundaries、unverified 与 supplemental_counts。
 
 运行：
-  uv run python -m examples.full_layers.runner --supplemental --report /tmp/full-layers.json
-  uv run python -m examples.full_layers.runner --family glm5 --samples 3
+  uv run python -m tests.full_layers.runner --supplemental --report /tmp/full-layers.json
+  uv run python -m tests.full_layers.runner --family glm5 --samples 3
 
 成功时打印 counts 并返回 0；断言失败、参数非法或 original 源码边界改变时
 抛出异常/parser.error，退出码非零。报告是本地 CPU 证据，不声明全模型或
@@ -25,9 +25,9 @@ import jaxlib
 import numpy as np
 from jax._src import core
 
-from examples.sglang_layers.builders import cpu_mesh
-from examples.sglang_layers.runner import close
-from examples.sglang_layers.upstream import REVISION
+from tests.sglang_layers.builders import cpu_mesh
+from tests.sglang_layers.runner import close
+from tests.sglang_layers.upstream import REVISION
 from jax_reorder import Status, canonicalize, compare_jaxprs
 
 from . import oracles

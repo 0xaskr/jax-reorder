@@ -6,8 +6,8 @@
 
 - 项目介绍与使用方式和示例：[中文 README](README.md)。
 - 架构与比较契约：[ARCHITECTURE.md](ARCHITECTURE.md)。
-- 算法设计、契约与验证方法：[设计文档索引](docs/design-docs/index.md)。
 - 文档知识库：[docs/index.md](docs/index.md)。
+- 算法设计、契约与验证方法：[设计文档索引](docs/design-docs/index.md)。
 - 执行计划与待处理事项：[执行计划索引](docs/exec-plans/index.md)。
 
 ## 当前形态与目录
@@ -16,9 +16,9 @@
 
 | 路径 | 用途 |
 | --- | --- |
-| [examples/inspect_jaxpr.py](examples/inspect_jaxpr.py) | 当前 tracing 入口；可运行示例放在 examples |
+| [tests/inspect_jaxpr.py](tests/inspect_jaxpr.py) | 当前 tracing 入口；可运行示例与验证代码统一放在 tests |
 | [src/jax_reorder](src/jax_reorder/) | 实现代码：`core/` 结构层、`algebra/` 数学层、`functions.py` 契约编排 |
-| [tests](tests/) | 算法、CPU 原语与 AI 固定用例测试 |
+| [tests](tests/) | 算法、CPU 原语、真实开源层/函数与 AI 固定正反例；来源快照放在 fixtures |
 | [docs/design-docs](docs/design-docs/index.md) | 根目录仅保留索引；`current/` 放现行设计与验证方法，`archive/` 放历史方案 |
 | [docs/exec-plans](docs/exec-plans/index.md) | 执行计划、实施过程、实验与验收记录 |
 | [.github/workflows](.github/workflows/) | CPU CI |
@@ -55,15 +55,15 @@
 uv sync --locked
 uv run ruff check .
 uv run ruff format --check .
-uv run python examples/inspect_jaxpr.py
+uv run python tests/inspect_jaxpr.py
 uv run pytest
-uv run python examples/bfs_reordering.py
+uv run python tests/bfs_reordering.py
 uv run python tests/lax_inventory.py
 ```
 
 - 提交前运行 Ruff、格式检查和 tracing 示例；算法变更还需运行 pytest；验证证据见开发记录。
 - 缓存只读时设置 `UV_CACHE_DIR=/tmp/jax-reorder-uv-cache`。
-- 使用 `uv add` / `uv add --dev` 管理依赖，提交依赖变更时包含 `uv.lock`。
+- 默认 `uv sync` 安装 `dev`（开发工具）与 `test`（测试依赖）；使用 `uv add` / `uv add --dev` / `uv add --group test` 管理对应依赖，提交依赖变更时包含 `uv.lock`。
 - CI 已启用 `uv run pytest`；新增规范化规则应覆盖正例、反例与拒绝路径。
 
 ## 技能入口
@@ -73,6 +73,7 @@ uv run python tests/lax_inventory.py
 ## 文档维护
 
 - README 面向使用者；AGENTS 保持导航和必要规则。
+- 测试允许提取开源软件栈中的层或函数，配合 AI 固定正反例覆盖 JAX 与 Pallas；来源、预期和验证要求见[贡献者指南](CONTRIBUTING.md#测试用例来源与组织)。
 - 总体比较契约在架构文档中维护，具体算法、接口与长期决策进入 `docs/design-docs/current/`；`docs/design-docs/` 根目录只保留 `index.md`。实施、实验与验收进入 exec-plans。
 - 复杂工作的 active 计划完成后移到 completed；未解决问题登记到执行计划索引的“待处理”清单，并链接对应计划。
 - 新增、移动或删除文档时更新索引与引用，运行 `uv run python tools/check_docs.py --changed` 与 `git diff --check`。

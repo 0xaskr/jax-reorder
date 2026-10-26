@@ -20,7 +20,7 @@ import numpy as np
 from flax import nnx
 from jax.sharding import PartitionSpec as P
 
-from examples.sglang_layers.upstream import dependencies, load, source
+from tests.sglang_layers.upstream import dependencies, load, source
 
 from .upstream import classes
 

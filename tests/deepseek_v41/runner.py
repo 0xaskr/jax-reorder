@@ -6,7 +6,7 @@ NumPy 参照核对前向、JVP、VJP；三个错误候选必须被拒绝并保�
 编译后延迟、编译内存与 XLA cost analysis。
 
 运行：
-  uv run python -m examples.deepseek_v41.runner --benchmark --json /tmp/deepseek-v41.json
+  uv run python -m tests.deepseek_v41.runner --benchmark --json /tmp/deepseek-v41.json
 
 报告写入 --json 指定路径，未指定则不落盘；全部通过时打印结束行并返回 0，
 断言失败、参数非法或快照校验失败时抛出异常/parser.error，退出码非零。

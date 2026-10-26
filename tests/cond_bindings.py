@@ -1,6 +1,6 @@
 """重放 RMSNorm 的 cond 闭包误判修复，候选和预期均由 AI 手写并固定。
 
-运行：uv run python examples/cond_bindings.py --show-jaxpr
+运行：uv run python tests/cond_bindings.py --show-jaxpr
 对每个签名执行真假两个分支：闭包参数同步换序与显式传参对照必须 equivalent，
 实际输入绑定错误必须 different 并找到数值反例。脚本只验证 cond 数据实参与
 分支形参的同步置换，不声称一般 cond 程序或代数改写等价。
@@ -17,7 +17,7 @@ from jax_reorder import Status
 if __package__:
     from . import business_layer_cases as business
 else:
-    # 支持直接执行 examples/cond_bindings.py，无需修改 PYTHONPATH。
+    # 支持直接执行 tests/cond_bindings.py，无需修改 PYTHONPATH。
     import business_layer_cases as business
 
 

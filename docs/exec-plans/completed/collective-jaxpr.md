@@ -30,12 +30,12 @@
 ## 验证结果
 
 - `uv sync --locked`：通过。
-- `uv run python examples/collective_jaxpr.py --show-jaxpr`：2 个 CPU 设备，22 个组合 × 4 组输入，通过。
-- `uv run python examples/collective_jaxpr.py --devices 4`：4 个 CPU 设备，同样 22 个组合 × 4 组输入，通过。
+- `uv run python tests/collective_jaxpr.py --show-jaxpr`：2 个 CPU 设备，22 个组合 × 4 组输入，通过。
+- `uv run python tests/collective_jaxpr.py --devices 4`：4 个 CPU 设备，同样 22 个组合 × 4 组输入，通过。
 - `uv run pytest tests/test_collectives.py -q`：49 passed。
 - `uv run pytest -q`：565 passed。
 - `uv run ruff check .`、`uv run ruff format --check .`：通过。
-- `uv run python examples/inspect_jaxpr.py`、`uv run python tests/lax_inventory.py`：通过。
+- `uv run python tests/inspect_jaxpr.py`、`uv run python tests/lax_inventory.py`：通过。
 - 四设备脚本已加入 CI；只报告本地验证，不宣称线上 CI 已运行。
 
 ## 未验证条件

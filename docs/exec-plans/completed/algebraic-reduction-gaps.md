@@ -49,12 +49,12 @@
 | `pytest -q` | **1775 passed，1 warning，424.87 秒**；原有 1600 项全部保留，新增 175 项 |
 | `ruff check .` | 通过 |
 | `ruff format --check .` | 126 个 Python 文件全部通过 |
-| `python examples/inspect_jaxpr.py` | tracing 与结构比较通过 |
-| `python examples/bfs_reordering.py` | 原有示例正反例通过 |
-| `python examples/algebraic_equivalence.py` | 分配律和矩阵/乘加归约的 forward/JVP/VJP、独立证明与 CPU 编译通过 |
+| `python tests/inspect_jaxpr.py` | tracing 与结构比较通过 |
+| `python tests/bfs_reordering.py` | 原有示例正反例通过 |
+| `python tests/algebraic_equivalence.py` | 分配律和矩阵/乘加归约的 forward/JVP/VJP、独立证明与 CPU 编译通过 |
 | `python tests/lax_inventory.py` | 锁定原语清单一致 |
 | `python tests/adapter_inventory.py` | IR 字段与参数快照一致 |
-| `python examples/collective_jaxpr.py --devices 2` / `--devices 4` | 各 22 个组合通过 |
+| `python tests/collective_jaxpr.py --devices 2` / `--devices 4` | 各 22 个组合通过 |
 | `python tools/check_docs.py --changed` / `git diff --check` | 通过 |
 
 唯一 warning 是保留的上游 Pallas reciprocal 弃用提示。此前首轮全量为 1774 passed，补充广播反例及最终类型整理后，已重新运行上表所列最终全量。

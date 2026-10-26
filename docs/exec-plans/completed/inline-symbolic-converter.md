@@ -48,8 +48,8 @@ jaxpr_to_sympy_expressions 入口与原有行为；该公式接口不跟踪定�
 uv run pytest -q tests/test_symbolic_explicit.py tests/test_trusted_sympy.py tests/test_algebra_resources.py
 uv run pytest -q tests/test_algebra*.py tests/test_nerva_symbolic.py tests/test_functions.py
 uv run python tools/experiments/equivalence_backends/trusted_sympy_scaling.py
-uv run python examples/inspect_jaxpr.py
-uv run python examples/sympy_equivalence.py
+uv run python tests/inspect_jaxpr.py
+uv run python tests/sympy_equivalence.py
 uv run ruff check .
 uv run ruff format --check .
 uv run python tools/check_docs.py --changed

@@ -81,7 +81,7 @@ for mode in report.modes:
 追踪环境和请求模式；未支持语义、未决或预算/超时通过 `ComparisonError` 子类报告。
 当前已知缺陷见[贡献者指南](CONTRIBUTING.md#当前支持状态)。
 
-更多示例见[矩阵乘法与乘加归约互认](examples/algebraic_equivalence.py)、
-[指数恒等式](examples/sympy_equivalence.py)及 [Pallas 比较入口](docs/design-docs/current/pallas/contracts.md)。
+更多示例见[矩阵乘法与乘加归约互认](tests/algebraic_equivalence.py)、
+[指数恒等式](tests/sympy_equivalence.py)及 [Pallas 比较入口](docs/design-docs/current/pallas/contracts.md)。
 
 开发入门、当前支持状态与后续路线图见[贡献者指南](CONTRIBUTING.md)。

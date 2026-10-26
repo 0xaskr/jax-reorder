@@ -606,7 +606,7 @@ CPU 通信 23 项中两项是 read lowering 的预期拒绝，没有 TPU 硬件�
   （默认 JIT 扩展前的回归批次；扩展后新增路径已包含在上述 57 项中）。
 - `uv run python tests/pallas_domain_oracle.py`：**1,280** 个小域覆盖/漏写案例通过；pytest 另交叉检查生产域证明。
 - `uv run python tests/adapter_inventory.py`、`uv run python tests/lax_inventory.py`：通过。
-- `uv run python examples/inspect_jaxpr.py`、`uv run python examples/bfs_reordering.py`：通过。
+- `uv run python tests/inspect_jaxpr.py`、`uv run python tests/bfs_reordering.py`：通过。
 - Ruff、格式检查（212 文件）、basedpyright、`tools/check_docs.py --changed`、`git diff --check` 已通过；
   adapter/lax inventory、两个运行示例和 1,280 个小域 oracle 已在当前扩展后重跑通过。
 - 原位置的全量 `uv run pytest -q --tb=short` 出现多项失败后中止（session `35056` 已返回 exit 130），

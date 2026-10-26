@@ -1,4 +1,4 @@
-"""Ordinary Pallas masked accesses, staged tails and local DMA examples."""
+"""Ordinary Pallas masked accesses, staged tails and local DMA tests."""
 
 import jax
 import jax.numpy as jnp

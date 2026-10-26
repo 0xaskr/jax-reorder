@@ -30,8 +30,8 @@ AI 候选是独立固定函数，预判和理由先于比较执行保存。独�
 ```bash
 uv sync --locked
 uv run pytest tests/test_sglang_model_layers.py
-uv run python -m examples.sglang_layers.runner --report /tmp/sglang-layers.json
-uv run python -m examples.sglang_layers.runner --layer llama --profile bf16 --show-jaxpr
+uv run python -m tests.sglang_layers.runner --report /tmp/sglang-layers.json
+uv run python -m tests.sglang_layers.runner --layer llama --profile bf16 --show-jaxpr
 ```
 
 2026-10-11 验收：36 个不同层 × 2 个固定候选 × 3 个签名 = **216 个比较组合**，每个组合使用 5 组独立权重/输入，共 **1080 组数值验证**。新增 182 项 pytest 检查，全仓库 **844 passed**；无跳过项、无 `unknown`、无预期正例误判。完整逐模型映射及来源链见 [覆盖清单](../../../references/sglang-model-coverage.md)，任务过程见 [完成计划](../sglang-model-layers.md)。

@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 from jax import lax
 
-from examples import region_bindings
+from tests import region_bindings
 from jax_reorder import (
     CorrespondenceError,
     Status,

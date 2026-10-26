@@ -12,7 +12,7 @@
 
 - pallas-kernel 本地提交 `da2954714912aabc1367260d252ddeafa65b4a7a`：`tops/cpu/ops/kda/short_conv.py` 的 `kda_gated_rmsnorm_reference`；`tops/cpu/ops/mla/mla.py` 的 `causal_softmax_attention`，固定为普通 causal mask、无窗口/packed 参数。
 - SGLang-JAX 提交 `c98ced4a7a64e83261f6672937ce41f0095828ba`：`layers/embeddings.py` 的 `apply_rotary_emb`，固定 Neox 半维旋转；`mem_cache/memory_pool.py` 的 `merge_kv` / `set_kv_buffer_legacy`，提取三维展平缓存与 K/V 交错写入核心；`layers/gate.py` 的 `GateLogit.__call__`（FP32、HIGHEST precision、sigmoid）及 `TopK._biased_topk_jax`，固定 k=2、无后续归一化或 scaling。
-- 完整路径均位于各项目的上述目录，SGLang-JAX 路径前缀为 `python/sgl_jax/srt/`。两个项目均为 Apache-2.0，许可证副本见 [Pallas](../../../../examples/LICENSE.pallas-kernel)、[SGLang-JAX](../../../../examples/LICENSE.sglang-jax)。
+- 完整路径均位于各项目的上述目录，SGLang-JAX 路径前缀为 `python/sgl_jax/srt/`。两个项目均为 Apache-2.0，许可证副本见 [Pallas](../../../../tests/LICENSE.pallas-kernel)、[SGLang-JAX](../../../../tests/LICENSE.sglang-jax)。
 
 | 场景 | base 与固定范围 | 上游源码 SHA-256 |
 | --- | --- | --- |
@@ -26,7 +26,7 @@
 
 ## AI 手写候选
 
-完整源码及 `SCENARIOS` 中的预判、数值要求与理由保存在 [business_layer_cases.py](../../../../examples/business_layer_cases.py)。每个候选是独立函数，不调用带切换开关的 base 来构造变体。两个正例保留原操作数顺序，两个负例改变业务计算；本次没有交换律/结合律改写。
+完整源码及 `SCENARIOS` 中的预判、数值要求与理由保存在 [business_layer_cases.py](../../../../tests/business_layer_cases.py)。每个候选是独立函数，不调用带切换开关的 base 来构造变体。两个正例保留原操作数顺序，两个负例改变业务计算；本次没有交换律/结合律改写。
 
 | base | equivalent 候选 | different 候选 |
 | --- | --- | --- |
@@ -46,12 +46,12 @@
 
 [回归测试](../../../../tests/test_business_layers.py)还检查：正例在 BF16 路径确实形成不同的原始方程顺序；故意错写 AI 图标签会失败；即使 base 与 candidate 同时算错，独立 NumPy 参照仍会阻止假通过。比较器不参与候选或预期标签的生成。
 
-后续增加了 [cond 闭包复现脚本](../../../../examples/cond_bindings.py)：将 gated RMSNorm 放入条件分支，固定保存门控提前、显式传参对照及错误绑定三个候选。三个签名都执行真假分支，原先的捕获换序误判已修复；设计与本次验证见 [cond 绑定记录](../../../design-docs/archive/cond-bindings.md)。原有五个 base 和 20 个候选保持独立。
+后续增加了 [cond 闭包复现脚本](../../../../tests/cond_bindings.py)：将 gated RMSNorm 放入条件分支，固定保存门控提前、显式传参对照及错误绑定三个候选。三个签名都执行真假分支，原先的捕获换序误判已修复；设计与本次验证见 [cond 绑定记录](../../../design-docs/archive/cond-bindings.md)。原有五个 base 和 20 个候选保持独立。
 
 ```bash
-uv run python examples/business_layer_cases.py --report /tmp/business-layer-cases.json
-uv run python examples/business_layer_cases.py --scenario causal_attention --show-jaxpr
-uv run python examples/business_layer_cases.py --trials 10 --seed 42
+uv run python tests/business_layer_cases.py --report /tmp/business-layer-cases.json
+uv run python tests/business_layer_cases.py --scenario causal_attention --show-jaxpr
+uv run python tests/business_layer_cases.py --trials 10 --seed 42
 uv run pytest tests/test_business_layers.py -q
 ```
 

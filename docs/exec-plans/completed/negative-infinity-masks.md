@@ -32,7 +32,7 @@
 - GLM 回归：41 passed（315.16 秒），small/FP32、glm/FP32、glm/BF16 结果一致，全程禁止编译/执行 layer。
 - 参数传播补齐前的代数回归：771 passed。
 - 最终完整 `pytest -q`：**1952 passed，1 warning，963.69 秒**。唯一 warning 来自已有上游 Pallas 弃用接口，与本次纯 JAX DSA/MLA 无关。
-- `ruff check .`、`ruff format --check .`、`python examples/inspect_jaxpr.py`、`python tools/check_docs.py --changed`、`git diff --check` 均通过。
+- `ruff check .`、`ruff format --check .`、`python tests/inspect_jaxpr.py`、`python tools/check_docs.py --changed`、`git diff --check` 均通过。
 - 剩余 6 个 unknown 均在 `algebra.outputs`；PV 有限性未证明，5 个反例未误接受。
 
 核心文档受保护，设计与验证记录仅更新 development-docs / exec-plans。

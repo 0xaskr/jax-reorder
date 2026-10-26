@@ -299,7 +299,7 @@ SymPy 的定向变换接口更贴近当前“固定方向展开后比较”的�
 ```bash
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run ruff check .
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run ruff format --check .
-UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python examples/inspect_jaxpr.py
+UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python tests/inspect_jaxpr.py
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run pytest
 UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run python tools/check_docs.py --changed
 git diff --check
@@ -313,7 +313,7 @@ git diff --check
 
 2026-10-13（方案细化）：用户提出按固定规则规范化，并确认 matmul 和 sum 可统一为不同索引连接下的乘法与加法。本版据此替换矩阵链单独右结合的方案，将支持的跨算子乘加归约互认纳入首期，覆盖初版范围限制。补充索引 IR、原语转换、确定性规范化、绑定索引搜索、独立证明及资源边界；函数接口、数值域和控制流边界保持此前约定。
 
-2026-10-13（实施）：新增索引 IR、原语转换、稀疏项规范化、独立证明复核及代数报告；函数默认自动尝试，结构入口保持原契约。修复输入 Host 内存属性在抽象签名转换时被重设的问题，以及重复返回 Var 的区域证据槽位映射问题。具体实现与信任边界见[开发设计](../../design-docs/current/algebraic-equivalence.md)，可运行[乘加与矩阵示例](../../../examples/algebraic_equivalence.py)。
+2026-10-13（实施）：新增索引 IR、原语转换、稀疏项规范化、独立证明复核及代数报告；函数默认自动尝试，结构入口保持原契约。修复输入 Host 内存属性在抽象签名转换时被重设的问题，以及重复返回 Var 的区域证据槽位映射问题。具体实现与信任边界见[开发设计](../../design-docs/current/algebraic-equivalence.md)，可运行[乘加与矩阵示例](../../../tests/algebraic_equivalence.py)。
 
 2026-10-13（结构蕴含与回归）：按用户要求，把旧用例中已证明结构等价的 IR 成对送入代数入口。182 组均通过，155 组另外通过实际展开和独立证明，27 组明确验证转换器尚未适配的区域、token 或有序语义。结构直通仍携带独立复核证据，不受代数预算限制。第一轮全量为 1227 passed、2 failed；失败均为函数抽象签名把实际数组的单设备放置额外固化，导致双 CPU shard_map 编译冲突。已改为使用数组的抽象 sharding，并保留 ShapeDtypeStruct 原始声明；最终全量 1600 项通过。
 
@@ -327,8 +327,8 @@ git diff --check
 - 最终全量：`UV_CACHE_DIR=/tmp/jax-reorder-uv-cache uv run --no-sync --offline pytest -q`，**1600 passed，1 warning，426.75 秒**。包括全部旧结构、CPU 原语、函数、区域、完整模型层、通信及压力测试；原业务模型的结构验证显式保留 `equivalence="structural"`，没有将其历史证据改称代数证明。
 - 其中基础代数 91 项、独立证明与资源边界 16 项、区域与求导 43 项、结构蕴含 371 项。三种浮点类型、空/单位轴、跨算子乘加、索引反例、浮点执行差异、篡改证据和禁止校验器调用规范化器均覆盖。动态 while VJP 按 JAX 的实际拒绝独立分类。
 - 结构蕴含专项把 182 组旧原语 IR 与其规范化图配对，全部返回等价；155 组另行直接展开和独立复核，27 组明确断言当前展开适配范围。既验证公开接口的蕴含保证，也直接检查展开器。
-- `ruff check .` 和 `ruff format --check .` 通过，格式覆盖 115 个文件；`examples/inspect_jaxpr.py`、`examples/bfs_reordering.py`、`examples/cond_bindings.py`、`tests/lax_inventory.py` 和 `tests/adapter_inventory.py` 全部通过。命令均使用上述 uv 缓存及离线环境，不变更依赖。
-- `examples/algebraic_equivalence.py` 的分配律及 matmul/广播乘加各自通过 forward/JVP/VJP 证明、独立证据复核和 CPU 编译。`examples/collective_jaxpr.py --devices 2` 与 `--devices 4` 各 22 个通信组合通过。
+- `ruff check .` 和 `ruff format --check .` 通过，格式覆盖 115 个文件；`tests/inspect_jaxpr.py`、`tests/bfs_reordering.py`、`tests/cond_bindings.py`、`tests/lax_inventory.py` 和 `tests/adapter_inventory.py` 全部通过。命令均使用上述 uv 缓存及离线环境，不变更依赖。
+- `tests/algebraic_equivalence.py` 的分配律及 matmul/广播乘加各自通过 forward/JVP/VJP 证明、独立证据复核和 CPU 编译。`tests/collective_jaxpr.py --devices 2` 与 `--devices 4` 各 22 个通信组合通过。
 - 唯一 warning 来自原 GLM5/Pallas 上游源码访问已弃用的 `jax.experimental.pallas.reciprocal`，相应 CPU 拒绝测试通过；未修改上游快照消除提示。
 - 文档全量链接检查与 `git diff --check`、`git diff HEAD --check` 通过；受保护文档按用户明确要求不修改，其同步补丁未应用。
 

@@ -12,7 +12,7 @@ base 组合原始 `streamindex_topk_ref(one_token_per_seq=True)` 与 `sparse_mla
 
 ## 签名与手写改写
 
-[脚本](../../../../examples/glm52_decode_dsa_mla.py)默认 `glm` 签名保留 64 个 attention heads、512 latent、64 rope、32×128 indexer 和 2048 top-k，batch=2，每条序列最多 4096 token；不再为 CPU 数值执行缩小 head 数或 top-k。另提供 `small` 签名。FP32 和 BF16 均只用于 abstract tracing，动态长度、索引和页表都是 `ShapeDtypeStruct`，没有固定为随机样本。
+[脚本](../../../../tests/glm52_decode_dsa_mla.py)默认 `glm` 签名保留 64 个 attention heads、512 latent、64 rope、32×128 indexer 和 2048 top-k，batch=2，每条序列最多 4096 token；不再为 CPU 数值执行缩小 head 数或 top-k。另提供 `small` 签名。FP32 和 BF16 均只用于 abstract tracing，动态长度、索引和页表都是 `ShapeDtypeStruct`，没有固定为随机样本。
 
 所有变更点直接手写。普通 Python helper 复用原始循环、分页骨架，并在追踪时展开到候选核心的 jaxpr；没有从 base 的 AST/jaxpr 自动生成候选。共同未改动的另一核心可以复用，但所选核心的内部公式/依赖实际发生变化。
 
@@ -53,9 +53,9 @@ JSON 分开记录 `expected_relation`、`structural`、实际 `status`、`outcom
 ## 运行
 
 ```bash
-uv run python -m examples.glm52_decode_dsa_mla \
+uv run python -m tests.glm52_decode_dsa_mla \
   --json /tmp/glm52-jaxpr.json --jaxpr-dir /tmp/glm52-jaxprs
-uv run python -m examples.glm52_decode_dsa_mla --dtype bfloat16
+uv run python -m tests.glm52_decode_dsa_mla --dtype bfloat16
 uv run pytest -q tests/test_glm52_decode_dsa_mla.py
 ```
 

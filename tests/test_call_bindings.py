@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from jax._src import core, pjit
 
-from examples import call_bindings
+from tests import call_bindings
 from jax_reorder import (
     CorrespondenceError,
     Status,

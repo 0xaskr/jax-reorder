@@ -7,7 +7,7 @@
 
 import numpy as np
 
-from examples.sglang_layers.oracles import act, array, dense, norm
+from tests.sglang_layers.oracles import act, array, dense, norm
 
 
 def rotary(x, positions, base):

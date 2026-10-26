@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from examples.feedback_bindings import scan_original, scan_reordered
+from tests.feedback_bindings import scan_original, scan_reordered
 
 
 def cond_scan_while_cond(flag, x, y, u, v):

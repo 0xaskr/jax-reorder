@@ -37,7 +37,7 @@ class CustomTraceError(ComparisonError):
 uv run ruff check .
 uv run ruff format --check .
 uv run basedpyright
-uv run python examples/inspect_jaxpr.py
+uv run python tests/inspect_jaxpr.py
 uv run pytest
 ```
 

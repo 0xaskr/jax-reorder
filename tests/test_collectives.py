@@ -1,14 +1,14 @@
 """通信必须在多设备上执行，图标签、参数差异和数值证据分别核对。
 
 覆盖：
-- 正例：examples/collective_jaxpr 的 20 个固定通信组合在 check_vma=False/True 下重排后
+- 正例：tests/collective_jaxpr 的 20 个固定通信组合在 check_vma=False/True 下重排后
   仍 equivalent，并实际执行正负样本；独立集合通信确实改变了方程顺序而不是自比较。
 - 参照：张量并行矩阵乘与 NumPy 参照对照，覆盖缺少求和步骤的错误实现。
 - 反例：axis_name、设备数、out_specs 等 shard_map 上下文参与语义，改动必须判不同；
   pvary 的 axis 参数与抽象类型保持精确。
 - 前置条件：至少 2 个逻辑 CPU 设备（conftest.py 用 XLA_FLAGS 提供）；cpu_mesh 在设备
   不足时直接失败，防止单设备退化结果冒充通信验证。
-- 只覆盖单进程 2 设备；4 设备组合由 examples/collective_jaxpr.py --devices 4 单独运行。
+- 只覆盖单进程 2 设备；4 设备组合由 tests/collective_jaxpr.py --devices 4 单独运行。
 """
 
 import jax
@@ -19,7 +19,7 @@ from jax._src import core
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
-from examples.collective_jaxpr import (
+from tests.collective_jaxpr import (
     AXIS,
     Case,
     cases,

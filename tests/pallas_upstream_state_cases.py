@@ -20,9 +20,9 @@ from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu
 from jax.experimental.pallas.ops.tpu import flash_attention, matmul
 
-from examples.pallas_kernels import function as pinned_function
-from examples.pallas_kernels import inputs as pinned_inputs
-from examples.pallas_kernels import oracle as pinned_oracle
+from tests.pallas_kernels import function as pinned_function
+from tests.pallas_kernels import inputs as pinned_inputs
+from tests.pallas_kernels import oracle as pinned_oracle
 
 MANIFEST = Path(__file__).parent / "fixtures/pallas_kernels/jax_state_manifest.json"
 FAMILIES = ("jax_matmul", "jax_attention", "rope", "quantized_rope", "attention")

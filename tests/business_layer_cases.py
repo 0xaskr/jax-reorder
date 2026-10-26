@@ -1,12 +1,12 @@
 """真实业务基准与 AI 直接编写的固定改写。
 
-运行：uv run python examples/business_layer_cases.py
+运行：uv run python tests/business_layer_cases.py
 也可用 --scenario 筛选场景、--trials/--seed 调整数值输入、--show-jaxpr 查看
 图、--report 保存 JSON。所有候选均为下方独立函数，源码与预判 hardcode；
 随机数只用于测试输入。每个候选先按预判检查图结论，再用独立 NumPy 参照核对
 base 数值；负例必须找到实际数值反例。采样不证明一般等价，也不能替代图判定。
 基准提取自 Apache-2.0 项目 pallas-kernel / SGLang-JAX，来源与配置见
-docs/exec-plans/completed/validation/business-layer-cases.md，许可证见 examples/LICENSE.*。
+docs/exec-plans/completed/validation/business-layer-cases.md，许可证见 tests/LICENSE.*。
 """
 
 import argparse

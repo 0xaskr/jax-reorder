@@ -7,7 +7,7 @@
 classes() 覆盖 GLM5、Llama、NativeAttention 及 KV pool 依赖；
 block_classes() 覆盖 CLIP encoder 与 Flux 层，其中 FluxSingleTransformerBlock
 的原图追踪在锁定版本上被拒绝，只作边界记录。入口见
-`python -m examples.full_layers.runner`。
+`python -m tests.full_layers.runner`。
 """
 
 import abc
@@ -24,7 +24,7 @@ import jax
 from flax.nnx.nn import dtypes
 from jax._src import dtypes as jax_dtypes
 
-from examples.sglang_layers.upstream import dependencies, layer_class, load
+from tests.sglang_layers.upstream import dependencies, layer_class, load
 
 
 @functools.cache

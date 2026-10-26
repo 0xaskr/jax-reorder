@@ -17,9 +17,9 @@ import re
 
 import pytest
 
-from examples.sglang_layers import runner
-from examples.sglang_layers.builders import PROFILES
-from examples.sglang_layers.catalog import (
+from tests.sglang_layers import runner
+from tests.sglang_layers.builders import PROFILES
+from tests.sglang_layers.catalog import (
     COMPONENT_LAYERS,
     CONFIG_LAYERS,
     LAYER_BY_KEY,
@@ -27,7 +27,7 @@ from examples.sglang_layers.catalog import (
     MODEL_LAYERS,
     MULTIMODAL_LAYERS,
 )
-from examples.sglang_layers.upstream import (
+from tests.sglang_layers.upstream import (
     MANIFEST,
     PREFIX,
     REVISION,
