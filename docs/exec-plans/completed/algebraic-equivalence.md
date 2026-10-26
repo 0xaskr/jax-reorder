@@ -14,7 +14,7 @@
 - 保留已有结构模式行为；完成默认函数接口行为迁移及相应回归测试。
 - 浮点警告、规则适用条件、验证证据和未支持边界进入文档，不能把抽样相近作为证明。
 
-事实入口：[架构与比较契约](../../../ARCHITECTURE.md)、[两轮比较结果设计](../../references/equivalence-results.md)、[函数与求导契约](../../development-docs/function-and-derivative-contract.md)、[区域绑定](../../development-docs/region-bindings.md)。下述接口与规则已实现，最终验收证据及实际边界在本文末尾和[开发设计](../../development-docs/algebraic-equivalence.md)中记录。
+事实入口：[架构与比较契约](../../../ARCHITECTURE.md)、[两轮比较结果设计](../../references/equivalence-results.md)、[函数与求导契约](../../design-docs/current/function-and-derivative-contract.md)、[区域绑定](../../design-docs/current/region-bindings.md)。下述接口与规则已实现，最终验收证据及实际边界在本文末尾和[开发设计](../../design-docs/current/algebraic-equivalence.md)中记录。
 
 ## 已确认的范围与取舍
 
@@ -313,7 +313,7 @@ git diff --check
 
 2026-10-13（方案细化）：用户提出按固定规则规范化，并确认 matmul 和 sum 可统一为不同索引连接下的乘法与加法。本版据此替换矩阵链单独右结合的方案，将支持的跨算子乘加归约互认纳入首期，覆盖初版范围限制。补充索引 IR、原语转换、确定性规范化、绑定索引搜索、独立证明及资源边界；函数接口、数值域和控制流边界保持此前约定。
 
-2026-10-13（实施）：新增索引 IR、原语转换、稀疏项规范化、独立证明复核及代数报告；函数默认自动尝试，结构入口保持原契约。修复输入 Host 内存属性在抽象签名转换时被重设的问题，以及重复返回 Var 的区域证据槽位映射问题。具体实现与信任边界见[开发设计](../../development-docs/algebraic-equivalence.md)，可运行[乘加与矩阵示例](../../../examples/algebraic_equivalence.py)。
+2026-10-13（实施）：新增索引 IR、原语转换、稀疏项规范化、独立证明复核及代数报告；函数默认自动尝试，结构入口保持原契约。修复输入 Host 内存属性在抽象签名转换时被重设的问题，以及重复返回 Var 的区域证据槽位映射问题。具体实现与信任边界见[开发设计](../../design-docs/current/algebraic-equivalence.md)，可运行[乘加与矩阵示例](../../../examples/algebraic_equivalence.py)。
 
 2026-10-13（结构蕴含与回归）：按用户要求，把旧用例中已证明结构等价的 IR 成对送入代数入口。182 组均通过，155 组另外通过实际展开和独立证明，27 组明确验证转换器尚未适配的区域、token 或有序语义。结构直通仍携带独立复核证据，不受代数预算限制。第一轮全量为 1227 passed、2 failed；失败均为函数抽象签名把实际数组的单设备放置额外固化，导致双 CPU shard_map 编译冲突。已改为使用数组的抽象 sharding，并保留 ShapeDtypeStruct 原始声明；最终全量 1600 项通过。
 
@@ -337,7 +337,7 @@ git diff --check
 - token、有序语义、未适配的嵌套原语、一般 reshape/对角读取、动态或依赖索引域、额外精度与分片不新增代数规则；不影响已有结构证据的接受。
 - 固定区域的调用、返回、反馈与控制参数仍须对应。显式求导可能引入不同的 jit 残差接口或区域结构，这类变化保留 `unknown`；动态 while VJP 为 JAX 追踪拒绝。
 - 不新增真实模型的代数改写验收、高阶求导、GPU/TPU 执行或一般数学不等价证明。证据为进程内对象，尚无持久化格式。
-- 后续缺口已记录在[技术债](../tech-debt-tracker.md)的 BFS-004、AD-003、ALG-001/002 和 DOC-002 中。
+- 后续缺口已记录在[待处理清单](../index.md#待处理)的 BFS-004、AD-003、ALG-001/002 和 DOC-002 中。
 
 ## 文档维护与后续边界
 

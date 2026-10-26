@@ -2,7 +2,7 @@
 
 本文定义完整 jaxpr 比较的契约：**成功返回时只有计算图等价、数学等价、数学不等价三种结论；不能完成判定时直接抛出异常。** “无法判定”不再作为正常比较结果。
 
-这是结果接口的设计决定，不表示比较器能够对任意两份 JAX 程序必定作出结论。可信 SymPy 后端及转换实现见[代数开发记录](../development-docs/algebraic-equivalence.md)。代码已按本文迁移：`Status.UNKNOWN` 已删除，比较失败通过 `ComparisonError` 及其子类抛出。
+这是结果接口的设计决定，不表示比较器能够对任意两份 JAX 程序必定作出结论。可信 SymPy 后端及转换实现见[代数开发记录](../design-docs/current/algebraic-equivalence.md)。代码已按本文迁移：`Status.UNKNOWN` 已删除，比较失败通过 `ComparisonError` 及其子类抛出。
 
 ## 比较范围
 

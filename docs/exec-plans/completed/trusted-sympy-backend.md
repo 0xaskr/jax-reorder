@@ -49,7 +49,7 @@ Nerva 组合是验证资产，生产比较器仍接收任意受支持的 JAX 图
 
 ## 3. 可本地修改前提下的候选路线
 
-候选证据和精确版本写入[架构复用评估](../../development-docs/equivalence-backends/architecture-reuse.md)。
+候选证据和精确版本写入[架构复用评估](research/equivalence-backends/architecture-reuse.md)。
 此前 21 个项目的报告继续作为已知资料使用，不重复安装所有 CAS/SMT/编译器。
 
 | 候选 | 可保留的能力 | 主要需要改造/验证 | 角色与优先级 |
@@ -339,7 +339,7 @@ F7 已完成：GLM 三组签名均保持 5 个正例已证明、5 个负例 cond
 
 已完成评估的脚本入口：[architecture_reuse_probe.py](../../../tools/experiments/equivalence_backends/architecture_reuse_probe.py)。
 下载、依赖、原版与改版 JSON 位于 `/tmp/jax-reorder-architecture-eval/`；正式依赖和 `uv.lock` 不变。
-复现命令、补丁及实际结果见[评估报告](../../development-docs/equivalence-backends/architecture-reuse.md)。
+复现命令、补丁及实际结果见[评估报告](research/equivalence-backends/architecture-reuse.md)。
 
 评估脚本的历史检查命令：
 
@@ -355,7 +355,7 @@ git diff --check
 - 249 项回归通过（234.93 秒）：新后端、Nerva、上游 23 项基线、矩阵、特殊值、有限性和 JIT 组合。
 - 独立双重求和转换/矩阵结合子集 20 项通过；DeepSeek 剩余两个 bfloat16 完整上下文 VJP 均通过。
 - 补充的整数 dtype 负结论范围和循环谓词原始条件 3 项通过。
-- 规模脚本输出已记录在[当前设计](../../development-docs/algebraic-equivalence.md#离线复现与规模记录)。
+- 规模脚本输出已记录在[当前设计](history/algebraic-equivalence-validation.md#离线复现与规模记录)。
 - 修复惰性求和后，标量索引与新后端 109 项通过（90.76 秒）；GLM 大签名缩放正例在 float32/bfloat16 均通过。
 - Ruff、格式检查（186 文件）、tracing 示例、新 SymPy 示例通过。离线 sdist/wheel 构建、许可证/manifest 入包、临时目录独立导入及数学比较通过。
 - 稳定版本全量：**2166 passed，1 warning，1403.69 秒**。唯一 warning 是既有 SGLang fixture 的 Pallas reciprocal 弃用提示，不是本轮引入的后端。
@@ -379,5 +379,5 @@ git diff --check
 ```
 
 受保护的 README/AGENTS/CLAUDE/ARCHITECTURE、docs/index.md、docs/PLANS.md 及 design-docs 保持只读。
-设计与进展写在 development-docs 和 exec-plans。现有 [algebraic-equivalence.md](../../development-docs/algebraic-equivalence.md)
+设计与进展写在 development-docs 和 exec-plans。现有 [algebraic-equivalence.md](../../design-docs/current/algebraic-equivalence.md)
 的顶部描述新默认实现，后半部分明确保留为旧候选/独立证明协议的历史记录。

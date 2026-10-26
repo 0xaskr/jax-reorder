@@ -42,19 +42,19 @@
 
 嵌套子图在原区域内分别规范化，保留分支顺序、循环角色及调用边界。私有接口允许实参/形参和结果槽位同步置换；位置元数据、反馈边和外部绑定必须一起保持。token 依赖照常保留；隐式有序操作及包含它们的调用保留相对顺序。未知 effects 或不透明参数显式拒绝，即使它们不影响输出也不忽略。
 
-`cond`（包括 `lax.switch`）对数据实参与全部分支形参执行同一个置换，再进行父图 BFS。它消除闭包自动捕获位置变化，保留实际绑定；不改变选择值、分支顺序及外部接口。jit、cond、shard_map 的私有结果按父图使用路径排列；scan/while 的捕获与 carry 分角色同步处理。规则与反例见 [区域绑定](docs/development-docs/region-bindings.md)。
+`cond`（包括 `lax.switch`）对数据实参与全部分支形参执行同一个置换，再进行父图 BFS。它消除闭包自动捕获位置变化，保留实际绑定；不改变选择值、分支顺序及外部接口。jit、cond、shard_map 的私有结果按父图使用路径排列；scan/while 的捕获与 carry 分角色同步处理。规则与反例见 [区域绑定](docs/design-docs/current/region-bindings.md)。
 
-`shard_map` 内显式集合通信沿用相同图规则，保留通信轴、分组、置换、维度、mesh 与分片接口；`pvary` 辅助节点也完整保留。子图在恢复的轴环境内校验。[通信实验](docs/development-docs/collective-jaxpr.md)覆盖单进程多 CPU 设备，不外推为多主机或 GPU/TPU 执行验证。
+`shard_map` 内显式集合通信沿用相同图规则，保留通信轴、分组、置换、维度、mesh 与分片接口；`pvary` 辅助节点也完整保留。子图在恢复的轴环境内校验。[通信实验](docs/exec-plans/completed/validation/collective-jaxpr.md)覆盖单进程多 CPU 设备，不外推为多主机或 GPU/TPU 执行验证。
 
-未被输出或顺序根覆盖的纯计算和常量也完整比较，通过全图标签与连接细化、必要时有界精确搜索确定编号。多个没有使用锚点的内部槽位同样有界搜索；默认预算 10,000，超限返回 `unknown`。不删除未使用计算，见[完整图与深度设计](docs/development-docs/complete-graph.md)。
+未被输出或顺序根覆盖的纯计算和常量也完整比较，通过全图标签与连接细化、必要时有界精确搜索确定编号。多个没有使用锚点的内部槽位同样有界搜索；默认预算 10,000，超限返回 `unknown`。不删除未使用计算，见[完整图与深度设计](docs/design-docs/current/complete-graph.md)。
 
-每个 `equivalent` 都携带原图对应证据，并经独立校验器复核；规范结构相同而原始绑定校验失败时返回 `unknown`。[对应关系论证](docs/development-docs/original-correspondence.md)明确了独立校验与共同语义编码的边界。
+每个 `equivalent` 都携带原图对应证据，并经独立校验器复核；规范结构相同而原始绑定校验失败时返回 `unknown`。[对应关系论证](docs/design-docs/current/original-correspondence.md)明确了独立校验与共同语义编码的边界。
 
-自定义 JVP/VJP 注册规则按锁定版本显式物化，残差生产与消费连接起来核对。底层默认检查注册的一阶规则；函数入口按实际请求的前向/JVP/VJP 程序给结论，不外推高阶求导。前向图一致也可能因 JAX 梯度累加顺序变化而得到不同的 VJP 图，见[求导契约](docs/development-docs/function-and-derivative-contract.md)。
+自定义 JVP/VJP 注册规则按锁定版本显式物化，残差生产与消费连接起来核对。底层默认检查注册的一阶规则；函数入口按实际请求的前向/JVP/VJP 程序给结论，不外推高阶求导。前向图一致也可能因 JAX 梯度累加顺序变化而得到不同的 VJP 图，见[求导契约](docs/design-docs/current/function-and-derivative-contract.md)。
 
 ## CPU 原语支持与结果
 
-目标范围以 `jax.lax` 及公开子模块在 CPU 的实际能力为准，不另建 dtype、shape 或参数值白名单。JAX 能处理而本项目不能解释的情况属于实现缺口，必须报告；JAX 自身拒绝的调用单独记录。[原语清单](docs/development-docs/lax-coverage.md)列出逐项证据，有限样本不代表穷举所有合法调用。
+目标范围以 `jax.lax` 及公开子模块在 CPU 的实际能力为准，不另建 dtype、shape 或参数值白名单。JAX 能处理而本项目不能解释的情况属于实现缺口，必须报告；JAX 自身拒绝的调用单独记录。[原语清单](docs/references/lax-coverage.md)列出逐项证据，有限样本不代表穷举所有合法调用。
 
 | 接口结果 | 含义 |
 | --- | --- |
@@ -68,8 +68,8 @@
 
 结论仅针对给定 jaxpr 及声明的追踪上下文，不宣称一般 Python 等价、跨平台等价或任意输入下逐位浮点相等。图不匹配仍可能数值相同；实际不等价案例另附有效输入及不同输出。将来如增加浮点代数改写，应单独记录规则、条件和警告，本轮不执行这些规则。
 
-算法论证、JAX 适配与 review 见 [开发设计](docs/development-docs/bfs-reordering.md)，AI 标签、数值证据与模型提取来源见 [案例记录](docs/development-docs/bfs-cases.md)。pytest、Ruff、示例与清单一致性检查已纳入 [CPU CI](.github/workflows/ci.yml)；在线 CI 是否通过需由实际工作流结果确认。
+算法论证、JAX 适配与 review 见 [开发设计](docs/design-docs/archive/bfs-reordering.md)，AI 标签、数值证据与模型提取来源见 [案例记录](docs/exec-plans/completed/validation/bfs-cases.md)。pytest、Ruff、示例与清单一致性检查已纳入 [CPU CI](.github/workflows/ci.yml)；在线 CI 是否通过需由实际工作流结果确认。
 
-[真实业务案例](docs/development-docs/business-layer-cases.md)另保存五个层级内基准与 20 个 AI 手写候选，预判和源码均 hardcode；用独立 NumPy 参照复核基准，并分别验证候选图标签及两侧重排执行。该有限案例集不代表完整上游模型或全部配置的支持证明。
+[真实业务案例](docs/exec-plans/completed/validation/business-layer-cases.md)另保存五个层级内基准与 20 个 AI 手写候选，预判和源码均 hardcode；用独立 NumPy 参照复核基准，并分别验证候选图标签及两侧重排执行。该有限案例集不代表完整上游模型或全部配置的支持证明。
 
-[完整 Attention/block](docs/development-docs/full-attention.md)覆盖原 GLM5 MHA、Llama GQA、CLIP encoder、Flux joint attention、未使用索引器和分模式求导，另记录真实 Pallas/上游拒绝路径。测试矩阵、CPU CI、适配快照和候选升级流程见[系统验证](docs/development-docs/verification-matrix.md)。
+[完整 Attention/block](docs/exec-plans/completed/validation/full-attention.md)覆盖原 GLM5 MHA、Llama GQA、CLIP encoder、Flux joint attention、未使用索引器和分模式求导，另记录真实 Pallas/上游拒绝路径。测试矩阵、CPU CI、适配快照和候选升级流程见[系统验证](docs/design-docs/current/verification-matrix.md)。

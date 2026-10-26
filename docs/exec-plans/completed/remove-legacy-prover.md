@@ -12,7 +12,7 @@
 
 ## 设计与取舍
 
-设计入口：[代数比较开发记录](../../development-docs/algebraic-equivalence.md)。此次是明确的 API 删除：AlgebraProof、PolynomialInequivalenceProof、verify_algebraic_proof、verify_inequivalence_proof 以及结果中的 proof/inequivalence_proof 不再提供兼容外壳。结构证据及 verify_correspondence 仍属于第一阶段。
+设计入口：[代数比较开发记录](../../design-docs/current/algebraic-equivalence.md)。此次是明确的 API 删除：AlgebraProof、PolynomialInequivalenceProof、verify_algebraic_proof、verify_inequivalence_proof 以及结果中的 proof/inequivalence_proof 不再提供兼容外壳。结构证据及 verify_correspondence 仍属于第一阶段。
 
 已有 Finiteness 和 JIT 参数检查间接依赖 Lowerer，必须先提取实际使用的小范围语义工具，再删除旧转换器。索引坐标适配可以保留，但删除仅服务 Factor/Term 和证明步骤的代码。数学判断继续信任 SymPy；迁移回归发现的表示丢失与查询资源问题，在转换边界和查询顺序中修复，不增加独立数学证明器。
 

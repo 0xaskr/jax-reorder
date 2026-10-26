@@ -38,7 +38,7 @@ basedpyright 0 errors。119 个公开 callable 导出逐一分类，其中 73 �
 其余是声明、工具、host helper、范围外 MPMD 与源端拒绝（不是 119 个执行通过）。
 CPU interpreter 对可执行候选进行正反数值核验；Ref transpose discharge 和 Indirect
 数组索引的上游拒绝分别固定为测试。设备检查仅一个 CPU，没有 TPU 硬件证据。
-开发设计入口：[Pallas/JAX](../../development-docs/pallas-jax-equivalence.md)。
+开发设计入口：[Pallas/JAX](../../design-docs/current/pallas-jax-equivalence.md)。
 
 后续补入官方 pipeline lowering 的 `pipeline_body` 与未知 HiPrim 拒绝，覆盖变为 40 类。
 最终覆盖/核心/接口回归 153 passed；公共代数桥接专项 26 passed；官方 TPU interpreter

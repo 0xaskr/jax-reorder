@@ -6,7 +6,7 @@
 | --- | --- |
 | [JAX / Pallas 语义层](pallas-semantic-layer.md) | 远端多维 grid 阶段已完成；剩余覆盖和执行条件见短计划 |
 
-开发问题从[Pallas 任务入口](../../development-docs/pallas-jax-equivalence.md)选择一个专题。
+开发问题从[Pallas 任务入口](../../design-docs/current/pallas-jax-equivalence.md)选择一个专题。
 其他已完成工作从[completed](../completed/)按文件名查找；需原索引的详细完成摘要时读
 [历史索引快照](../completed/context-history/active-index-2026-10-21.md)，不要默认加载。
 

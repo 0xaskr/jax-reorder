@@ -1,6 +1,6 @@
 """在禁止编译与 eager 执行的条件下清点真实 GLM 图的 primitive/参数。
 
-运行（见 docs/development-docs/equivalence-backends/compiler.md）：
+运行（见 docs/exec-plans/completed/research/equivalence-backends/compiler.md）：
   python -m tools.experiments.equivalence_backends.glm_inventory \
       --json /tmp/jax-reorder-equivalence-eval/glm-inventory.json
 

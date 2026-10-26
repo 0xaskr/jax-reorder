@@ -1,11 +1,11 @@
 # 历史上下文快照（2026-10-21 压缩前）
 
-> 非默认加载。原记录含已完成或被后续覆盖的边界；当前状态见[Pallas 入口](../../../development-docs/pallas-jax-equivalence.md)。
+> 非默认加载。原记录含已完成或被后续覆盖的边界；当前状态见[Pallas 入口](../../../design-docs/current/pallas-jax-equivalence.md)。
 
 ﻿# JAX / Pallas 语义中间层：设计记录与后续计划
 
 创建：2026-10-18。状态：**实施中**（用户已要求实现设计）。
-设计依据：[Pallas / JAX 等价比较设计](../../../development-docs/pallas-jax-equivalence.md)
+设计依据：[Pallas / JAX 等价比较设计](../../../design-docs/current/pallas-jax-equivalence.md)
 （尤其 §3、§4.2、§8）。用户已确认：不把 JAX/Pallas 直接翻译成 SymPy 作为比较主路径；
 中间抽象层由本项目自研；MLIR 虽长期看好但现阶段接入成本过大，暂不接入。
 
@@ -13,7 +13,7 @@
 
 2026-10-19 最新范围：用户要求比较**分布式程序中单个 device 执行的 kernel**，
 不是只允许单设备程序。mesh（包括多维 mesh）可以存在，第一版不展开或证明整个 mesh
-上的全局计算。见[设备局部比较边界](../../../development-docs/pallas-jax-equivalence.md)。
+上的全局计算。见[设备局部比较边界](../../../design-docs/current/pallas-jax-equivalence.md)。
 设备坐标、轴大小、分片和通信目标若影响局部图，仍须保留依赖及接口绑定；不能无条件删除 mesh。
 单设备视角不限制为一维张量、单维 grid 或单 program。局部入口已实现，当前规范化覆盖
 静态多维规则分块、矩形访存与受限控制/状态；一般动态索引和布局等仍是后续覆盖目标。
@@ -270,7 +270,7 @@ core 绑定不列为当前补齐项或验收阻塞。已有显式 `CoreExecution
 不承诺解决任意数据依赖终止或任意并发通信；每个新增支持项都需要源事实、
 适用前提、正例、反例和拒绝路径。用户先提供 falcon 2x2x1，随后明确不需
 实机，改用 AOT；未连接或启动 falcon。CPU 数值验证与静态证明分别记录。
-完成记录见[开发记录 §9.20](../../../development-docs/pallas/history/stage-20.md#920-并行补齐语义覆盖与验证2026-10-20完成)。
+完成记录见[开发记录 §9.20](../pallas-history/stage-20.md#920-并行补齐语义覆盖与验证2026-10-20完成)。
 本子阶段完成，整体计划继续 active；任意多 core 绑定、交错轴调度、一般动态写/路由、
 部分动态视图和非默认物理布局等仍需独立规则。
 
@@ -279,7 +279,7 @@ core 绑定不列为当前补齐项或验收阻塞。已有显式 `CoreExecution
 用户提出将并行 grid 轴放入值的批量维度，将串行轴展开为通过实际状态依赖连接
 的 kernel 实例；无需额外插入 barrier，program_id 直接由实例坐标绑定。
 采用这个方向统一后续 grid lowering，具体语义和验收范围见
-[开发记录 §9.19](../../../development-docs/pallas/history/stage-19.md#919-grid-并行批量轴与串行状态展开2026-10-20)。
+[开发记录 §9.19](../pallas-history/stage-19.md#919-grid-并行批量轴与串行状态展开2026-10-20)。
 
 - [x] 明确 program 批量轴、真实 Ref 地址、串行状态传递及有界展开的职责。
 - [x] 复用状态解释器，按实例化后的 index_map 块序列证明覆盖与独立输出窗口。
@@ -314,7 +314,7 @@ core normalized 证据；内部循环的数值对照与跨图等价结论分列�
 用户要求补齐多输出不同窗口寿命。以 `grid=(M,K)`、`y(i,j)=(i,j)`、
 `s(i,j)=(i,)` 为具体入口：`y` 每步结束一个块，`s` 保留同一块完成串行
 累加。初始化和更新必须由实际代码决定，不由 index_map 推测运算。
-设计见[开发记录 §9.18](../../../development-docs/pallas/history/stage-18.md#918-多输出独立-index_map-窗口2026-10-20)。
+设计见[开发记录 §9.18](../pallas-history/stage-18.md#918-多输出独立-index_map-窗口2026-10-20)。
 
 - [x] 复现不同窗口拒绝，增加具体两输出和上游 scratch 派生用例。
 - [x] 每个输出分别证明 ownership/连续串行后缀，以后缀并集决定有界重放。
@@ -359,7 +359,7 @@ CPU 8 项已通过。SymPy 对显式按块 stack 参考式判等；平铺 `x * 2
 最后一维入口/局部状态/DMA/semantic-slice 147 项复测通过；共享层 232 项通过。
 Ruff、格式、类型、tracing、adapter inventory、文档与 diff 检查通过。详细命令、
 中途失败及修正、剩余范围见
-[跨输出块验证](../../../development-docs/pallas/history/stage-17.md#917-跨输出块状态复用2026-10-20完成)。
+[跨输出块验证](../pallas-history/stage-17.md#917-跨输出块状态复用2026-10-20完成)。
 本子阶段完成；当时遗留的多输出不同窗口寿命已由上方 index_map 子阶段补齐，
 一般动态地址/布局、远端流水和真实 TPU 验证仍未完成，整体计划保留 active。
 输入输出共享 HBM 继续排除。
@@ -381,7 +381,7 @@ run_scoped、DMA semaphore 数组、有限循环动态切片、降秩矩形搬�
 和版本，按实际 staging 生命周期放行串行 grid。合法等待移动、2→4 buffer 和同步
 调度等价；错槽、漏 wait、提前覆盖和未排空退出拒绝；搬错数据块单独报告输出差异。
 官方 CPU 解释器覆盖完整输出，资源证明与数值/竞态结果分开记录。实现、测试矩阵和
-剩余边界见 [双缓冲 DMA 验证](../../../development-docs/pallas/history/stage-16.md#916-真实双缓冲-dma-的跨迭代证明2026-10-20完成)。
+剩余边界见 [双缓冲 DMA 验证](../pallas-history/stage-16.md#916-真实双缓冲-dma-的跨迭代证明2026-10-20完成)。
 本子阶段完成；一般动态布局/索引、跨输出块状态复用、远端流水和真实 TPU 验证仍未完成，
 整体语义层计划保持 active。输入输出共享 HBM 按用户决定暂不支持，移出近期待办。
 本轮新增 41 项 Pallas 回归和 1 项整数见证边界测试。Pallas 最终 665 项分批通过；
@@ -404,7 +404,7 @@ run_scoped、DMA semaphore 数组、有限循环动态切片、降秩矩形搬�
 补充回归覆盖其余 1961 项，与 Pallas 624 项按最终 collection 去重后，当前全仓库
 2585 项分批全部通过。Ruff、格式、类型、tracing、adapter inventory 和文档检查通过；
 CPU 数值/资源执行与预期拒绝/停滞分别报告，未做真实 TPU 验证。完整结果见
-[开源验证记录](../../../development-docs/pallas/history/stage-15.md#915-开源-kernel-驱动的测试与修复2026-10-20完成)。
+[开源验证记录](../pallas-history/stage-15.md#915-开源-kernel-驱动的测试与修复2026-10-20完成)。
 本子阶段完成；一般语法覆盖、串行通信/alias 等仍使整体语义层计划保持 active。
 
 按最新范围优先推进设备局部入口和覆盖；下列 M1/M2/M3 保留已有实现与后续工作的记录。
@@ -427,7 +427,7 @@ CPU 数值/资源执行与预期拒绝/停滞分别报告，未做真实 TPU 验
 本轮主回归 **427 passed**，最终 alias 复查 **35 passed**（与主回归重叠，另增一个反例），
 独立 CPU 检查 **27 passed**（25 项实际执行、2 项预期 read lowering 拒绝）。Ruff、格式、
 类型、tracing、adapter inventory 和文档检查通过；未做真实 TPU 验证。实现和完整命令见
-[§9.13](../../../development-docs/pallas/history/stage-13.md#913-局部入口与覆盖补齐规则2026-10-19)。
+[§9.13](../pallas-history/stage-13.md#913-局部入口与覆盖补齐规则2026-10-19)。
 本子阶段完成；下一子阶段补多维地址域。一般控制/通信、JAX 消费者迁移等仍使整体计划保持 active。
 
 ### 既有工作项
@@ -448,7 +448,7 @@ CPU 数值/资源执行与预期拒绝/停滞分别报告，未做真实 TPU 验
 既有局部 CPU 专项 **11 passed**。
 新增 CPU 检查有 11 项 TPU 专用 interpreter 实际成功、1 项明确断言 masked load lowering
 拒绝，另有通用 `interpret=True` 尾块数值成功。完整证据见
-[§9.14](../../../development-docs/pallas/history/stage-14.md#914-多维-grid-与访存2026-10-19)。
+[§9.14](../pallas-history/stage-14.md#914-多维-grid-与访存2026-10-19)。
 一般动态/非线性索引、非连续 DMA、真实 TPU 验证及完整多轴 mesh 全局通信仍有边界。
 
 - [x] 设备局部比较入口：抽取单 `pallas_call`，明确局部输入输出、设备环境量及通信资源的绑定；
@@ -488,7 +488,7 @@ CPU 数值/资源执行与预期拒绝/停滞分别报告，未做真实 TPU 验
       仍待扩展。区分结构适配和语义规范化的缺口，保留未知语义拒绝及单设备 TPU 验证缺口。
 - [x] 首个串行 grid 规则：输出窗口的 trailing arbitrary 后缀按实际代码区分覆盖、加法更新和一般递推；
       保留初值、分支及跨迭代版本，dot/reduce 值图接入 SymPy。非后缀复用和串行通信/alias 尚未扩展。
-- [ ] 代数后续：扩展局部值投影，并按[已定规则](../../../development-docs/algebraic-equivalence.md)
+- [ ] 代数后续：扩展局部值投影，并按[已定规则](../../../design-docs/current/algebraic-equivalence.md)
       实现未使用纯计算的删减；不能以放宽 effects 或删除环境依赖获得匹配。
 - [ ] 后续全局扩展：多轴 mesh 的全局组装、动态跨设备路由/协议、真实多设备及多主机验证；不阻塞第一版。
 
@@ -547,7 +547,7 @@ CPU 数值/资源执行与预期拒绝/停滞分别报告，未做真实 TPU 验
 
 新增 [31 项回归](../../../../tests/test_pallas_local_scope.py)，静态/无通信 CPU 检查 24 passed，
 联合通信 23 passed，相关既有回归 226 passed，共 273 项；未执行全仓库 pytest。
-详见[逐类结果、命令及环境](../../../development-docs/pallas/history/stage-12.md#912-设备局部视角的定向验证2026-10-19)。
+详见[逐类结果、命令及环境](../pallas-history/stage-12.md#912-设备局部视角的定向验证2026-10-19)。
 普通 Python/NumPy 静态标量预处理可以通过；合法 NumPy 数组参数暴露外层常量绑定缺口。
 其余定位到 scalar prefetch/标量索引、稳定 read 控制流、循环和多 program 生命周期。
 CPU 通信 23 项中两项是 read lowering 的预期拒绝，没有 TPU 硬件证据。

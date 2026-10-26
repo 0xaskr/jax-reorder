@@ -1,7 +1,7 @@
 """重新追踪 lax 固定用例并核对原语清单文档；--write 才写回。
 
 清单只记录“测试绑定关系”，执行证据来自完整 pytest 运行，脚本本身不执行全部计算。
-默认模式把重新追踪的结果与 docs/development-docs/lax-coverage.md 逐字比较，清单过期
+默认模式把重新追踪的结果与 docs/references/lax-coverage.md 逐字比较，清单过期
 即断言失败，从而阻止文档漂移或漏掉公开原语；--write 只应在审查覆盖变化后使用。
 前置条件：conftest 之外的独立入口自行固定 CPU 平台和 2 个 host 设备。
 """
@@ -71,7 +71,7 @@ def report():
         "",
         "原语在 CPU 支持的全部合法参数、dtype、shape 都属于目标域；表中的代表值"
         "不构成白名单，也不宣称穷举该域。参数用带类型的完整结构编码，子图递归处理。"
-        "[设计、适配与审查](bfs-reordering.md)解释具体规则和边界。",
+        "[结构设计与验证方法](../design-docs/index.md)解释具体规则和边界。",
         "",
         "## 公开原语",
         "",
@@ -120,7 +120,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args()
-    path = Path(__file__).resolve().parents[1] / "docs/development-docs/lax-coverage.md"
+    path = Path(__file__).resolve().parents[1] / "docs/references/lax-coverage.md"
     content = report()
     if args.write:
         path.write_text(content)

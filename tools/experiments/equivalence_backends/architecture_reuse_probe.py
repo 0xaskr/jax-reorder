@@ -1,6 +1,6 @@
 """在通用公式上审查上游符号组件的复用能力，不执行 JAX 编译。
 
-运行（见 docs/development-docs/equivalence-backends/architecture-reuse.md）：
+运行（见 docs/exec-plans/completed/research/equivalence-backends/architecture-reuse.md）：
   uv run --no-sync --offline python \
       tools/experiments/equivalence_backends/architecture_reuse_probe.py \
       --sources-root /tmp/jax-reorder-architecture-eval \

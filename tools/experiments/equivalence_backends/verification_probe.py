@@ -1,7 +1,7 @@
 """符号 SMT 探针：不执行 JAX/模型，也不做随机采样。
 
 运行（隔离环境安装 z3-solver 与 cvc5，见
-docs/development-docs/equivalence-backends/verification.md）：
+docs/exec-plans/completed/research/equivalence-backends/verification.md）：
   <隔离环境>/python tools/experiments/equivalence_backends/verification_probe.py \
       --backend all --timeout-ms 3000
 

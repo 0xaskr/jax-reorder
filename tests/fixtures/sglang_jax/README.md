@@ -8,6 +8,6 @@
 
 `upstream-model-tree.json` 保留 GitHub tree API 返回的两个模型目录的文件清单与 Git blob 摘要，独立检查模型目录是否漏收文件。108 份原文件覆盖全部模型定义、静态配置以及所选层使用的辅助函数，不包含模型权重。
 
-完整 Attention 验证另加入 22 份原始后端、KV pool、ForwardBatch、norm、Pallas 内核和 MoE 依赖，共 130 份原文件。新增来源由 `upstream-attention-tree.json` 中的独立 Git blob 摘要核对，统一加入 `manifest.json`。加载完整类时只注入实际原定义；环境开关、后端选择及拒绝路径见[完整层记录](../../../docs/development-docs/full-attention.md)。没有把替代 attention 核心的结果计作原类通过。
+完整 Attention 验证另加入 22 份原始后端、KV pool、ForwardBatch、norm、Pallas 内核和 MoE 依赖，共 130 份原文件。新增来源由 `upstream-attention-tree.json` 中的独立 Git blob 摘要核对，统一加入 `manifest.json`。加载完整类时只注入实际原定义；环境开关、后端选择及拒绝路径见[完整层记录](../../../docs/exec-plans/completed/validation/full-attention.md)。没有把替代 attention 核心的结果计作原类通过。
 
-GLM-5.2 decode 测试继续加入同一提交的 `kernels/dsa/ref.py`，现有 131 份原文件。该文件是仅依赖 JAX/JNP 的原始 reference；原样加载 `streamindex_topk_ref` 和 `sparse_mla_ref`，仅以抽象签名追踪并比较 jaxpr，不编译或执行 layer，不加载 Pallas。来源也通过上述两个摘要表校验。测试入口及明确边界见[开发记录](../../../docs/development-docs/glm52-decode-dsa-mla.md)。
+GLM-5.2 decode 测试继续加入同一提交的 `kernels/dsa/ref.py`，现有 131 份原文件。该文件是仅依赖 JAX/JNP 的原始 reference；原样加载 `streamindex_topk_ref` 和 `sparse_mla_ref`，仅以抽象签名追踪并比较 jaxpr，不编译或执行 layer，不加载 Pallas。来源也通过上述两个摘要表校验。测试入口及明确边界见[开发记录](../../../docs/exec-plans/completed/validation/glm52-decode-dsa-mla.md)。

@@ -12,7 +12,7 @@
 
 - [x] `tensor_domain.requires_tensor_coordinates` 统一 kernel 与外层绑定的 shape 判定；嵌套 region 分别建立类型表。
 - [x] 两份既有测试文件增加 20 项回归：iota/输入/常量，outer/direct/cond，隐式与显式广播及独立 NumPy/CPU/投影参照。
-- [x] 相关回归、静态检查通过，更新[精简开发说明](../../development-docs/pallas/grid-memory.md)。
+- [x] 相关回归、静态检查通过，更新[精简开发说明](../../design-docs/current/pallas/grid-memory.md)。
 
 ## 验证结果
 
@@ -43,7 +43,7 @@
 `x + (jnp.arange(128, dtype=jnp.int32) + 3).astype(jnp.float32)`，CPU 执行合法，
 `normalize_view` 却在 `binding_value → pure_value → check_integer_range` 读取缺失的
 `ranges['global']` 时抛出 `KeyError`。新旧路由均复现，已登记为
-[PALLAS-003](../tech-debt-tracker.md)，本轮不扩展到该快速路径范围修复。
+[PALLAS-003](pallas-broadcast-coordinates.md#已解决问题编号)，本轮不扩展到该快速路径范围修复。
 
 ## 外层坐标范围跟进
 
@@ -64,3 +64,11 @@
 - 原始两份源码的离线 TPU 编译证据沿用前次只读审查；此次没有更改 kernel 源码或执行 TPU。
 - 日志：`/tmp/jax-reorder-outer-range-fix/`；筛选新增回归使用
   `-k 'outer_vector_coordinate_arithmetic or outer_coordinate_bounds'`。
+
+## 已解决问题编号
+
+以下编号于 2026-10-26 从问题总表归入本计划，保留原已解决状态、优先级和依据；本次文档合并未重跑历史验收。
+
+| 编号 | 问题 | 原优先级 | 状态 | 依据 |
+| --- | --- | --- | --- | --- |
+| PALLAS-003 | 外层一维快速投影已按当前运算 shape 绑定 `global` 范围，两个公共入口恢复正常；设备轴范围与未知输入数据值域保留 | P1 | 已解决 | [坐标范围修复验收](pallas-broadcast-coordinates.md) |

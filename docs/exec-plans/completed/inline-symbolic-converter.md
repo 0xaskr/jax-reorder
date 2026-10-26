@@ -11,7 +11,7 @@
 生产入口只调用带 builder 的遍历路径以及 36 个标量映射；上游通用数组适配并未参与生产数学判断。
 将遍历直接并入 SymbolicBuilder.graph，保留常量、输入绑定、输出顺序、shape 检查、预算和未使用计算的定义条件。
 逐点映射直接操作 SymPy 标量，删除 NumPy 零维数组包装；不修改定义域或后端判等策略。
-精确常量转换沿用现有实现。当前设计入口为[代数开发记录](../../development-docs/algebraic-equivalence.md)。
+精确常量转换沿用现有实现。当前设计入口为[代数开发记录](../../design-docs/current/algebraic-equivalence.md)。
 
 未用于生产的完整数组映射和逐元素遍历迁入 algebra_explicit.py，保留可调用的
 jaxpr_to_sympy_expressions 入口与原有行为；该公式接口不跟踪定义条件，不能替代生产比较。

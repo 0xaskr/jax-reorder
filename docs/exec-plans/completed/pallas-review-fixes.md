@@ -58,4 +58,4 @@ tests/test_pallas_local_entry.py tests/test_pallas_semantic_slice.py tests/test_
 
 两项审查复现及附加拒绝检查已独立重跑，结果见 `review-confirm.log` 和
 `review-boundaries.log`。当前支持范围与拒绝边界见
-[契约](../../development-docs/pallas/contracts.md)和[内存](../../development-docs/pallas/grid-memory.md)。
+[契约](../../design-docs/current/pallas/contracts.md)和[内存](../../design-docs/current/pallas/grid-memory.md)。

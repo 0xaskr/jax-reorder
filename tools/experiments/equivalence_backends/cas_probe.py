@@ -1,6 +1,6 @@
 """精确 CAS 能力探针；不执行 JAX、不做浮点采样、不构造模型数组。
 
-运行（隔离环境，见 docs/development-docs/equivalence-backends/cas.md）：
+运行（隔离环境，见 docs/exec-plans/completed/research/equivalence-backends/cas.md）：
   /tmp/jax-reorder-equivalence-eval/cas/venv/bin/python \
       tools/experiments/equivalence_backends/cas_probe.py \
       > /tmp/jax-reorder-equivalence-eval/cas/result.json

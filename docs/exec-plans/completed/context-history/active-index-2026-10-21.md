@@ -1,6 +1,6 @@
 # 历史上下文快照（2026-10-21 压缩前）
 
-> 非默认加载。原记录含已完成或被后续覆盖的边界；当前状态见[Pallas 入口](../../../development-docs/pallas-jax-equivalence.md)。
+> 非默认加载。原记录含已完成或被后续覆盖的边界；当前状态见[Pallas 入口](../../../design-docs/current/pallas-jax-equivalence.md)。
 
 # 进行中的计划
 
@@ -36,8 +36,8 @@ Ref/信号量资源对应及副作用顺序已接入；Tokamax/vLLM 17 组 AI �
 三个更新反例均获数学结论，FlashAttention grid/内部循环移动可直接规范化匹配。
 修复 RoPE 包装的 staging Ref 绑定错误。该阶段 Pallas 624 项与其余 1961 项回归去重后，
 全仓库 2585 项测试分批全部通过，详见
-[开源验证记录](../../../development-docs/pallas/history/stage-15.md#915-开源-kernel-驱动的测试与修复2026-10-20完成)。
-随后完成[真实双缓冲 DMA 子阶段](../../../development-docs/pallas/history/stage-16.md#916-真实双缓冲-dma-的跨迭代证明2026-10-20完成)：
+[开源验证记录](../pallas-history/stage-15.md#915-开源-kernel-驱动的测试与修复2026-10-20完成)。
+随后完成[真实双缓冲 DMA 子阶段](../pallas-history/stage-16.md#916-真实双缓冲-dma-的跨迭代证明2026-10-20完成)：
 固定 JAX 官方 copy/matmul，补局部 scope、DMA semaphore 数组、对齐矩形搬运及跨迭代
 生命周期；合法调度等价，漏 wait、错槽和提前覆盖拒绝，搬错块单独检查输出差异。
 本轮新增 42 项回归，Pallas 最终 665 项分批通过；公开代数入口给出搬错块的 0/1 反例。
@@ -48,8 +48,8 @@ AI 的 A/B/A/B 槽位复用和显式输出回读、换序等价及初始化/等�
 一般动态循环/索引、非默认布局和远端流水仍待证明；平铺读取与固定槽位分段值的
 CAS 恒等式也单列未决。该子阶段新增 38 项，当时 Pallas 703 项分批验证通过，
 含 98 项官方 CPU 解释器测试。
-详见[跨输出块记录](../../../development-docs/pallas/history/stage-17.md#917-跨输出块状态复用2026-10-20完成)。
-随后补齐[多输出独立 index_map 窗口](../../../development-docs/pallas/history/stage-18.md#918-多输出独立-index_map-窗口2026-10-20)：
+详见[跨输出块记录](../pallas-history/stage-17.md#917-跨输出块状态复用2026-10-20完成)。
+随后补齐[多输出独立 index_map 窗口](../pallas-history/stage-18.md#918-多输出独立-index_map-窗口2026-10-20)：
 每个输出分别按拥有者前缀/连续串行后缀确定初始化、封存与失效，支持逐块输出与
 跨步累加、三层窗口、不同局部块形状和长窗口 DMA。grid 串行轴改为内部循环有
 normalized 等价及重放证据；错更新/错 map 给出完整输出反例。新增 39 项分批通过，
@@ -57,7 +57,7 @@ normalized 等价及重放证据；错更新/错 map 给出完整输出反例。
 首批发现普通一维多输出的规则标签回归，修复后最终 144 项复测通过；去重共
 375 项验证，无遗留失败。Ruff/格式/类型/tracing/文档/diff 检查通过，本子阶段完成。
 CPU 数值/竞态检测与资源证明分开报告。
-随后完成[有界 grid 展开](../../../development-docs/pallas/history/stage-19.md#919-grid-并行批量轴与串行状态展开2026-10-20)：
+随后完成[有界 grid 展开](../pallas-history/stage-19.md#919-grid-并行批量轴与串行状态展开2026-10-20)：
 串行实例按实际 index_map 合并各输出的连续分组窗口，保留输入 staging、
 DMA/信号量状态和真实资源身份；并行拥有者保持符号，局部 dot/reduce 维度
 不改变。`j//2`、`j//3` 与拆分 grid 在 core 直接判等，展开不调用 SymPy。
@@ -65,7 +65,7 @@ DMA/信号量状态和真实资源身份；并行拥有者保持符号，局部 
 证明。新增 43 项通过，含 8 项 CPU 用例；修正一项更早 DMA 拒绝的报错断言
 后，最终 Pallas collection 785 项分批全部通过。内部循环的投影/CPU 对照
 与未决图比较分别记录，没有为后者改变 grid 展开策略。
-随后完成[并行覆盖补齐](../../../development-docs/pallas/history/stage-20.md#920-并行补齐语义覆盖与验证2026-10-20完成)：
+随后完成[并行覆盖补齐](../pallas-history/stage-20.md#920-并行补齐语义覆盖与验证2026-10-20完成)：
 静态不规则 index_map/分组尾块、精确步长与完整 Ref 视图、有界读取/while、
 普通及远端信号量数组、受限 HBM 远端串行 grid，以及 grid/内部循环的精确
 坐标分区匹配。全部规则仍在 core。交叉审查修复单例轴 mask 坐标误判及
@@ -73,14 +73,14 @@ DMA/信号量状态和真实资源身份；并行拥有者保持符号，局部 
 29 个具体源码通过 TPU v5p 2x2x1 离线后端编译，没有连接实机。
 交错轴共享状态、任意多 core 绑定、一般动态写/路由/布局与锁定后端不支持的
 语法仍明确单列，不能将 AOT 编译通过当成这些语义的证明。
-随后完成[剩余覆盖专项与大图预算](../../../development-docs/pallas/history/stage-21.md#921-剩余覆盖专项与大图预算2026-10-20完成)：
+随后完成[剩余覆盖专项与大图预算](../pallas-history/stage-21.md#921-剩余覆盖专项与大图预算2026-10-20完成)：
 有限远端自动 IO/padding DMA、交错独立/连续后缀、显式 core 流拓扑、有界动态写、
 静态部分 Ref 与受审查布局开关已落地。banked 持久状态需显式单 core 前提，
 普通 pallas_call 不自动保证调用者的 core 映射。主工作区 Pallas 1141 项分批通过，
 共享核心 312 项通过；GLM5 absorbed Attention/Decoder 四配置在接口预算 1 下通过。
 27 份具体源码离线 TPU 编译成功，后端拒绝与仅审计探针单列。任意动态控制、
 动态 Ref、一般物理布局及缺失执行绑定仍保留明确边界。
-随后补齐[时序重访、尾块有效域与 Ref 组合](../../../development-docs/pallas/history/stage-22.md#922-时序重访尾块有效域与-ref-组合2026-10-20完成)：
+随后补齐[时序重访、尾块有效域与 Ref 组合](../pallas-history/stage-22.md#922-时序重访尾块有效域与-ref-组合2026-10-20完成)：
 显式 ANY HBM 可按已证明的 DMA/wait 时序重复覆盖；动态 Ref 链和精确矩形
 本地变换 DMA 在 core 组合到原 storage。合法输入 padding 的初始化义务独立
 进入代数层，局部 Sum 按实际 mask 收缩，384/256 分块的 sum/mean 四种
@@ -92,24 +92,24 @@ padded Ref 变换及部分大型 CAS 查询保留边界；原生后端拒绝和�
 384/256 错 mask、错 mean 分母和大型 Max 的确定 CAS 结果。默认/IMMEDIATE
 重访、本地输出 ANY、无跨设备约束的数据路由、多维原存储远端组装和任意
 物理布局仍保持明确边界。代码、组合正反例、离线编译与实际集成回归分开记录于
-[四线验证记录](../../../development-docs/pallas/history/stage-23.md#923-四类剩余问题并行补齐2026-10-21完成)。
+[四线验证记录](../pallas-history/stage-23.md#923-四类剩余问题并行补齐2026-10-21完成)。
 随后用户要求补齐本地 ANY 与多维远端原存储：两条实现已合并，12 项组合
 及最终 1,571 个 Pallas 用例分批验证通过。本地保存每个窗口及 owner 的最后版本，
 只恢复 HBM 有效区；远端保留原 shape、精确分段足迹和任意单分片轴的坐标。
 源码正反例、padding 生命周期及源后端边界见
-[本轮记录](../../../development-docs/pallas/history/stage-24.md#924-本地-any-恢复与多维远端原存储2026-10-21完成)。
+[本轮记录](../pallas-history/stage-24.md#924-本地-any-恢复与多维远端原存储2026-10-21完成)。
 本地符号并行 owner 同时涵盖完整块与尾块的 ANY 恢复已进一步补齐：core
 保留全局 writer 证明，按有效范围分区并分别重放串行历史，再按各窗口 inverse
 组装输出。新场景 30 项及分区单测 6 项、完整 NumPy 对照、9 份离线 AOT 已通过；
 最终 1,601 项 Pallas、6 项分区和 368 项共享核心回归全部通过，记录见
-[并行尾块恢复](../../../development-docs/pallas/history/stage-25.md#925-并行-owner-的-any-尾块恢复2026-10-21完成)。
+[并行尾块恢复](../pallas-history/stage-25.md#925-并行-owner-的-any-尾块恢复2026-10-21完成)。
 普通尾块和 masked 访存进一步支持安全切片、部分写入、显式 other 与正确
 where 清理无效值；本地及远端共享有效足迹分析，仍检查实际 DMA/初始化义务。
 原始 where 的受限适配也已补齐；完整集合与共享 core 去重 2,167 项通过，
 初次回归的文案/预算问题已修复。结果与锁定 TPU 后端的 masked load 限制见
-[普通尾块与 masked 访存](../../../development-docs/pallas/history/stage-26.md#926-普通尾块与-masked-访存2026-10-21完成)。
+[普通尾块与 masked 访存](../pallas-history/stage-26.md#926-普通尾块与-masked-访存2026-10-21完成)。
 JAX 迁移继续单列跟踪，暂不接 MLIR。实现、回归和 CPU 对照详见
-[本地验证记录](../../../development-docs/pallas/history/stage-14.md#914-多维-grid-与访存2026-10-19)。
+[本地验证记录](../pallas-history/stage-14.md#914-多维-grid-与访存2026-10-19)。
 
 [核心库类型信息补全](../type-annotations.md)已完成并归档：异常阶段与分类改用 `StrEnum`，补全核心库签名、回调与容器类型，接入持续检查。分阶段 1957 项通过，1 项既有超时在修改前源码也可复现；详见验证记录。
 
@@ -143,6 +143,6 @@ JAX 迁移继续单列跟踪，暂不接 MLIR。实现、回归和 CPU 对照详
 
 [计算图等价比较的完善与系统验证](../graph-equivalence-validation.md)已完成并归档。
 
-[远端多维 grid 与并行事件流](../../../development-docs/pallas/history/stage-27.md#927-远端多维-grid-与并行事件流2026-10-21完成)子阶段完成：多轴坐标、自动 staging/ANY 恢复、跨 program DMA；并行使用明确的完整单 core 点流条件，并分别验证并行资源冲突和实际顺序进展。分批去重 1,183 项通过，六份离线 AOT 成功；范围与边界见记录。
+[远端多维 grid 与并行事件流](../pallas-history/stage-27.md#927-远端多维-grid-与并行事件流2026-10-21完成)子阶段完成：多轴坐标、自动 staging/ANY 恢复、跨 program DMA；并行使用明确的完整单 core 点流条件，并分别验证并行资源冲突和实际顺序进展。分批去重 1,183 项通过，六份离线 AOT 成功；范围与边界见记录。
 
 新计划按 [计划规范](../../../PLANS.md)编写；完成记录见 [completed](..)。

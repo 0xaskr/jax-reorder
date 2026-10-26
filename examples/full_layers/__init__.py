@@ -6,5 +6,5 @@ oracles.py 用 NumPy 独立重算；runner.py 执行图比较、数值见证和�
 报告；evidence.py 与 blocked.py 另列求导、索引器及实际硬件拒绝路径。
 
 入口：`uv run python -m examples.full_layers.runner --supplemental`。结论
-只覆盖声明配置和 CPU 前向路径，见 docs/development-docs/full-attention.md。
+只覆盖声明配置和 CPU 前向路径，见 docs/exec-plans/completed/validation/full-attention.md。
 """

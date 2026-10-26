@@ -4,7 +4,7 @@
 
 ## 当前计划
 
-当前没有进行中的执行计划。
+进行中的任务与归档入口统一维护在[执行计划索引](exec-plans/index.md)，本页维护计划格式与生命周期。
 
 ## 已完成计划
 
@@ -42,4 +42,4 @@
 ## 未解决问题
 ```
 
-任务进行时更新原计划，保持可恢复。完成后移入 [completed](exec-plans/completed/)；尚未解决的缺口记录到 [技术债](exec-plans/tech-debt-tracker.md)，并保留相关证据或工单链接。
+任务进行时更新原计划，保持可恢复。完成后移入 [completed](exec-plans/completed/)；尚未解决的缺口记录到 [待处理清单](exec-plans/index.md#待处理)，并保留相关证据或工单链接。

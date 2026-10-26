@@ -1,6 +1,6 @@
 # 开源数学等价后端的并行评估
 
-状态：2026-10-15 首轮评估完成并归档。成果见[综合报告](../../development-docs/open-source-equivalence-backends.md)，生产集成及完整 layer 证明未包含在已完成范围中。
+状态：2026-10-15 首轮评估完成并归档。成果见[综合报告](research/open-source-equivalence-backends.md)，生产集成及完整 layer 证明未包含在已完成范围中。
 
 ## 目标与完成条件
 
@@ -65,8 +65,8 @@
 
 ## 证据与产物
 
-- 综合报告：`docs/development-docs/open-source-equivalence-backends.md`。
-- 分组报告：`docs/development-docs/equivalence-backends/{rewriting,verification,cas,compiler}.md`。
+- 综合报告：`docs/exec-plans/completed/research/open-source-equivalence-backends.md`。
+- 分组报告：`docs/exec-plans/completed/research/equivalence-backends/{rewriting,verification,cas,compiler}.md`。
 - 可复现符号探针：`tools/experiments/equivalence_backends/`，只包含必要源码；运行环境、下载源码及日志置于 `/tmp/jax-reorder-equivalence-eval/`。
 - 依赖只装入隔离临时环境；不改 `pyproject.toml` 或 `uv.lock`，不提交生成结果、虚拟环境或第三方源码快照。
 - 证据等级为：实际运行、源码核对、仅文档核对、环境受阻；安装失败与能力失败分开。
@@ -104,6 +104,6 @@
 
 ## 未解决问题
 
-- 没有候选完成真实 GLM 十组完整外部证明。生产集成、独立证明复核及全图数学反例对应 [ALG-004](../tech-debt-tracker.md)，masked-softmax 等原有缺口仍为 ALG-003。
+- 没有候选完成真实 GLM 十组完整外部证明。生产集成、独立证明复核及全图数学反例对应 [ALG-004](../index.md#待处理)，masked-softmax 等原有缺口仍为 ALG-003。
 - TensorRight、Lean/mathlib、Tensat、DialEgg 等重工具链未构建；已明确来源、源码发现和可复现依赖条件，不将其算作运行通过。
 - TensorRight 特殊值、Tensat 旧规则元数、DialEgg dot_general 轴规则的审计发现见分组报告；源码推导与运行复现分开记录。

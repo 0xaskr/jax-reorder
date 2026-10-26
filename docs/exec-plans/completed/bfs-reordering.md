@@ -4,7 +4,7 @@
 
 第一轮只判断计算图是否等价：消除同一计算图中变量编号、独立方程排列产生的差异，保留节点语义、依赖边、操作数位置和运算分组。用输出驱动的 BFS 确定编号，再按依赖深度和 BFS 编号重排方程，不进行交换律、结合律等代数变换。
 
-判断依据是[架构与比较契约](../../../ARCHITECTURE.md)及[两轮规范化与比较结果](../../references/equivalence-results.md)。本计划只实现其中第一轮；2026-10-11 已完成实现、自审与本地验收。设计、原语清单及 review 见 [开发记录](../../development-docs/bfs-reordering.md)。
+判断依据是[架构与比较契约](../../../ARCHITECTURE.md)及[两轮规范化与比较结果](../../references/equivalence-results.md)。本计划只实现其中第一轮；2026-10-11 已完成实现、自审与本地验收。设计、原语清单及 review 见 [开发记录](../../design-docs/archive/bfs-reordering.md)。
 
 完成时应满足：
 
@@ -73,7 +73,7 @@
 - 保留重复计算和未使用计算；不进行公共子表达式合并、死代码删除、常量折叠或调用内联。
 - 本轮不生成或执行交换律、结合律、分配律等代数规范化规则；只比较给定输入输出接口下的计算图。
 
-JAX 的方程以 primitive、参数和有序值引用表示；公开函数名与实际 primitive 不能直接视为一一对应，清单应以锁定版本的追踪结果核对。参见 [jaxpr 语言](https://docs.jax.dev/en/latest/601/jaxpr.html)和 [jax.lax API](https://docs.jax.dev/en/latest/jax.lax.html)。实现与逐项验证见 [CPU 清单](../../development-docs/lax-coverage.md)；测试样本不限制原语合法域。
+JAX 的方程以 primitive、参数和有序值引用表示；公开函数名与实际 primitive 不能直接视为一一对应，清单应以锁定版本的追踪结果核对。参见 [jaxpr 语言](https://docs.jax.dev/en/latest/601/jaxpr.html)和 [jax.lax API](https://docs.jax.dev/en/latest/jax.lax.html)。实现与逐项验证见 [CPU 清单](../../references/lax-coverage.md)；测试样本不限制原语合法域。
 
 ### 6. 预期复杂度
 
@@ -103,7 +103,7 @@ AI 为用例给出的“等价”也采用上述图等价含义。若另称某�
 ## 工作项
 
 - [x] 明确本轮只做图规范化与比较，保留 BFS 编号和依赖分层规则；支持条件以 CPU 原语能力为准，采用 AI 经典案例与模型层变体验收。
-- [x] 在 `docs/development-docs/bfs-reordering.md` 登记 CPU 原语清单、实际支持规则及实现缺口，不建立额外的 dtype、shape 或参数值白名单。
+- [x] 在 `docs/design-docs/archive/bfs-reordering.md` 登记 CPU 原语清单、实际支持规则及实现缺口，不建立额外的 dtype、shape 或参数值白名单。
 - [x] 在开发设计中明确三种图比较结果、部分完成状态、嵌套图与顺序约束处理，更新开发文档索引。
 - [x] 在 `src/jax_reorder/` 实现依赖索引、BFS 编号、深度计算、层内排序和完整结构比较；按原语补齐嵌套语义、参数类型及顺序依赖。
 - [x] 从 `sglang-jax` 的模型层提取可在 CPU 运行的基准，固定来源版本、输入和参数，并记录与源实现的对应关系。
@@ -153,7 +153,7 @@ AI 为用例给出的“等价”也采用上述图等价含义。若另称某�
 
 公共来源参见 [SGLang-JAX 仓库](https://github.com/sgl-project/sglang-jax)与 [Llama 模型实现](https://github.com/sgl-project/sglang-jax/blob/main/python/sgl_jax/srt/models/llama.py)。正式用例固定实际采用的提交及路径，从 CPU 可运行路径提取计算；权重可以使用固定的小型合成张量。提取时记录类型转换、精度、sharding 和封装调用，不能默认删去这些信息。若使用简化的计算核心，应标明其与源层的区别，不宣称测试了完整模型。
 
-下面保留计划阶段的简化 CPU 示例，用于说明变换与判断。正式验收已改用保留 `LinearBase` 精度与分片规则的纯函数提取，完整来源、配置与固定代码见 [模型层记录](../../development-docs/bfs-cases.md)：
+下面保留计划阶段的简化 CPU 示例，用于说明变换与判断。正式验收已改用保留 `LinearBase` 精度与分片规则的纯函数提取，完整来源、配置与固定代码见 [模型层记录](validation/bfs-cases.md)：
 
 ```python
 import jax
@@ -248,7 +248,7 @@ git diff --check
 - 以 CPU 原语能力为目标域，不用测试样本收缩参数、dtype 或 shape 范围。
 - 已实现 canonicalize / compare_jaxprs、类型与参数编码、嵌套区域、token 和已审核的顺序语义；遇到未知语义显式失败。
 - 已固定 18 个 AI 经典组合及 LlamaMLP 正反例；逐项盘点 171 个公开原语，并补充包装函数实际追踪的 11 个辅助原语。
-- 已启用 CPU CI、更新双语 README 与架构。完整实现自审、修复和证据在 [开发记录](../../development-docs/bfs-reordering.md#review-与验证记录)。
+- 已启用 CPU CI、更新双语 README 与架构。完整实现自审、修复和证据在 [开发记录](history/bfs-reordering-validation.md#review-与验证记录)。
 
 ## 验证结果
 
@@ -265,13 +265,13 @@ git diff --check
 | `uv run python tests/lax_inventory.py` | 清单与锁定 JAX 一致，无公开原语遗漏 |
 | 新增或修改的本地链接、`git diff --check`（含暂存区） | 通过；没有宣称全仓库链接已修复 |
 
-169 个公开原语有 CPU 执行用例；stage 的公开调用被 JAX 追踪消去，ragged_all_to_all 的 CPU 拒绝单独验证。pbroadcast、psend、precv 的 CPU 拒绝亦有明确断言，不计为执行通过。182 个原语及参数用例的静态参数、输入签名与状态见 [逐项清单](../../development-docs/lax-coverage.md)。
+169 个公开原语有 CPU 执行用例；stage 的公开调用被 JAX 追踪消去，ragged_all_to_all 的 CPU 拒绝单独验证。pbroadcast、psend、precv 的 CPU 拒绝亦有明确断言，不计为执行通过。182 个原语及参数用例的静态参数、输入签名与状态见 [逐项清单](../../references/lax-coverage.md)。
 
 NumPy 现为精确常量编码的直接依赖，通过 uv 添加并更新锁文件。没有推送或触发远程 CI；本地检查不能代替远程工作流结果。
 
 ## 未解决问题
 
-本轮验收没有已知阻塞缺陷。未使用子图的唯一标号、一般函数级 pytree/context 比较、持久化和代数规范化保持在本轮范围之外，登记于 [技术债](../tech-debt-tracker.md)。
+本轮验收没有已知阻塞缺陷。未使用子图的唯一标号、一般函数级 pytree/context 比较、持久化和代数规范化保持在本轮范围之外，登记于 [待处理清单](../index.md#待处理)。
 
 JAX 私有接口适配以锁定版本为准；有限测试不宣称所有参数/任意图的穷举覆盖。未知 effects 或不透明参数继续明确报告 unknown；如果发现新的 CPU 合法 lax 调用不能处理，应作为实现缺口修复，不能据测试样本排除。
 

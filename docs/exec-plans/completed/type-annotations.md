@@ -24,7 +24,7 @@
 - 初始工作区仅 `errors.py` 有用户新增的 `# Base Class` 注释，必须保留。
 - 仓库未配置类型检查器；多数内部函数缺少完整签名，一些数据类字段只有裸容器类型。
 - 完成全部 224 个函数/方法（含嵌套回调与协议方法）及 36 个数组回调的签名标注。修正生成器、可空返回值及异构容器的声明；未改比较规则。
-- 新增 `basedpyright` 开发依赖及 CI 检查、Ruff ANN 规则和调用方 `assert_type` 检查；验证已有 `py.typed` 标记随 wheel 发布。设计与边界见[开发记录](../../development-docs/type-annotations.md)。
+- 新增 `basedpyright` 开发依赖及 CI 检查、Ruff ANN 规则和调用方 `assert_type` 检查；验证已有 `py.typed` 标记随 wheel 发布。设计与边界见[开发记录](../../design-docs/current/type-annotations.md)。
 - 类型检查不推测未声明类型契约的 SymPy 源码，保留原语参数、pytree 和精确编码载荷的动态边界。
 - 运行时导入图检查原先把 `TYPE_CHECKING` 分支也视为执行依赖；调整为仅在环检查时排除该分支，分层检查仍覆盖全部导入。
 - 检查器在 WSL 挂载目录安装时发生 rename 错误，改用 `/tmp/jax-reorder-types-venv` 的锁定依赖环境；静态检查临时配置仅替换环境路径，规则与仓库配置一致。随后使用离线 copy 模式成功恢复本地 `.venv`；直接运行 `uv run --no-sync basedpyright` 也通过。
@@ -49,4 +49,4 @@
 
 ## 未解决问题
 
-类型迁移已完成。既有负无穷捕获常量用例在本机超过默认 worker 时限，已补充到 [ALG-005](../tech-debt-tracker.md#系统验证后保留的边界)，需要单独的性能分析与算法验证。
+类型迁移已完成。既有负无穷捕获常量用例在本机超过默认 worker 时限，已补充到 [ALG-005](../index.md#待处理)，需要单独的性能分析与算法验证。

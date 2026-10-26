@@ -40,10 +40,10 @@
 
 基线提交为 `034b92949117052b6c3bca0e16de0db34c687a0a`。提交前全量结果为 855 passed；这是已有验证记录，本次计划编写没有重跑全量测试。
 
-- [原语清单](../../development-docs/lax-coverage.md)覆盖 171 个公开 Primitive 身份，其中 169 个有 CPU 执行样例，其余分别为追踪消去、CPU 拒绝检查；这不等于所有参数和组合已经验证。
+- [原语清单](../../references/lax-coverage.md)覆盖 171 个公开 Primitive 身份，其中 169 个有 CPU 执行样例，其余分别为追踪消去、CPU 拒绝检查；这不等于所有参数和组合已经验证。
 - 已修复 `cond` 捕获槽位的同步置换；四层二叉 `cond` 案例包含 15 个条件节点、16 条执行路径。
-- [SGLang-JAX 案例](../../development-docs/sglang-model-layers.md)覆盖 36 个选定子层和 216 个候选/签名组合；不代表完整 Attention 或 Decoder block 已覆盖。`Glm5Attention` 和 `Glm5DecoderLayer` 尚未验证。
-- [技术债](../tech-debt-tracker.md)中的 BFS-001、002、003、004、005 分别涉及无输出根的子图、函数契约、JAX 适配、深层遍历和区域绑定。
+- [SGLang-JAX 案例](validation/sglang-model-layers.md)覆盖 36 个选定子层和 216 个候选/签名组合；不代表完整 Attention 或 Decoder block 已覆盖。`Glm5Attention` 和 `Glm5DecoderLayer` 尚未验证。
+- [待处理清单](../index.md#待处理)中的 BFS-001、002、003、004、005 分别涉及无输出根的子图、函数契约、JAX 适配、深层遍历和区域绑定。
 
 以下为实施前在锁定 CPU 环境用 AI 手写最小函数得到的缺口记录，修复后证据见文末：
 
@@ -124,7 +124,7 @@
 
 `custom_jvp` 注册的是 JVP 规则，由 JAX 支持相应的反向求导；`custom_vjp` 注册 `fwd`/`bwd`，其中 `fwd` 返回残差供 `bwd` 使用。普通调用的 `f` 也必须独立比较。`custom_vjp` 不能直接接受普通前向模式 `jax.jvp`，这应登记为变换不适用，不算比较器漏支持。[JAX 自定义求导文档](https://docs.jax.dev/en/latest/301/custom-jvp-vjp.html)
 
-`custom_vjp_call` 应作为可递归解释的嵌套计算节点正式支持。打印时 `fwd`/`bwd` 显示名称，不代表无法读取函数内容。实施前已从实际节点参数成功物化简单规则的前向和反向图；现已按以下路线加入比较器，完整规则及边界见[求导契约](../../development-docs/function-and-derivative-contract.md)。
+`custom_vjp_call` 应作为可递归解释的嵌套计算节点正式支持。打印时 `fwd`/`bwd` 显示名称，不代表无法读取函数内容。实施前已从实际节点参数成功物化简单规则的前向和反向图；现已按以下路线加入比较器，完整规则及边界见[求导契约](../../design-docs/current/function-and-derivative-contract.md)。
 
 实现路线：
 
@@ -310,7 +310,7 @@ print(result.status.value, result.difference)
 - 2026-10-11，M1 开始：已重新读取现有代码与环境，确认 scan 使用锁定版本的 ft_in/ft_out 角色树。新增 AI 固定循环正反例与区域接口设计，首先固化失败，再实施捕获绑定适配。函数入口、独立对应校验、求导和后续阶段均仍待完成。
 - M1 循环与对应校验：38 项循环绑定测试及 12 项对应证据测试加入后，全量 905 passed（129.22 秒）。scan/while 捕获漏认已修复；零次/一次/多次循环、类型和 shape、错绑反例及规范化前后执行均检查。
 - 函数入口与调用槽位：`compare_functions` 分别追踪前向/JVP/VJP，动态余切向量覆盖完整输出；环境与 pytree 单独比较。jit 求导残差返回槽位漏认也已修复，位置元数据同步置换。函数、对应关系、循环、cond 和嵌套专项 106 passed；额外调用槽位 9 passed。加入求导适配入口后的核心专项 89 passed（11.58 秒）。这些是分阶段记录，不代替最终全量回归。
-- 原始图复核的设计与论证见[对应关系文档](../../development-docs/original-correspondence.md)。求导规则物化和残差连接实现已开始，相关测试尚在验证。
+- 原始图复核的设计与论证见[对应关系文档](../../design-docs/current/original-correspondence.md)。求导规则物化和残差连接实现已开始，相关测试尚在验证。
 - GLM5 早期调查：已取得锁定上游提交的 RadixAttention、NativeAttention、MLA 后端、KV cache 和 ForwardBatch 源码，核对 Git blob 摘要。确认存在 CPU native 路径；完整类和状态输出尚未执行验证，不能计入已覆盖层。
 
 - M2–M3：函数入口、注册规则物化、残差/透传绑定、symbolic zeros、反馈槽位、shard_map、混合区域与完整无根图已实现。阶段全量 1013 passed（170.62 秒）；后续新增项仍需最终回归。
@@ -342,8 +342,19 @@ print(result.status.value, result.difference)
 | CI 配置 | YAML 与各 run 的 Bash 语法通过；快速/业务/压力分组及双/四设备配置已写入，远端工作流未触发 |
 | 文档 | 中英文 README、架构、开发记录、索引和技术债同步；本地链接与 `git diff --check` 通过 |
 
-报告由 `uv run python -m examples.full_layers.runner --supplemental --report /tmp/jax-reorder-full-layers.json` 生成；JSON 保存来源、配置、签名/输入摘要、模式、预期/实际、差异路径、拒绝原因和重放所需 seed。全部检查的等价/图差异标签均命中预期，unknown 和 JAX 拒绝不计作等价成功。详细覆盖表见[完整层记录](../../development-docs/full-attention.md)与[验证矩阵](../../development-docs/verification-matrix.md)。
+报告由 `uv run python -m examples.full_layers.runner --supplemental --report /tmp/jax-reorder-full-layers.json` 生成；JSON 保存来源、配置、签名/输入摘要、模式、预期/实际、差异路径、拒绝原因和重放所需 seed。全部检查的等价/图差异标签均命中预期，unknown 和 JAX 拒绝不计作等价成功。详细覆盖表见[完整层记录](validation/full-attention.md)与[验证矩阵](../../design-docs/current/verification-matrix.md)。
 
 自审已补强：原图证据独立检查 SSA/支持域；上下文描述符子类不能隐藏继承字段；symbolic 模式重新物化保持 fwd 残差树一致；动态规则捕获须还原真实输入边；延迟有序规则不能漏掉父级顺序。前向及 JVP 一致但 VJP 累加顺序改变的业务实例被保留为正确图差异，没有放宽 add_any 或应用代数规则。
 
-剩余限制已转入[技术债](../tech-debt-tracker.md)：规则专有捕获/日志/有序 effects、高阶变换、硬件内核、原上游拒绝、稀疏及其他业务配置、持久格式和后续版本审核。归档表示本计划中明确范围的实施和系统验证完成，不表示所有 JAX 代码或任意组合均已证明。未执行 Git 提交或推送。
+剩余限制已转入[待处理清单](../index.md#待处理)：规则专有捕获/日志/有序 effects、高阶变换、硬件内核、原上游拒绝、稀疏及其他业务配置、持久格式和后续版本审核。归档表示本计划中明确范围的实施和系统验证完成，不表示所有 JAX 代码或任意组合均已证明。未执行 Git 提交或推送。
+
+## 已解决问题编号
+
+以下编号于 2026-10-26 从问题总表归入本计划，保留原已解决状态、优先级和依据；本次文档合并未重跑历史验收。
+
+| 编号 | 问题 | 原优先级 | 状态 | 依据 |
+| --- | --- | --- | --- | --- |
+| BFS-001 | 未参与输出的纯子图、常量及对称结构已加入完整图细化与精确搜索；预算不足抛出分类异常 | P2 | 已解决 | [完整图设计及测试](../../design-docs/current/complete-graph.md) |
+| BFS-002 | 已增加函数级 pytree、静态签名、环境及分模式比较；纯函数与未声明 Python 行为仍由调用方约定 | P2 | 已解决 | [函数契约](../../design-docs/current/function-and-derivative-contract.md) |
+| BFS-005 | cond 未使用槽位、scan/while 捕获与反馈、jit/shard_map 私有输入输出已联合规范化 | P1 | 已解决 | [区域绑定](../../design-docs/current/region-bindings.md)、[系统验证计划](graph-equivalence-validation.md) |
+| BFS-006 | custom JVP/VJP 注册一阶规则、残差、透传、symbolic zeros 已适配；剩余边界见 AD-001/002 | P1 | 已解决 | [求导契约与测试](../../design-docs/current/function-and-derivative-contract.md) |

@@ -300,4 +300,4 @@ paged attention、Tokamax 量化 RoPE、vLLM attention 均保留固定源码及�
 布局/effect 仍拒绝，规模预算和复杂 CAS 仍可能未决。大 pipeline 的默认预算拒绝也
 明确保留；`core_map`、`mpmd_map`、输入输出共享 HBM 与全局多设备值组装仍不在本轮范围。
 拒绝、超时和图不同均不能单独推出数学不等价。完整边界由
-[验证入口](../../development-docs/pallas/validation.md)维护；没有新增依赖或 TPU 实机结论。
+[验证入口](../../design-docs/current/pallas/validation.md)维护；没有新增依赖或 TPU 实机结论。

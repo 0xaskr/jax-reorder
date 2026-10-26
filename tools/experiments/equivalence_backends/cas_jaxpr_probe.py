@@ -1,6 +1,6 @@
 """把真实 GLM helper jaxpr 转成带索引的 SymPy 表达式，不做执行。
 
-运行（见 docs/development-docs/equivalence-backends/cas.md）：
+运行（见 docs/exec-plans/completed/research/equivalence-backends/cas.md）：
   PYTHONPATH=/tmp/jax-reorder-equivalence-eval/cas/venv/lib/python3.12/site-packages \
       .venv/bin/python -m tools.experiments.equivalence_backends.cas_jaxpr_probe \
       > /tmp/jax-reorder-equivalence-eval/cas/jaxpr-result.json

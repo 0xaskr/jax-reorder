@@ -3,7 +3,7 @@
 运行：uv run python examples/bfs_reordering.py
 LlamaMLP 提取自 SGLang-JAX（Apache-2.0），提交为
 538abe3fdba84b586a6a2fd151cac67cc974d35f，来源与配置见
-docs/development-docs/bfs-cases.md。以下函数保存变换前后的代码；预期标签和
+docs/exec-plans/completed/validation/bfs-cases.md。以下函数保存变换前后的代码；预期标签和
 数值反例在调用比较器前写入，不能用比较器的输出反过来生成预期答案。
 固定 8 个基础组合各一正一负，加 LlamaMLP 一正一负，共 18 例；断言失败即抛错。
 """

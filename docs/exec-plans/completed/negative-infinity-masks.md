@@ -39,6 +39,6 @@
 
 ## 后续边界
 
-参见 [ALG-003](../tech-debt-tracker.md) 与 [GLM 核心图比较](../../development-docs/glm52-decode-dsa-mla.md)。
+参见 [ALG-003](../index.md#待处理) 与 [GLM 核心图比较](validation/glm52-decode-dsa-mla.md)。
 PV 改写需要对 guarded softmax 做独立的有限性证明；本次没有假设该性质。
 完整层始终只作抽象追踪与比较，没有增加编译、数值采样或 Pallas 实现。修改未提交、未推送。

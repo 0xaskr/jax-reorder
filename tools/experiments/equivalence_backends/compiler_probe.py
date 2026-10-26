@@ -1,6 +1,6 @@
 """编译器与符号分析探针：直接对 IR 或表达式做等价判定实验。
 
-运行（与 docs/development-docs/equivalence-backends/compiler.md 一致）：
+运行（与 docs/exec-plans/completed/research/equivalence-backends/compiler.md 一致）：
   python -m tools.experiments.equivalence_backends.compiler_probe mlir
   <隔离环境>/python tools/experiments/equivalence_backends/compiler_probe.py tvm
 

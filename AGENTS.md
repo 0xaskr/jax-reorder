@@ -4,11 +4,11 @@
 
 ## 从这里开始
 
-- 项目介绍与运行方式：[中文 README](README.md)。
+- 项目介绍与使用方式和示例：[中文 README](README.md)。
 - 架构与比较契约：[ARCHITECTURE.md](ARCHITECTURE.md)。
-- 算法设计、审查与验证：[BFS 开发记录](docs/development-docs/bfs-reordering.md)。
+- 算法设计、契约与验证方法：[设计文档索引](docs/design-docs/index.md)。
 - 文档知识库：[docs/index.md](docs/index.md)。
-- 执行计划与技术债：[docs/PLANS.md](docs/PLANS.md)。
+- 执行计划与待处理事项：[执行计划索引](docs/exec-plans/index.md)。
 
 ## 当前形态与目录
 
@@ -19,8 +19,8 @@
 | [examples/inspect_jaxpr.py](examples/inspect_jaxpr.py) | 当前 tracing 入口；可运行示例放在 examples |
 | [src/jax_reorder](src/jax_reorder/) | 实现代码：`core/` 结构层、`algebra/` 数学层、`functions.py` 契约编排 |
 | [tests](tests/) | 算法、CPU 原语与 AI 固定用例测试 |
-| [docs/development-docs](docs/development-docs/index.md) | 算法、工具设计与实验记录 |
-| [docs/design-docs](docs/design-docs/index.md) | 跨功能设计决定 |
+| [docs/design-docs](docs/design-docs/index.md) | 根目录仅保留索引；`current/` 放现行设计与验证方法，`archive/` 放历史方案 |
+| [docs/exec-plans](docs/exec-plans/index.md) | 执行计划、实施过程、实验与验收记录 |
 | [.github/workflows](.github/workflows/) | CPU CI |
 
 ## 必须遵守
@@ -36,7 +36,7 @@
 
 - 默认只读：`README.md`、`AGENTS.md`、`CLAUDE.md`、`ARCHITECTURE.md`、`docs/index.md`、`docs/PLANS.md` 与 `docs/design-docs/` 整个目录。
 - 未经用户明确授权具体文件和修改范围，不得修改、删除、移动、重命名或替换这些文档。“实现功能”“整理代码”“同步文档”等泛化要求不构成授权；发现需要调整时先给出建议改动，再请求授权。已有明确授权时按授权范围执行。
-- 日常设计、实验和任务进展写入 `docs/development-docs/` 与 `docs/exec-plans/`；受保护文档的同步遵循上述授权要求。
+- 设计与契约写入 `docs/design-docs/current/`，历史方案归入 `docs/design-docs/archive/`，实验、实施与任务进展写入 `docs/exec-plans/`；受保护文档的编辑遵循上述授权要求。
 - Codex 使用 [.codex/config.toml](.codex/config.toml) 中的 `protected-docs` 权限配置，继承工作区默认保护，核心文档只读，越界审批交给用户。AI 不得自行放宽配置、切换到更宽权限或绕过保护。
 - 新会话需加载该权限配置；不要混用旧 `sandbox_mode` / `--sandbox`，或用 Full Access 覆盖它。其他 AI 客户端也须遵守本节规则，其文件写入拦截需在对应客户端另行配置。
 
@@ -73,7 +73,7 @@ uv run python tests/lax_inventory.py
 ## 文档维护
 
 - README 面向使用者；AGENTS 保持导航和必要规则。
-- 比较契约在架构文档中维护，具体设计与实验进入 development-docs，长期决策进入 design-docs。
-- 复杂工作的 active 计划完成后移到 completed；未解决问题进入技术债记录。
+- 总体比较契约在架构文档中维护，具体算法、接口与长期决策进入 `docs/design-docs/current/`；`docs/design-docs/` 根目录只保留 `index.md`。实施、实验与验收进入 exec-plans。
+- 复杂工作的 active 计划完成后移到 completed；未解决问题登记到执行计划索引的“待处理”清单，并链接对应计划。
 - 新增、移动或删除文档时更新索引与引用，运行 `uv run python tools/check_docs.py --changed` 与 `git diff --check`。
 - 上游快照保留原项目上下文，本项目的当前状态与验证结论独立记录。

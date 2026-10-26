@@ -11,7 +11,7 @@
 
 ## 设计与取舍
 
-设计见 [Pallas 设计 §9.10](../../development-docs/pallas/history/stage-10.md)。复用现有协议图与区间 Storage；不引入 MLIR/TVM 运行时依赖。
+设计见 [Pallas 设计 §9.10](pallas-history/stage-10.md)。复用现有协议图与区间 Storage；不引入 MLIR/TVM 运行时依赖。
 先证明所有冲突区间在所有合法调度下有序，再沿拓扑顺序传播版本。start 保存逻辑源快照，send_complete 结束源保护，receive_complete 发布目标版本。wait 消费计数，不配对单个传输。
 设备实例可以有限展开，元素只按区间边界处理。源 Ref 别名由区域实参绑定解析，外部 alias 和动态分配仍拒绝。
 
@@ -61,4 +61,4 @@ CPU interpreter 是独立数值及竞争对照，不等于真实 TPU 验证或�
 
 多轴/多程序、动态控制流、信号量跨代复用与部分等待、混合本地/远端协议、一般 alias 不在本规则范围。
 普通信号量、一般复制性代数证明、浮点 iota 及上述分段转换条件也未扩展；详见
-[PALLAS-001 / ALG-004](../tech-debt-tracker.md)。
+[PALLAS-001 / ALG-004](../index.md#待处理)。

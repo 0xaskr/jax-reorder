@@ -1,6 +1,6 @@
 """上游 egglog 规则与最小索引适配器的符号探针。
 
-运行（隔离环境，见 docs/development-docs/equivalence-backends/rewriting.md）：
+运行（隔离环境，见 docs/exec-plans/completed/research/equivalence-backends/rewriting.md）：
   <隔离环境>/python tools/experiments/equivalence_backends/rewriting_probe.py
   <隔离环境>/python tools/experiments/equivalence_backends/rewriting_probe.py \
       --taso-source /tmp/jax-reorder-equivalence-eval/rewriting/taso

@@ -10,7 +10,7 @@
 - 默认两个逻辑 CPU 设备，另在四设备运行同一示例，避免单设备通信退化。
 - 不引入代数规则。即使 all-reduce 与 reduce-scatter + all-gather 数值相同，图仍不同。
 - 不把 GPU 点对点通信或多主机执行算作 CPU 验证通过。
-- 设计与实验见 [通信记录](../../development-docs/collective-jaxpr.md)。
+- 设计与实验见 [通信记录](validation/collective-jaxpr.md)。
 
 ## 工作项
 
@@ -25,7 +25,7 @@
 
 2026-10-11 完成。组合暴露出默认 check_vma 路径下缺少 core.pvary_p 的身份登记，已按锁定 JAX 实现显式加入；没有更改 BFS 规则或放宽未知语义检查。嵌套用例保留变化类型约束和接口顺序，cond 闭包捕获换序另存为图不同但样本相同的案例。
 
-后续修正：该 cond 闭包案例在 [绑定规范化](../../development-docs/cond-bindings.md) 中修复，现应判为 equivalent；上述内容和下方数量保留首次验证的历史记录。
+后续修正：该 cond 闭包案例在 [绑定规范化](../../design-docs/archive/cond-bindings.md) 中修复，现应判为 equivalent；上述内容和下方数量保留首次验证的历史记录。
 
 ## 验证结果
 

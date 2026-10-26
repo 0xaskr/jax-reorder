@@ -6,7 +6,7 @@
 随机数只用于测试输入。每个候选先按预判检查图结论，再用独立 NumPy 参照核对
 base 数值；负例必须找到实际数值反例。采样不证明一般等价，也不能替代图判定。
 基准提取自 Apache-2.0 项目 pallas-kernel / SGLang-JAX，来源与配置见
-docs/development-docs/business-layer-cases.md，许可证见 examples/LICENSE.*。
+docs/exec-plans/completed/validation/business-layer-cases.md，许可证见 examples/LICENSE.*。
 """
 
 import argparse

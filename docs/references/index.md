@@ -1,7 +1,11 @@
 # 参考文档索引
 
+本目录收录查阅资料、生成清单与来源记录。算法和契约设计见[设计索引](../design-docs/index.md)，
+实际实施与验收见[执行记录](../exec-plans/index.md)。
+
 | 主题 | 入口 |
 | --- | --- |
+| 自动生成的 CPU lax 原语与测试绑定清单；通过 `tests/lax_inventory.py` 更新和校验 | [lax-coverage.md](lax-coverage.md) |
 | jaxpr 两阶段比较、三种结论与异常契约 | [equivalence-results.md](equivalence-results.md) |
 | Oryx / MLIR / StableHLO 参考路线 | [ir-comparison.md](ir-comparison.md) |
 | SGLang-JAX 注册模型、所选层与实际调用链 | [sglang-model-coverage.md](sglang-model-coverage.md) |

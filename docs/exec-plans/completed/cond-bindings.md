@@ -6,7 +6,7 @@
 
 ## 设计与取舍
 
-见 [设计记录](../../development-docs/cond-bindings.md)。仅处理 cond 原语（包括 lax.switch）；不推广到 scan carry、while、jit 或 shard_map 的接口重排，不引入代数规则。
+见 [设计记录](../../design-docs/archive/cond-bindings.md)。仅处理 cond 原语（包括 lax.switch）；不推广到 scan carry、while、jit 或 shard_map 的接口重排，不引入代数规则。
 
 ## 工作项
 

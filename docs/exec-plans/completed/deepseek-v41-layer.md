@@ -11,7 +11,7 @@
 - 官方模型发布：[DeepSeek-V4.1-Flash](https://www.deepseek.com/news/deepseek-v4-1-flash/)。
 - JAX 实现：[Inferact/tpu-megakernels PR #3](https://github.com/Inferact/tpu-megakernels/pull/3)，2026-10-14 查询为 OPEN。
 - 固定提交：`d11defb7e5e2fdd8d355b2f6225c74d2a15fa1e1`，来源 fork `jawadaminGOOG/tpu-megakernels`。上游含 `deepseek_v41/reference.py`、模型配置、XLA decode 调用与 CPU 交叉验证。
-- 选定完整 `hc_post` 残差混合层；原始模型配置 `H=4,D=5120`。以 `hc_mixes` 和 20 次 Sinkhorn 作为真实上下文补充验证；设计见[开发记录](../../development-docs/deepseek-v41-layer.md)。
+- 选定完整 `hc_post` 残差混合层；原始模型配置 `H=4,D=5120`。以 `hc_mixes` 和 20 次 Sinkhorn 作为真实上下文补充验证；设计见[开发记录](validation/deepseek-v41-layer.md)。
 
 ## 工作项
 
@@ -58,7 +58,7 @@ H=3 的额外测试发现单位分块的梯度索引需在前缀指标约束下�
 
 独立性能阶段在所有上述进程退出后调用 `examples.deepseek_v41.runner.benchmark(profile, dtype, 200)`，形状依次为 `(1,1,4,5120)`、`(8,1,4,5120)`、`(1,128,4,5120)`，dtype 为 FP32/BF16；写回同一临时 JSON 的 `benchmarks`。与公开 `--benchmark --repeats 200` 入口使用相同函数。
 
-matmul 的单 token 中位加速比为 FP32 1.053×、BF16 1.109×，其他形状更慢；blocked 全部更慢。base 的临时缓冲为 0，两候选均增加临时空间，不能宣称普遍加速或实际省内存。完整工作量、误差、延迟和内存表见[开发记录](../../development-docs/deepseek-v41-layer.md)。JSON 原始数据位于 `/tmp`，未纳入仓库。
+matmul 的单 token 中位加速比为 FP32 1.053×、BF16 1.109×，其他形状更慢；blocked 全部更慢。base 的临时缓冲为 0，两候选均增加临时空间，不能宣称普遍加速或实际省内存。完整工作量、误差、延迟和内存表见[开发记录](validation/deepseek-v41-layer.md)。JSON 原始数据位于 `/tmp`，未纳入仓库。
 
 ## 未解决问题
 

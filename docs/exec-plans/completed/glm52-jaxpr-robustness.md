@@ -46,4 +46,4 @@
 
 ## 后续能力缺口
 
-8 个改写均在 `algebra.constant: non-finite constant` 处停止，记录为 [ALG-003](../tech-debt-tracker.md)。保留原始 `-inf` mask 的正确语义需要独立设计；本轮不通过修改原层或放宽比较规则掩盖该边界。当前测试方法与入口见[开发记录](../../development-docs/glm52-decode-dsa-mla.md)。
+8 个改写均在 `algebra.constant: non-finite constant` 处停止，记录为 [ALG-003](../index.md#待处理)。保留原始 `-inf` mask 的正确语义需要独立设计；本轮不通过修改原层或放宽比较规则掩盖该边界。当前测试方法与入口见[开发记录](validation/glm52-decode-dsa-mla.md)。

@@ -10,7 +10,7 @@
 - 每个 base 和候选都是独立 Python 函数。不使用 AST 变异、脚本生成改写、随机选择改写或 reverse/wrong 开关。
 - 固定候选代码和标签；随机种子只用于数值输入。保留多组边界输入与数值不同的见证。
 - 提取指定配置的纯 JAX 数值路径，记录来源版本及去除的运行时包装；不声称验证完整上游模型。
-- 开发说明见 [业务层级案例](../../development-docs/business-layer-cases.md)。
+- 开发说明见 [业务层级案例](validation/business-layer-cases.md)。
 
 ## 工作项
 

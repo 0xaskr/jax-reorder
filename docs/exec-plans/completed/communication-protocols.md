@@ -18,7 +18,7 @@
 ## 设计与取舍
 
 - 调研由 `communication_protocol_research` 子代理执行；核对锁定 JAX 0.11.2 源码及官方上游。
-  设计依据写入 [Pallas 设计 §9.11](../../development-docs/pallas/history/stage-11.md)。
+  设计依据写入 [Pallas 设计 §9.11](pallas-history/stage-11.md)。
 - DMA semaphore 是进度计数，可逐步增加。部分计数不能解释为整笔传输完成。
 - 每个 semaphore 的 wait 必须属于其设备的单一顺序流。用累计产量和累计消费阈值建模；
   启用条件单调，可用有限事件的饱和固定点证明进展，不枚举执行调度。
@@ -92,4 +92,4 @@
 semaphore、barrier、自定义执行和外部 alias 仍需独立规则；必要因果规则是充分条件，
 未证明的安全协议也可能明确拒绝。单笔 self-target remote DMA 的 send/receive semaphore
 仍要求互异。CPU interpreter 缺少 read lowering、实际 TPU/多主机未验证的边界见设计 §9.11。
-这些事项记录在 [PALLAS-001](../tech-debt-tracker.md)。
+这些事项记录在 [PALLAS-001](../index.md#待处理)。

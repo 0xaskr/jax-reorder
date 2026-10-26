@@ -8,8 +8,8 @@
 
 ## 设计与取舍
 
-- [求导契约](../../development-docs/function-and-derivative-contract.md)：按锁定 JAX 的 symbolic_zeros 配置恢复整数余切；全整数输出保留前向和实际反向模式，空输出保留前向图和残差。
-- [区域接口](../../development-docs/region-bindings.md)：只以有序输出和有序根可达节点的使用位置锚定私有输入；其余输入进入已有有界槽位搜索，各候选重新规范化完整图。
+- [求导契约](../../design-docs/current/function-and-derivative-contract.md)：按锁定 JAX 的 symbolic_zeros 配置恢复整数余切；全整数输出保留前向和实际反向模式，空输出保留前向图和残差。
+- [区域接口](../../design-docs/current/region-bindings.md)：只以有序输出和有序根可达节点的使用位置锚定私有输入；其余输入进入已有有界槽位搜索，各候选重新规范化完整图。
 - 保留独立对应校验、未知语义拒绝和预算限制。cond 的全部分支共同确定锚点；scan/while 的角色边界和位置元数据仍同步移动。
 
 ## 工作项

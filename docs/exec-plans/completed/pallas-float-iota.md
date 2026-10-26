@@ -9,7 +9,7 @@
 复用 core 的整数类型/范围校验，与现有 tensor 和 kernel 路径一致。浮点 iota 的
 语义投影明确拒绝，不增加浮点序列的舍入模型；原始结构比较仍保留 dtype。
 整数 iota 及有界整数转浮点继续支持。具体边界入口见
-[接口契约](../../development-docs/pallas/contracts.md)。
+[接口契约](../../design-docs/current/pallas/contracts.md)。
 
 ## 工作项
 

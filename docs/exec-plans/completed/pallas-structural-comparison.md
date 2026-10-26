@@ -1,7 +1,7 @@
 # Pallas 完整结构比较
 
 创建及完成：2026-10-19。状态：本轮公共结构入口与定向验证完成。
-设计入口：[Pallas / JAX 等价比较](../../development-docs/pallas-jax-equivalence.md)。
+设计入口：[Pallas / JAX 等价比较](../../design-docs/current/pallas-jax-equivalence.md)。
 
 ## 目标与完成条件
 
@@ -97,5 +97,13 @@
 - 没有真实 TPU 编译执行证据；多主机非本地常量、全部官方语法组合、跨 block/grid 数学
   lowering、一般协议证明与 Pallas↔JAX 仍未完成。结构接入不宣称这些目标已完成。
 
-后续边界已记入[技术债](../tech-debt-tracker.md)，原语义中间层的更广目标继续由
+后续边界已记入[待处理清单](../index.md#待处理)，原语义中间层的更广目标继续由
 [后续计划](../active/pallas-semantic-layer.md)维护。
+
+## 已解决问题编号
+
+以下编号于 2026-10-26 从问题总表归入本计划，保留原已解决状态、优先级和依据；本次文档合并未重跑历史验收。
+
+| 编号 | 问题 | 原优先级 | 状态 | 依据 |
+| --- | --- | --- | --- | --- |
+| LAYER-001 | 公共 Pallas 结构入口与大图接口细化已接入；GLM5 absorbed Attention/Decoder 的 prefill/decode 四个真实配置在 search_budget=1 下通过完整结构比较，Wan/EPMoE 原图自比较通过。CPU 正常 lowering 仍拒绝 TPU 内核；自比较不计为任意改写候选认证 | P2 | 已解决 | [实际后端边界](validation/full-attention.md#已确认的拒绝与未支持)、[接口细化](../../design-docs/current/region-bindings.md) |
