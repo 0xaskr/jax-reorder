@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from jax._src import core
 
+from jax_reorder import Status, compare_jaxprs, verify_correspondence
 from tests.pallas_kernels import (
     CASES,
     MANIFEST,
@@ -14,7 +15,6 @@ from tests.pallas_kernels import (
     oracle,
     source,
 )
-from jax_reorder import Status, compare_jaxprs, verify_correspondence
 
 
 @pytest.mark.parametrize("index", range(len(MANIFEST["files"])))

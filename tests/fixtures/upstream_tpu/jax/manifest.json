@@ -1,0 +1,58 @@
+{
+  "repository": "jax-ml/jax",
+  "revision": "32544801e26115ac1794926d027148abf3baf009",
+  "license": "Apache-2.0",
+  "version": "0.11.2",
+  "selection_reason": "Pinned to the source revision matching the project's audited JAX/jaxlib 0.11.2 environment; not a claim to test the current default branch.",
+  "cases": {
+    "squareplus": {
+      "file": "nn",
+      "definitions": ["squareplus"],
+      "scope": "complete_function",
+      "configuration": {"b": 4, "shape": [16], "dtype": "float32"},
+      "positive": "Distribute division by two across the complete activation output",
+      "negative": "Replace division by two with division by three"
+    },
+    "matmul": {
+      "file": "matmul",
+      "definitions": ["matmul_kernel", "matmul"],
+      "scope": "complete_upstream_launcher_and_kernel",
+      "configuration": {
+        "x_shape": [16, 256],
+        "y_shape": [256, 256],
+        "dtype": "float32",
+        "block_shape": [8, 128],
+        "block_k": 128,
+        "comparison_interpret": false
+      },
+      "candidate_binding": "Load the unchanged original matmul launcher with an explicitly supplied, independently authored matmul_kernel dependency",
+      "positive": "Compute the independent tile product before reading the accumulator and commute the addition",
+      "negative": "Overwrite the accumulator, retaining only the last reduction tile",
+      "invalid_variant": "Remove scratch initialization",
+      "numerics": "Official TPU CPU interpreter with race and bounds checks, compared separately to NumPy full matmul and last-tile counterexample"
+    }
+  },
+  "files": {
+    "nn": {
+      "path": "jax/_src/nn/functions.py",
+      "snapshot": "jax/_src/nn/functions.py.txt",
+      "sha256": "3ee666ef93e9d03b604f36282f0245b5a33833c8cd95db1046279b224c261f5e",
+      "git_blob": "d5c0597d993a51ec2be2665f1c9829fca9d75643",
+      "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/_src/nn/functions.py"
+    },
+    "matmul": {
+      "path": "jax/experimental/pallas/ops/tpu/matmul.py",
+      "snapshot": "jax/experimental/pallas/ops/tpu/matmul.py.txt",
+      "sha256": "6bb1c481b2fc2c6a100c6258de368c9c5ae9ce8b9f26159811a97e7b92f064da",
+      "git_blob": "8084c637c386a409bff42f18d7ceacccad841cc3",
+      "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/experimental/pallas/ops/tpu/matmul.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "url": "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/LICENSE"
+    }
+  }
+}

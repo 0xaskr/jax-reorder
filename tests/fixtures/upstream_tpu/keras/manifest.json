@@ -1,0 +1,34 @@
+{
+  "repository": "https://github.com/keras-team/keras",
+  "revision": "cfebb2af8a202fcb31b8b86766f44eabe6295a7a",
+  "license": "Apache-2.0",
+  "files": {
+    "nn": {
+      "path": "keras/src/backend/jax/ops/nn.py",
+      "snapshot": "nn.py.txt",
+      "sha256": "5766df5e82663572bee92e1500384ec9355d7f9273364b97ab2a490b621dc57d",
+      "git_blob": "bee7887cda0f3c72d95571a1fec17a7507ccadf7"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE",
+      "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "git_blob": "f49a4e16e68b128803cc2dcea614603632b04eac"
+    },
+    "tpu_ci": {
+      "path": ".github/workflows/tpu_tests.yml",
+      "snapshot": "tpu_tests.yml.txt",
+      "sha256": "b9223cf82efaa8ba12e944e7f78aaa44345419f608bffd203c29a8cea0bb86e9",
+      "git_blob": "68cf36999da588e66f0ea1c1d28231c277da2363"
+    }
+  },
+  "extraction": {
+    "nn": [
+      "batch_normalization",
+      "_apply_masks",
+      "_dot_product_attention_core",
+      "wrap_flash_attention"
+    ],
+    "adaptation": "Complete top-level definitions; supply their actual JAX dependencies without importing Keras or rewriting bodies. TPU Splash remains the installed real JAX implementation."
+  }
+}

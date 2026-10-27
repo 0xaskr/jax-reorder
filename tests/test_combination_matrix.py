@@ -16,10 +16,10 @@ import numpy as np
 import pytest
 from jax._src import core
 
+from jax_reorder import Status, canonicalize, compare_jaxprs
 from tests.combination_matrix import CASES, reference, sample
 from tests.full_layers.runner import numerical_witness, raw_schedule
 from tests.sglang_layers.runner import close
-from jax_reorder import Status, canonicalize, compare_jaxprs
 
 
 @pytest.mark.parametrize(

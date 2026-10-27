@@ -19,7 +19,6 @@ import numpy as np
 import pytest
 from jax import lax
 
-from tests import region_bindings
 from jax_reorder import (
     CorrespondenceError,
     Status,
@@ -27,6 +26,7 @@ from jax_reorder import (
     verify_correspondence,
 )
 from jax_reorder.core import canonical as implementation
+from tests import region_bindings
 
 
 def original(x, y):

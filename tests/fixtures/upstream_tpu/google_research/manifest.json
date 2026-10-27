@@ -1,0 +1,37 @@
+{
+  "repository": "google-research/google-research",
+  "revision": "0f585ccae259c32a877edfd48362c18a0010545f",
+  "license": "Apache-2.0",
+  "observed_at": "2026-10-27",
+  "scope": "Complete Performer feature transform and ALX Gramian with actual CPU collectives; no TPU hardware claim.",
+  "files": {
+    "performer": {
+      "path": "imp/max/modeling/kernel_transformation.py",
+      "snapshot": "imp/max/modeling/kernel_transformation.py.txt",
+      "sha256": "6bb5848fc8418f325e540af7c2a5c159691691fda4f8addbae112f7f5669cc86",
+      "git_blob": "8b76e06ecac20f0be8ab84cc57674a79172f494d",
+      "url": "https://github.com/google-research/google-research/blob/0f585ccae259c32a877edfd48362c18a0010545f/imp/max/modeling/kernel_transformation.py"
+    },
+    "als": {
+      "path": "alx/als.py",
+      "snapshot": "alx/als.py.txt",
+      "sha256": "a20177ba6d6a35ba5c0f1e87138508ba767fd5ea0565239f3bc386a0b737e248",
+      "git_blob": "912a296f0d4604e946e5dbe315ca9496a11a3bd8",
+      "url": "https://github.com/google-research/google-research/blob/0f585ccae259c32a877edfd48362c18a0010545f/alx/als.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "url": "https://github.com/google-research/google-research/blob/0f585ccae259c32a877edfd48362c18a0010545f/LICENSE"
+    },
+    "readme": {
+      "path": "alx/README.md",
+      "snapshot": "alx/README.md.txt",
+      "sha256": "f3b004ddface67a35b7808967fa9af4af311350d11daa6d174e4b85128fc8e31",
+      "git_blob": "c16ab8c63e32ee716e0bed7a8bc2eb977b6860db",
+      "url": "https://github.com/google-research/google-research/blob/0f585ccae259c32a877edfd48362c18a0010545f/alx/README.md"
+    }
+  }
+}

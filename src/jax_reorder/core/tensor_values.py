@@ -141,6 +141,35 @@ def tensor_value(
         return _substitute(
             args[0], {f"local:{d}": coordinate("local", i) for i, d in enumerate(permutation)}
         )
+    if name == "squeeze":
+        if (
+            len(args) != 1
+            or len(input_types) != 1
+            or len(op.parameters) != 1
+            or set(p) != {"dimensions"}
+        ):
+            raise UnsupportedJaxprError(path, "invalid squeeze interface")
+        raw_dimensions = p["dimensions"]
+        shape = input_shapes[0]
+        if (
+            type(raw_dimensions) is not tuple
+            or any(type(d) is not int or not 0 <= d < len(shape) for d in raw_dimensions)
+            or len(set(raw_dimensions)) != len(raw_dimensions)
+        ):
+            raise UnsupportedJaxprError(path, "squeeze dimensions must select distinct unit axes")
+        dimensions = cast(tuple[int, ...], raw_dimensions)
+        if any(shape[d] != 1 for d in dimensions):
+            raise UnsupportedJaxprError(path, "squeeze dimensions must select distinct unit axes")
+        kept = tuple(i for i in range(len(shape)) if i not in dimensions)
+        if typ.shape != tuple(shape[i] for i in kept) or scalar_type(typ) != scalar_type(
+            input_types[0]
+        ):
+            raise UnsupportedJaxprError(path, "squeeze output shape or scalar type differs")
+        # Fix removed lanes at zero while retaining the source expression and
+        # its conditions; squeezing is a coordinate map, not a new scalar input.
+        bindings = {f"local:{d}": integer(0) for d in dimensions}
+        bindings.update({f"local:{d}": coordinate("local", i) for i, d in enumerate(kept)})
+        return _substitute(args[0], bindings)
     if name == "concatenate":
         dimension = p["dimension"]
         rank = len(typ.shape)

@@ -20,7 +20,6 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from tests import region_bindings as cases
 from jax_reorder import (
     InvalidJaxprError,
     Status,
@@ -28,6 +27,7 @@ from jax_reorder import (
     canonicalize,
     compare_jaxprs,
 )
+from tests import region_bindings as cases
 
 
 def inputs(dtype=jnp.float32, shape=()):

@@ -17,9 +17,9 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from tests import feedback_bindings as cases
 from jax_reorder import Status, canonicalize, compare_jaxprs
 from jax_reorder.functions import compare_functions
+from tests import feedback_bindings as cases
 
 
 def arguments(kind, steps, dtype):

@@ -14,15 +14,15 @@ import numpy as np
 from jax._src import core
 from jax.sharding import NamedSharding
 
-from tests.sglang_layers.builders import cpu_mesh
-from tests.sglang_layers.runner import close
-from tests.sglang_layers.upstream import REVISION
 from jax_reorder import (
     Status,
     canonicalize,
     compare_functions,
     compare_jaxprs,
 )
+from tests.sglang_layers.builders import cpu_mesh
+from tests.sglang_layers.runner import close
+from tests.sglang_layers.upstream import REVISION
 
 from . import oracles
 from .blocked import cross_attention, glm5_absorbed, mla_original_imports, original_moe

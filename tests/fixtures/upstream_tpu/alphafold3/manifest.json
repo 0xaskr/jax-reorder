@@ -1,0 +1,42 @@
+{
+  "repository": "google-deepmind/alphafold3",
+  "revision": "5e23d45bff3a4c1993516ead2ec848cb42d64c1a",
+  "license": "Apache-2.0",
+  "files": {
+    "utils": {
+      "path": "src/alphafold3/model/components/utils.py",
+      "snapshot": "src/alphafold3/model/components/utils.py.txt",
+      "sha256": "c841cde71a32a4d612738b4ef6fa96915b59b4f991f21e5a3e706c0d8c670005",
+      "git_blob": "ee4a8d5baaa2e400fc488c9692ffba7884d2340d",
+      "url": "https://github.com/google-deepmind/alphafold3/blob/5e23d45bff3a4c1993516ead2ec848cb42d64c1a/src/alphafold3/model/components/utils.py"
+    },
+    "geometry": {
+      "path": "src/alphafold3/jax/geometry/vector.py",
+      "snapshot": "src/alphafold3/jax/geometry/vector.py.txt",
+      "sha256": "9916ff91d66dfccbe1beac3eceac44cd5e9a9f95a3e0abe4b95cfd8730a7ded8",
+      "git_blob": "a11143d37fbb33127f1b8c73a9a032145d96e3d3",
+      "url": "https://github.com/google-deepmind/alphafold3/blob/5e23d45bff3a4c1993516ead2ec848cb42d64c1a/src/alphafold3/jax/geometry/vector.py"
+    },
+    "linear": {
+      "path": "src/alphafold3/model/components/haiku_modules.py",
+      "snapshot": "src/alphafold3/model/components/haiku_modules.py.txt",
+      "sha256": "22b4993e8574289a4b77a302c489e1e2dc27ea959b04d1262543f19adaaabf15",
+      "git_blob": "91c8e2639ff287f66d1d486b85f19d49585aec01",
+      "url": "https://github.com/google-deepmind/alphafold3/blob/5e23d45bff3a4c1993516ead2ec848cb42d64c1a/src/alphafold3/model/components/haiku_modules.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "url": "https://github.com/google-deepmind/alphafold3/blob/5e23d45bff3a4c1993516ead2ec848cb42d64c1a/LICENSE"
+    },
+    "readme": {
+      "path": "README.md",
+      "snapshot": "README.md.txt",
+      "sha256": "0aff5538016f91aae06209319e4514e23a2fc6156854271f75873f8b78e0e44f",
+      "git_blob": "67281a1411a196946f0afb1f6709fa3658616db5",
+      "url": "https://github.com/google-deepmind/alphafold3/blob/5e23d45bff3a4c1993516ead2ec848cb42d64c1a/README.md"
+    }
+  }
+}

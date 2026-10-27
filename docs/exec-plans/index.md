@@ -1,6 +1,6 @@
 # 执行计划索引
 
-本页汇总正在进行的计划、已完成阶段与历史记录。状态按 2026-10-26 的计划文件核对；
+本页汇总正在进行的计划、已完成阶段与历史记录。状态随对应计划更新；
 详细目标、决定和验证结果保留在各计划中。
 
 ## 正在进行
@@ -8,7 +8,6 @@
 | 计划 | 当前重点 |
 | --- | --- |
 | [JAX / Pallas 语义层](active/pallas-semantic-layer.md) | 优先修复整数归约/点积的数学语义；继续扩展数据条件、动态地址、并行共享 staging、索引/路由/终止及布局证明 |
-| [测试资产与依赖分组整理](active/test-assets-consolidation.md) | 合并示例与测试目录，分离 dev/test 依赖，明确真实开源代码与 AI 正反例的测试方式 |
 
 尚未解决事项统一维护在下方[待处理清单](#待处理)，具体复现和修复要求放入对应计划。
 具体支持状态及范围取舍见[贡献者指南](../../CONTRIBUTING.md)。
@@ -40,6 +39,10 @@ P0 表示阻塞，P1 表示当前迭代，P2 表示后续。启动或完成任�
 | ALG-006 | 整数归约/点积遗漏溢出语义，可能错误判等价 | P1 | 待处理 | [复现与修复要求](active/pallas-semantic-layer.md#2026-10-26-审查确认的正确性缺陷) |
 | ALG-007 | iota 遗漏 dtype 值域，可能错误判等价 | P1 | 待处理 | [复现与修复要求](active/pallas-semantic-layer.md#2026-10-26-审查确认的正确性缺陷) |
 | ALG-008 | 空整数极值归约单位元错误，可能错误判不等价 | P2 | 待处理 | [复现与修复要求](active/pallas-semantic-layer.md#2026-10-26-审查确认的正确性缺陷) |
+| UPSTREAM-001 | 真实 SNR 动态索引的定义条件未决及 Piecewise 展开超时 | P2 | 待处理 | [Diffusers 实测与定位](completed/github-top10-tpu-validation.md#本轮剩余缺口) |
+| UPSTREAM-002 | 共享纯 JIT 的定义条件与 attention 残差阻止部分数学负例证明 | P2 | 待处理 | [真实 MLP/attention 反例](completed/github-top10-tpu-validation.md#本轮剩余缺口) |
+| UPSTREAM-003 | 普通 JAX shard_map/psum 数学转换尚未适配 | P2 | 待处理 | [ALX 双设备实测](completed/github-top10-tpu-validation.md#本轮剩余缺口) |
+| UPSTREAM-004 | Splash 外层 broadcast、选取主输出的完整函数数学组合尚未支持 | P2 | 待处理 | [真实 Pallas wrapper 边界](completed/github-top10-tpu-validation.md#本轮剩余缺口) |
 
 ### 待核验旧记录
 
@@ -76,6 +79,7 @@ P0 表示阻塞，P1 表示当前迭代，P2 表示后续。启动或完成任�
 
 | 已完成计划 | 阶段内容 |
 | --- | --- |
+| [前十仓库 TPU JAX/Pallas 验证](completed/github-top10-tpu-validation.md) | 十库与两库额外覆盖；真实源码/AI 正反例、五项修复与 360 项整合回归；剩余四类能力单独跟踪 |
 | [BFS 计算图规范化与比较](completed/bfs-reordering.md) | 第一轮结构规范化与完整比较基础 |
 | [cond 内部参数绑定规范化](completed/cond-bindings.md) | 捕获槽位与实参/形参同步置换 |
 | [带通信的 jaxpr 验证](completed/collective-jaxpr.md) | CPU 集合通信的结构与数值验证 |
@@ -130,6 +134,7 @@ P0 表示阻塞，P1 表示当前迭代，P2 表示后续。启动或完成任�
 | [测试与文档按需加载整理](completed/test-doc-context.md) | 验证设施复用与文档分层 |
 | [测试文件按职责合并](completed/test-file-consolidation.md) | 合并重复入口与零散测试文件 |
 | [设计文档与执行记录归位](completed/documentation-consolidation.md) | 按内容迁移设计、历史方案和实验/验收记录，修复引用并明确生效与替代关系 |
+| [测试资产与依赖分组整理](completed/test-assets-consolidation.md) | 39 个示例文件并入 tests，分离 dev/test 依赖并明确真实代码与 AI 正反例规范；迁移阶段仅做静态检查 |
 
 ## 历史记录
 

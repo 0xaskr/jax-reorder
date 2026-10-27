@@ -22,9 +22,9 @@ import jax.numpy as jnp
 import pytest
 from jax._src import compiler, dispatch
 
+from jax_reorder import Status, trace_function
 from tests import glm52_decode_dsa_mla as layer
 from tests.full_layers.runner import raw_schedule
-from jax_reorder import Status, trace_function
 
 pytestmark = pytest.mark.business
 

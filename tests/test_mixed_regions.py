@@ -16,8 +16,8 @@ import numpy as np
 import pytest
 from jax._src import core
 
-from tests import mixed_regions as cases
 from jax_reorder import Status, compare_functions
+from tests import mixed_regions as cases
 
 
 def schedule(graph):

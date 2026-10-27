@@ -23,7 +23,6 @@ from jax import lax
 from jax._src import core
 from jax._src import custom_derivatives as cd
 
-from tests import custom_derivative_cases as cases
 from jax_reorder import (
     ComparisonBudgetError,
     Status,
@@ -34,6 +33,7 @@ from jax_reorder import (
 )
 from jax_reorder.core.params import semantic_parameters
 from jax_reorder.functions import compare_functions
+from tests import custom_derivative_cases as cases
 
 
 @pytest.mark.parametrize(

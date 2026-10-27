@@ -1,0 +1,55 @@
+{
+  "repository": "google-deepmind/mujoco",
+  "revision": "a72c9b84d003a1980a651a271a04edafde93d7e5",
+  "license": "Apache-2.0",
+  "selection_reason": "The pinned documentation explicitly identifies MJX-JAX as supporting Google Cloud TPUs; the distinct MJX-Warp backend targets NVIDIA GPUs. This case exercises MJX-JAX, not Warp or Pallas.",
+  "cases": {
+    "quat_mul": {
+      "file": "math",
+      "definitions": ["quat_mul"],
+      "scope": "complete_function",
+      "configuration": {
+        "source_shape": [4],
+        "external_vmap_shape": [3, 4],
+        "dtype": "float32",
+        "component_order": "w,x,y,z",
+        "seeds": [7, 23]
+      },
+      "batching_scope": "The original source accepts (4,) inputs. The (3,4) case explicitly applies jax.vmap to the unchanged function; it is not a native batched source signature.",
+      "structural_positive": "Compute independent z, y, w, x outputs in a different order while preserving each expression and output order",
+      "algebraic_positive": "Regroup scalar products and antisymmetric terms",
+      "negative": "Reverse every cross-product sign, computing v*u instead of u*v",
+      "numerics": "Independent NumPy Hamilton left-multiplication matrix; also check identity, i*j=k, j*i=-k and the negative candidate against reversed multiplication"
+    }
+  },
+  "files": {
+    "math": {
+      "path": "mjx/mujoco/mjx/_src/math.py",
+      "snapshot": "mjx/mujoco/mjx/_src/math.py.txt",
+      "sha256": "170687957846e5f03ebf1ce458a2966daddccc27b11d5c9f00413c90396183cb",
+      "git_blob": "e52d41ab9778806070c6ddba29d4e58a48f6a688",
+      "url": "https://github.com/google-deepmind/mujoco/blob/a72c9b84d003a1980a651a271a04edafde93d7e5/mjx/mujoco/mjx/_src/math.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "url": "https://github.com/google-deepmind/mujoco/blob/a72c9b84d003a1980a651a271a04edafde93d7e5/LICENSE"
+    },
+    "tpu_evidence": {
+      "path": "doc/mjx.rst",
+      "snapshot": "doc/mjx.rst.txt",
+      "sha256": "1ef4048d3c08954d89b29ea0b16f72ed2d6c59c5320197a8df1dd88bbe93ed3e",
+      "git_blob": "7a20aa5cc42838df6204598be9c37ce8b09d87f2",
+      "url": "https://github.com/google-deepmind/mujoco/blob/a72c9b84d003a1980a651a271a04edafde93d7e5/doc/mjx.rst"
+    },
+    "readme": {
+      "path": "mjx/README.md",
+      "snapshot": "mjx/README.md.txt",
+      "sha256": "c8f280404e36d048b5a3924d4f301f2dd14aea9fac9718a4659f37030d949129",
+      "git_blob": "f4796a5fed009dce4469465e36d33e0a380eec83",
+      "url": "https://github.com/google-deepmind/mujoco/blob/a72c9b84d003a1980a651a271a04edafde93d7e5/mjx/README.md"
+    }
+  }
+}

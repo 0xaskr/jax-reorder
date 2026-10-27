@@ -101,6 +101,96 @@ def test_original_conditions_survive_cancellation(left):
     assert result.failure_kind == "condition_undecided"
 
 
+@pytest.mark.parametrize("shape", [(), (3,), (65,)])
+def test_shared_valid_input_proves_negative_with_distinct_original_domains(shape):
+    result = compare(
+        lambda x: x / (x + 1),
+        lambda x: 2 * x / (x + 2),
+        signature(shape),
+    )
+    assert result.status == Status.INEQUIVALENT
+    queries = result.algebra.backend_result.queries
+    assert any(query.scope == "definedness" and query.answer is not True for query in queries)
+    assert any(
+        query.answer is False and "exact representable input witness" in query.method
+        for query in queries
+    )
+
+
+def test_disjoint_original_domains_do_not_supply_a_negative_witness():
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(jnp.log, lambda x: jnp.log(-x))
+    assert error.value.failure_kind == "condition_undecided"
+
+
+@pytest.mark.parametrize("separate_ports", [False, True])
+def test_distinct_domain_witness_requires_every_output_coordinate(separate_ports):
+    def left(x):
+        outputs = x / (x + 1), jnp.log(-x)
+        return outputs if separate_ports else jnp.stack(outputs)
+
+    def right(x):
+        outputs = 2 * x / (x + 2), jnp.log(x)
+        return outputs if separate_ports else jnp.stack(outputs)
+
+    # x=1 distinguishes the first coordinate, but violates another output's
+    # original domain. In fact no input makes both complete outputs defined.
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(left, right)
+    assert error.value.failure_kind == "condition_undecided"
+
+
+def test_another_outputs_domain_can_exclude_all_unequal_inputs():
+    def left(x):
+        return jnp.where(x > 0, x, 0) / (x + 1), jnp.log(-x)
+
+    def right(x):
+        return jnp.zeros_like(x), jnp.log(-x)
+
+    # The complete programs share a nonempty domain (for example x=-2),
+    # where their values agree. A first-output witness at x=1 is invalid.
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(left, right)
+    assert error.value.failure_kind == "condition_undecided"
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32])
+def test_rsqrt_positive_domain_uses_reciprocal_square_root(dtype):
+    result = compare(
+        lambda x: jax.lax.rsqrt(x * x + 1),
+        lambda x: 1 / jnp.sqrt(x * x + 1),
+        jax.ShapeDtypeStruct((3,), dtype),
+    )
+    assert result.status == Status.EQUIVALENT
+    assert result.equivalence_kind == "algebraic"
+    assert "rsqrt" in result.algebra.rules
+
+
+def test_rsqrt_positive_domain_keeps_wrong_scale_inequivalent():
+    result = compare(
+        lambda x: jax.lax.rsqrt(x * x + 1),
+        lambda x: 2 / jnp.sqrt(x * x + 1),
+        signature((2,)),
+    )
+    assert result.status == Status.INEQUIVALENT
+
+
+@pytest.mark.parametrize("subtract", [False, True])
+def test_rsqrt_undefined_zero_and_negative_inputs_cannot_disappear(subtract):
+    def partial(x):
+        value = jax.lax.rsqrt(x)
+        return value - value if subtract else value * 0
+
+    with pytest.raises(MathematicalUndecidedError) as error:
+        compare(partial, jnp.zeros_like)
+    assert error.value.failure_kind == "condition_undecided"
+    output = SymbolicBuilder().graph(freeze(jax.make_jaxpr(partial)(signature())))[0]
+    symbol = next(iter(output.defined.free_symbols))
+    assert output.defined.subs(symbol, 0) == sp.false
+    assert output.defined.subs(symbol, -1) == sp.false
+    assert output.defined.subs(symbol, 1) == sp.true
+
+
 @pytest.mark.parametrize("shape", [(), (3,)])
 def test_integer_dtype_bounds_cannot_be_forgotten_in_negative_queries(shape):
     with pytest.raises(MathematicalUndecidedError) as error:

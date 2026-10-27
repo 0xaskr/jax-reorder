@@ -25,10 +25,10 @@ import jaxlib
 import numpy as np
 from jax._src import core
 
+from jax_reorder import Status, canonicalize, compare_jaxprs
 from tests.sglang_layers.builders import cpu_mesh
 from tests.sglang_layers.runner import close
 from tests.sglang_layers.upstream import REVISION
-from jax_reorder import Status, canonicalize, compare_jaxprs
 
 from . import oracles
 from .builders import BLOCK_PROFILES, FLUX_PROFILES, PROFILES, BlockCase, Glm5Case, LlamaCase

@@ -92,6 +92,7 @@ TENSOR_VALUE_PRIMITIVES = frozenset(
         "reduce_and",
         "reduce_or",
         "transpose",
+        "squeeze",
         "reshape",
         "slice",
         "concatenate",

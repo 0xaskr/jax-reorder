@@ -1,0 +1,31 @@
+{
+  "repository": "borisdayma/dalle-mini",
+  "revision": "f0be4de610285a002052024a1e096126f9452cc4",
+  "license": "Apache-2.0",
+  "stars_observed": 14717,
+  "observed_at": "2026-10-27",
+  "scope": "Selected complete model-layer definitions; CPU numerical evidence, no TPU hardware claim.",
+  "files": {
+    "model": {
+      "path": "src/dalle_mini/model/modeling.py",
+      "snapshot": "src/dalle_mini/model/modeling.py.txt",
+      "sha256": "e4d6003dcdae4462e92af19b6618515d75306b6bfe1c09d468cc42d9226142b6",
+      "git_blob": "53dd7ce965ef85ab29e2c0de378b025d3a05e389",
+      "url": "https://github.com/borisdayma/dalle-mini/blob/f0be4de610285a002052024a1e096126f9452cc4/src/dalle_mini/model/modeling.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE",
+      "sha256": "3477679e0a7e014e1e6cdaa6ab0b500b885c2e96a63c2d620b06affdf60ae3a6",
+      "git_blob": "fc7419b7a95e60c5b7c446fee264e8904eff67c8",
+      "url": "https://github.com/borisdayma/dalle-mini/blob/f0be4de610285a002052024a1e096126f9452cc4/LICENSE"
+    },
+    "readme": {
+      "path": "README.md",
+      "snapshot": "README.md.txt",
+      "sha256": "0f51e0a5cd9e1c6e625f782168c55d253e7106dad7dcbd4c26dc63383fa29b6c",
+      "git_blob": "2837889d10a03c270d1e5f860cf3f9ec8b4c8765",
+      "url": "https://github.com/borisdayma/dalle-mini/blob/f0be4de610285a002052024a1e096126f9452cc4/README.md"
+    }
+  }
+}

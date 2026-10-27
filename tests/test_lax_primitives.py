@@ -16,9 +16,9 @@ import jax
 import numpy as np
 import pytest
 from jax._src import core
-from tests.lax_cases import cases, trace_case
 
 from jax_reorder import Status, canonicalize, compare_jaxprs
+from tests.lax_cases import cases, trace_case
 
 CPU_REJECTIONS = {
     "ragged_all_to_all": (jax.errors.JaxRuntimeError, "ragged-all-to-all.*not supported"),

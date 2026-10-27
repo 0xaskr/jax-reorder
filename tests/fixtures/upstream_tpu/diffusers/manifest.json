@@ -1,0 +1,31 @@
+{
+  "repository": "huggingface/diffusers",
+  "revision": "3b56af0c5268049588cf470e38955f4c18002498",
+  "license": "Apache-2.0",
+  "stars_observed": 34816,
+  "observed_at": "2026-10-27",
+  "scope": "Legacy TPU Flax training helpers retained in current source; full Flax models removed from diffusers v0.40.",
+  "files": {
+    "training": {
+      "path": "examples/controlnet/train_controlnet_flax.py",
+      "snapshot": "examples/controlnet/train_controlnet_flax.py.txt",
+      "sha256": "a8bb02a6371463ef2e1ff7ef293a915186093e41877902650064ee71454c46aa",
+      "git_blob": "806113d8635df93928bd7b30443f1eb7de124a2f",
+      "url": "https://github.com/huggingface/diffusers/blob/3b56af0c5268049588cf470e38955f4c18002498/examples/controlnet/train_controlnet_flax.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE",
+      "sha256": "f9e2070c247517b1ddf65f7b11b393484a18da91a958fd18a97bd0f241c3125c",
+      "git_blob": "038e32f6445e8f265bde482613cf0d2f43d86dbc",
+      "url": "https://github.com/huggingface/diffusers/blob/3b56af0c5268049588cf470e38955f4c18002498/LICENSE"
+    },
+    "readme": {
+      "path": "examples/controlnet/README.md",
+      "snapshot": "examples/controlnet/README.md.txt",
+      "sha256": "56063d67959335f77381c0051c71e2d3cfb890621b8dc0a100558a00c9732c47",
+      "git_blob": "47416760995106ca84c8d97a12ba7ea40a377a02",
+      "url": "https://github.com/huggingface/diffusers/blob/3b56af0c5268049588cf470e38955f4c18002498/examples/controlnet/README.md"
+    }
+  }
+}

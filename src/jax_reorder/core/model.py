@@ -305,6 +305,11 @@ class PallasCallView:
     scratch: tuple[ScratchView, ...] = ()
     prefetch: tuple[RefType, ...] = ()
     cost_estimate: tuple[int, int, int, int] | None = None
+    # Locked JAX serializes these diagnostic strings into HLO frontend attributes.
+    # None and an explicitly empty mapping remain distinct source facts.
+    metadata: tuple[tuple[str, str], ...] | None = None
+    # Positional index-map arguments: True is a flat leaf, False is None.
+    index_map_bindings: tuple[bool, ...] = ()
 
 
 @dataclass(frozen=True)

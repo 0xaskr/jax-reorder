@@ -19,6 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from jax_reorder import ComparisonBudgetError, MathematicalUndecidedError, Status, compare_functions
 from tests.deepseek_v41 import candidates
 from tests.deepseek_v41.cases import (
     PROFILES,
@@ -31,7 +32,6 @@ from tests.deepseek_v41.cases import (
     signatures,
 )
 from tests.deepseek_v41.upstream import MANIFEST, ROOT, original, verify_snapshot
-from jax_reorder import ComparisonBudgetError, MathematicalUndecidedError, Status, compare_functions
 
 pytestmark = pytest.mark.business
 

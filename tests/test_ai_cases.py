@@ -20,8 +20,8 @@ from jax._src import core
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
-from tests.bfs_reordering import ai_cases, llama_mlp, model_mesh, verify_case
 from jax_reorder import Status, canonicalize, compare_jaxprs
+from tests.bfs_reordering import ai_cases, llama_mlp, model_mesh, verify_case
 
 
 @pytest.mark.parametrize("index", range(18))

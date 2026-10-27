@@ -20,8 +20,8 @@ import jax
 import jax.numpy as jnp
 from jax._src import compiler, dispatch
 
-from tests import glm52_decode_dsa_mla as layer
 from jax_reorder import trace_function
+from tests import glm52_decode_dsa_mla as layer
 
 
 def nested_graphs(value, path="root"):

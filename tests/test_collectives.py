@@ -19,6 +19,7 @@ from jax._src import core
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
+from jax_reorder import Status, UnsupportedJaxprError, canonicalize, compare_jaxprs
 from tests.collective_jaxpr import (
     AXIS,
     Case,
@@ -32,7 +33,6 @@ from tests.collective_jaxpr import (
     reordered,
     run_case,
 )
-from jax_reorder import Status, UnsupportedJaxprError, canonicalize, compare_jaxprs
 
 
 def cpu_mesh():

@@ -19,7 +19,6 @@ from dataclasses import replace
 import jax
 import jax.numpy as jnp
 import pytest
-from tests.lax_cases import cases, trace_case
 
 from jax_reorder import (
     CorrespondenceError,
@@ -30,6 +29,7 @@ from jax_reorder import (
     compare_jaxprs,
     verify_correspondence,
 )
+from tests.lax_cases import cases, trace_case
 
 
 @pytest.mark.parametrize("case", cases(), ids=lambda case: case.name)

@@ -66,11 +66,11 @@ for mode in report.modes:
 - 输入输出共享 HBM，包括将历史受限 alias 试验扩大为一般支持承诺。
 
 该决定记录在 [Pallas 当前计划](docs/exec-plans/active/pallas-semantic-layer.md#当前待办)。
-上一节的动态地址、共享 staging、布局及多轴全局证明属于尚未完成的能力，不归入这份主动排除清单。
+下文的动态地址、共享 staging、布局及多轴全局证明属于尚未完成的能力，不归入这份主动排除清单。
 
 ## 当前支持状态
 
-以下按 2026-10-26 的源码审查整理，不代表任意合法 JAX/Pallas 程序均已覆盖。
+以下结合 2026-10-27 的源码审查与真实上游用例整理，不代表任意合法 JAX/Pallas 程序均已覆盖。
 
 | 范围 | 已支持 | 主要边界与详情 |
 | --- | --- | --- |
@@ -84,20 +84,27 @@ for mode in report.modes:
 通过 `ComparisonError` 子类报告，不返回 `unknown`。CPU 数值检查、解释器验证、离线 TPU AOT
 与实机精度/性能证据分别记录，不能互相替代。
 
+真实上游验证使用固定源码、AI 正反例和独立 NumPy 参照；Pallas 另外运行官方 TPU CPU
+解释器。此次补齐 `rsqrt` 的严格正域、Pallas `squeeze`、诊断 metadata、scalar-prefetch
+的 `None` 占位，并允许在定义域尚未证明一致时验证共同合法输入上的精确反例。
+仓库排序、所选函数、结果与剩余问题见[前十仓库验证记录](docs/exec-plans/completed/github-top10-tpu-validation.md)。
+
 ## 尚未完成的能力
 
 以下是实现或覆盖尚未完成的缺口，后续按路线图推进；已有受限实现的项目明确列出剩余范围。
-它们与下一节主动排除的功能分开维护，也不表示对应源图一定无法做结构比较。
+它们与上文“当前选择暂不支持”的功能分开维护，也不表示对应源图一定无法做结构比较。
 
 | 范围 | 还没做到什么 | 已有能力与跟踪 |
 | --- | --- | --- |
 | 普通 JAX 纯死计算删减 | 数学转换仍处理未使用的纯计算，并保留其定义条件 | Pallas 数学投影已做受限删减；普通 JAX 待实现，见 ALG-009 |
 | JAX 索引与数学转换 | 动态索引域、对角读取、任意步长覆盖、部分排序/近似 top-k 残差，以及特殊精度/分片尚无完整规则 | 已有静态 reshape/切片、受限索引与归约；见 ALG-001/003/004 |
 | JAX 循环与跨区域改写 | 一般递推、变化 carry 的历史输出、数据依赖终止和非默认调用尚无通用证明 | 已有受限 cond、独立 scan 累加和默认纯 JIT 组合；见 ALG-002/004 |
+| 真实层数学证明完成率 | 动态 SNR gather 的条件/分段表达式仍可能未决或超时；共享纯 JIT 的定义条件可能阻止负例证明；普通 JAX `shard_map` 集合通信尚未接入数学转换 | 已有独立数值反例和明确异常回归；见 UPSTREAM-001/002/003 |
 | 求导适配与覆盖 | 仅存在于求导规则中的动态捕获、规则新增的有序操作/未解释 effects 仍需适配；高阶求导和任意变换组合尚无整体覆盖 | 普通函数 forward/JVP/VJP 已分别支持；见 AD-001～003 |
 | Pallas 数据条件与动态地址 | 更一般的数据谓词关系、未知范围地址、动态可写源/目标的普遍处理，以及数据决定的路由/终止仍缺证明规则 | 已有受限条件初始化、只读源有界动态页多笔在途 DMA；动态可写访问仍须完整状态证明 |
 | Pallas 并行与布局 | 并行共享自动 staging 的一般安全复用、非默认物理布局、动态 grid 及未审核的包装/effect 尚未普遍覆盖 | 已有静态多维 grid、受限布局选项和显式执行绑定；真实存储冲突仍须拒绝 |
 | Pallas 全局比较 | 一般多轴 mesh 的跨设备值组装与全局协议证明尚未完成 | 有限单轴协议、多维 kernel grid 和设备局部比较已实现，不能外推一般全局结论 |
+| Pallas 外层输出组合 | Splash 的多输出调用经 broadcast 恢复 batch 轴、选择主输出后，完整函数数学投影尚未支持 | 真实结构比较与官方 CPU 解释器通过；局部输入绑定变化仍须按契约拒绝；见 UPSTREAM-004 |
 | 统一图表示与资源控制 | 全部 JAX 消费者迁入统一视图、持久化图格式及数学 worker 的进程内存硬上限尚未完成 | 当前有展开预算与 worker 超时；不保证所有合法实例都在默认预算内完成 |
 
 编号对应[待处理清单](docs/exec-plans/index.md#待处理)；Pallas 的具体准入条件与剩余覆盖见
@@ -177,7 +184,18 @@ git diff --check
 
 可复用候选、模型层与可运行入口统一放在 `tests/`，pytest 断言放在 `test_*.py`。
 现有入口包括 [SGLang 层](tests/sglang_layers/)、[完整 Attention/block](tests/full_layers/)、
-[DeepSeek 层](tests/deepseek_v41/)和 [Pallas kernel](tests/pallas_kernels.py)。
+[DeepSeek 层](tests/deepseek_v41/)、[Pallas kernel](tests/pallas_kernels.py)和
+[固定上游源码与 AI 候选](tests/upstream_tpu/)。
+
+```bash
+# 真实上游用例，包含原生 Pallas 源图与隔离的官方解释器验证
+uv run pytest tests/test_upstream_tpu_*.py
+
+# 显式复现已测得的两个 60 秒 SNR 批量数学超时
+JAX_REORDER_RUN_DIFFUSERS_SNR_BATCH=1 uv run pytest tests/test_upstream_tpu_diffusers.py -k snr_batch
+```
+
+测试通过也可能表示准确触发了已知未决、拒绝或超时，不能把 pytest 的通过数当作数学证明数。
 
 更多约定见 [AGENTS.md](AGENTS.md)，比较契约见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 架构文档中的旧接口说明尚待同步，当前接口与异常行为以本页链接的现行设计文档及源码为准。

@@ -1,0 +1,35 @@
+{
+  "repository": "vwxyzjn/cleanrl",
+  "revision": "fe8d8a03c41a7ef5b523e2e354bd01c363e786bb",
+  "license": "MIT",
+  "files": {
+    "ddpg": {
+      "path": "cleanrl/ddpg_continuous_action_jax.py",
+      "snapshot": "cleanrl/ddpg_continuous_action_jax.py.txt",
+      "sha256": "7a07e6bfd611bbb8324b085f29e761f6dca184a88fc3f78e51dc11dbb4a6f7bc",
+      "git_blob": "345f1230e22eb9149bfa27cec694a7183580ce53",
+      "url": "https://github.com/vwxyzjn/cleanrl/blob/fe8d8a03c41a7ef5b523e2e354bd01c363e786bb/cleanrl/ddpg_continuous_action_jax.py"
+    },
+    "tpu_evidence": {
+      "path": "docs/rl-algorithms/ddpg.md",
+      "snapshot": "docs/rl-algorithms/ddpg.md.txt",
+      "sha256": "188eb69b292db54201380214260695f16be185ea66813b0eff773d5786cc2e6b",
+      "git_blob": "a8a8f49e2e103bc7e47ac844ea27aa3f1688d49d",
+      "url": "https://github.com/vwxyzjn/cleanrl/blob/fe8d8a03c41a7ef5b523e2e354bd01c363e786bb/docs/rl-algorithms/ddpg.md"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE.txt",
+      "sha256": "c6c269472eecb009754856b5fe1029ee53b99b986f57bf22ad7c747b04799c69",
+      "git_blob": "c4e562311a2917da1c770a80860d223965b41770",
+      "url": "https://github.com/vwxyzjn/cleanrl/blob/fe8d8a03c41a7ef5b523e2e354bd01c363e786bb/LICENSE"
+    },
+    "readme": {
+      "path": "README.md",
+      "snapshot": "README.md.txt",
+      "sha256": "874fade1a9cd053004c77579100bf12fc4223cb2bbc03d0b3bd1356ab30b55a5",
+      "git_blob": "109427f99fcaad614e991719cc202fa4850dd444",
+      "url": "https://github.com/vwxyzjn/cleanrl/blob/fe8d8a03c41a7ef5b523e2e354bd01c363e786bb/README.md"
+    }
+  }
+}

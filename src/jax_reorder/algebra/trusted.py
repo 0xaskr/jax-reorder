@@ -385,6 +385,20 @@ def compare_symbolic(
                     for point in product(*(range(n) for n in x.shape))
                 )
             if same_domain is not True:
+                # Distinct partial domains do not themselves prove inequality.
+                # A shared input may still distinguish a complete output;
+                # witness_at checks both programs' full original domains.
+                if not same_bound_expression(x.expression, y.expression):
+                    small_output = prod(x.shape) <= 64
+                    points = (
+                        product(*(range(size) for size in x.shape))
+                        if small_output
+                        else _witness_points(x.shape)
+                    )
+                    for point in islice(points, 64 if small_output else 16):
+                        witnessed = witness_at(output, point, x, y)
+                        if witnessed is not None:
+                            return witnessed
                 domain_unknown = True
                 continue
             if da == sp.false:

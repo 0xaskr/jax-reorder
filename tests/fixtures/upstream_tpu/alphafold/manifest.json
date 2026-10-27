@@ -1,0 +1,35 @@
+{
+  "repository": "google-deepmind/alphafold",
+  "revision": "c77e5d2a8961d1a353632c462914ff0a32a950f6",
+  "license": "Apache-2.0",
+  "files": {
+    "utils": {
+      "path": "alphafold/model/utils.py",
+      "snapshot": "alphafold/model/utils.py.txt",
+      "sha256": "6bf912ce7c18fecd628e12262029bace72095274bedc0da9ab09630d0ddcdc66",
+      "git_blob": "42c08ef9d7d8b742b7e5d018a8f57f677d66b719",
+      "url": "https://github.com/google-deepmind/alphafold/blob/c77e5d2a8961d1a353632c462914ff0a32a950f6/alphafold/model/utils.py"
+    },
+    "folding": {
+      "path": "alphafold/model/folding.py",
+      "snapshot": "alphafold/model/folding.py.txt",
+      "sha256": "b83c2519a5668dcaacd9e9ba41cc5b17f5db3b34fa087c48020d2e8da565efe1",
+      "git_blob": "64506dfa6f7048211b17e12dd95b7d7164d41416",
+      "url": "https://github.com/google-deepmind/alphafold/blob/c77e5d2a8961d1a353632c462914ff0a32a950f6/alphafold/model/folding.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "url": "https://github.com/google-deepmind/alphafold/blob/c77e5d2a8961d1a353632c462914ff0a32a950f6/LICENSE"
+    },
+    "readme": {
+      "path": "README.md",
+      "snapshot": "README.md.txt",
+      "sha256": "39a82c6f8ecfaf16872275167e98ff00109321f8de150edf5212dc9ed36f3763",
+      "git_blob": "e0d1aa1089b71fcfa8a08c71fce85bac5a1d715d",
+      "url": "https://github.com/google-deepmind/alphafold/blob/c77e5d2a8961d1a353632c462914ff0a32a950f6/README.md"
+    }
+  }
+}

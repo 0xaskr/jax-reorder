@@ -48,6 +48,24 @@ def traced(fn, size=1024, inputs=1):
     return jax.make_jaxpr(fn)(*(jax.ShapeDtypeStruct((size,), jnp.float32),) * inputs)
 
 
+@pytest.mark.parametrize("scope", ["function", "device_local"])
+@pytest.mark.parametrize("wrong_scale", [False, True])
+def test_rsqrt_pallas_math_keeps_positive_domain_and_scale(scope, wrong_scale):
+    left = pointwise(lambda x: jax.lax.rsqrt(x * x + 1), size=128)
+    right = pointwise(lambda x: (2 if wrong_scale else 1) / jnp.sqrt(x * x + 1), size=128)
+    result = compare_functions(left, right, jax.ShapeDtypeStruct((128,), jnp.float32), scope=scope)
+    assert result.status == (Status.INEQUIVALENT if wrong_scale else Status.EQUIVALENT)
+    assert "rsqrt" in result.modes[0].algebra.rules
+
+
+@pytest.mark.parametrize("scope", ["function", "device_local"])
+def test_rsqrt_pallas_undefined_input_cannot_cancel_to_zero(scope):
+    left = pointwise(lambda x: jax.lax.rsqrt(x) * 0, size=128)
+    right = pointwise(jnp.zeros_like, size=128)
+    with pytest.raises(MathematicalUndecidedError):
+        compare_functions(left, right, jax.ShapeDtypeStruct((128,), jnp.float32), scope=scope)
+
+
 def test_shared_address_coordinates_keep_source_ports_and_output_offsets():
     import sympy as sp
 

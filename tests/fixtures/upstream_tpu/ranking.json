@@ -1,0 +1,1924 @@
+{
+  "observed_on": "2026-10-27",
+  "recorded_at_utc": "2026-10-26T17:05:31.760881+00:00",
+  "criterion": "Descending GitHub stars among inspected open-source repositories with in-tree JAX/Pallas computational implementations and explicit TPU evidence; archived and retained legacy code eligible. Teaching repositories containing actual computational source are eligible; documentation-only lists or empty TPU headings are not implementations.",
+  "limitations": [
+    "This is a reproducible research snapshot of the documented discovery queries and manual source checks, not a GitHub-wide completeness theorem.",
+    "Stars may change during retrieval; snapshots pin each tested source independently of ranking observation.",
+    "Repository inclusion does not imply full model/whole repository validation or availability of TPU hardware.",
+    "Discovery hits from resource lists and unrelated frameworks are explicitly marked metadata triage; no claim is made that every line of those repositories was audited."
+  ],
+  "searches": [
+    {
+      "query": "tpu in:name,description,readme stars:>5000 archived:false",
+      "total_count": 72,
+      "returned": 72,
+      "sort": "Search results retained as returned; the selected list is independently sorted by observed stars.",
+      "candidates": [
+        {
+          "repository": "ripienaar/free-for-dev",
+          "stars": 140061
+        },
+        {
+          "repository": "vllm-project/vllm",
+          "stars": 95599
+        },
+        {
+          "repository": "tensorflow/models",
+          "stars": 77650
+        },
+        {
+          "repository": "keras-team/keras",
+          "stars": 64390
+        },
+        {
+          "repository": "sgl-project/sglang",
+          "stars": 38204
+        },
+        {
+          "repository": "huggingface/pytorch-image-models",
+          "stars": 37249
+        },
+        {
+          "repository": "hankcs/HanLP",
+          "stars": 36530
+        },
+        {
+          "repository": "jax-ml/jax",
+          "stars": 36503
+        },
+        {
+          "repository": "mli/paper-reading",
+          "stars": 34019
+        },
+        {
+          "repository": "Lightning-AI/pytorch-lightning",
+          "stars": 31433
+        },
+        {
+          "repository": "google-research/tuning_playbook",
+          "stars": 30402
+        },
+        {
+          "repository": "academic/awesome-datascience",
+          "stars": 30240
+        },
+        {
+          "repository": "ageron/handson-ml2",
+          "stars": 29955
+        },
+        {
+          "repository": "harvard-edge/cs249r_book",
+          "stars": 29678
+        },
+        {
+          "repository": "liguodongiot/llm-action",
+          "stars": 25225
+        },
+        {
+          "repository": "djsime1/awesome-flipperzero",
+          "stars": 24554
+        },
+        {
+          "repository": "huggingface/peft",
+          "stars": 21851
+        },
+        {
+          "repository": "google/skills",
+          "stars": 21585
+        },
+        {
+          "repository": "EthicalML/awesome-production-machine-learning",
+          "stars": 21040
+        },
+        {
+          "repository": "nari-labs/dia",
+          "stars": 19406
+        },
+        {
+          "repository": "hashicorp/nomad",
+          "stars": 17039
+        },
+        {
+          "repository": "bharathgs/Awesome-pytorch-list",
+          "stars": 16728
+        },
+        {
+          "repository": "huggingface/transformers.js",
+          "stars": 16379
+        },
+        {
+          "repository": "zai-org/ChatGLM2-6B",
+          "stars": 15492
+        },
+        {
+          "repository": "paperswithbacktest/awesome-systematic-trading",
+          "stars": 14989
+        },
+        {
+          "repository": "borisdayma/dalle-mini",
+          "stars": 14717
+        },
+        {
+          "repository": "visenger/awesome-mlops",
+          "stars": 14253
+        },
+        {
+          "repository": "Lightning-AI/litgpt",
+          "stars": 13729
+        },
+        {
+          "repository": "zai-org/ChatGLM3",
+          "stars": 13637
+        },
+        {
+          "repository": "adam-maj/tiny-gpu",
+          "stars": 13136
+        },
+        {
+          "repository": "jina-ai/clip-as-service",
+          "stars": 12832
+        },
+        {
+          "repository": "google-research/vision_transformer",
+          "stars": 12762
+        },
+        {
+          "repository": "ritchieng/the-incredible-pytorch",
+          "stars": 12670
+        },
+        {
+          "repository": "FareedKhan-dev/train-llm-from-scratch",
+          "stars": 12503
+        },
+        {
+          "repository": "NielsRogge/Transformers-Tutorials",
+          "stars": 11774
+        },
+        {
+          "repository": "skypilot-org/skypilot",
+          "stars": 10751
+        },
+        {
+          "repository": "vwxyzjn/cleanrl",
+          "stars": 10607
+        },
+        {
+          "repository": "ymcui/Chinese-BERT-wwm",
+          "stars": 10232
+        },
+        {
+          "repository": "google-deepmind/sonnet",
+          "stars": 9977
+        },
+        {
+          "repository": "huggingface/accelerate",
+          "stars": 9926
+        },
+        {
+          "repository": "lyhue1991/eat_tensorflow2_in_30_days",
+          "stars": 9908
+        },
+        {
+          "repository": "unit8co/darts",
+          "stars": 9562
+        },
+        {
+          "repository": "dair-ai/ML-Papers-Explained",
+          "stars": 8908
+        },
+        {
+          "repository": "vahidk/EffectiveTensorflow",
+          "stars": 8578
+        },
+        {
+          "repository": "priyankavergadia/google-cloud-4-words",
+          "stars": 8221
+        },
+        {
+          "repository": "TheRobotStudio/SO-ARM100",
+          "stars": 7884
+        },
+        {
+          "repository": "google-deepmind/weathernext",
+          "stars": 7722
+        },
+        {
+          "repository": "HenryNdubuaku/maths-cs-ai-compendium",
+          "stars": 7670
+        },
+        {
+          "repository": "openlm-research/open_llama",
+          "stars": 7518
+        },
+        {
+          "repository": "LargeWorldModel/LWM",
+          "stars": 7424
+        },
+        {
+          "repository": "google/flax",
+          "stars": 7357
+        },
+        {
+          "repository": "probml/pyprobml",
+          "stars": 7170
+        },
+        {
+          "repository": "google-research/text-to-text-transfer-transformer",
+          "stars": 6561
+        },
+        {
+          "repository": "promptslab/Awesome-Prompt-Engineering",
+          "stars": 6409
+        },
+        {
+          "repository": "aymericdamien/TopDeepLearning",
+          "stars": 6392
+        },
+        {
+          "repository": "kingoflolz/mesh-transformer-jax",
+          "stars": 6389
+        },
+        {
+          "repository": "ikaijua/Awesome-AITools",
+          "stars": 6251
+        },
+        {
+          "repository": "zihangdai/xlnet",
+          "stars": 6191
+        },
+        {
+          "repository": "tensorchord/Awesome-LLMOps",
+          "stars": 5967
+        },
+        {
+          "repository": "google-deepmind/gemma",
+          "stars": 5816
+        },
+        {
+          "repository": "jeffheaton/t81_558_deep_learning",
+          "stars": 5731
+        },
+        {
+          "repository": "leela-zero/leela-zero",
+          "stars": 5591
+        },
+        {
+          "repository": "googleapis/google-cloud-python",
+          "stars": 5414
+        },
+        {
+          "repository": "bojone/bert4keras",
+          "stars": 5410
+        },
+        {
+          "repository": "ashleve/lightning-hydra-template",
+          "stars": 5374
+        },
+        {
+          "repository": "hojonathanho/diffusion",
+          "stars": 5352
+        },
+        {
+          "repository": "wangzhe3224/awesome-systematic-trading",
+          "stars": 5338
+        },
+        {
+          "repository": "kelvins/awesome-mlops",
+          "stars": 5296
+        },
+        {
+          "repository": "tensorflow/tpu",
+          "stars": 5282
+        },
+        {
+          "repository": "salesforce/CodeGen",
+          "stars": 5187
+        },
+        {
+          "repository": "priyankavergadia/GCPSketchnote",
+          "stars": 5111
+        },
+        {
+          "repository": "llm-d/llm-d",
+          "stars": 5033
+        }
+      ]
+    },
+    {
+      "query": "jax in:name,description,readme stars:>5000 archived:false",
+      "total_count": 106,
+      "returned": 100,
+      "sort": "Search results retained as returned; the selected list is independently sorted by observed stars.",
+      "candidates": [
+        {
+          "repository": "sindresorhus/awesome",
+          "stars": 525028
+        },
+        {
+          "repository": "vinta/awesome-python",
+          "stars": 330411
+        },
+        {
+          "repository": "huggingface/transformers",
+          "stars": 168196
+        },
+        {
+          "repository": "ripienaar/free-for-dev",
+          "stars": 140061
+        },
+        {
+          "repository": "fighting41love/funNLP",
+          "stars": 84170
+        },
+        {
+          "repository": "josephmisiti/awesome-machine-learning",
+          "stars": 74665
+        },
+        {
+          "repository": "rohitg00/ai-engineering-from-scratch",
+          "stars": 74227
+        },
+        {
+          "repository": "labmlai/annotated_deep_learning_paper_implementations",
+          "stars": 67600
+        },
+        {
+          "repository": "keras-team/keras",
+          "stars": 64390
+        },
+        {
+          "repository": "xai-org/grok-1",
+          "stars": 52220
+        },
+        {
+          "repository": "akullpp/awesome-java",
+          "stars": 49358
+        },
+        {
+          "repository": "sgl-project/sglang",
+          "stars": 38204
+        },
+        {
+          "repository": "HKUDS/Vibe-Trading",
+          "stars": 36734
+        },
+        {
+          "repository": "jax-ml/jax",
+          "stars": 36503
+        },
+        {
+          "repository": "mli/paper-reading",
+          "stars": 34019
+        },
+        {
+          "repository": "tinygrad/tinygrad",
+          "stars": 33795
+        },
+        {
+          "repository": "xai-org/x-algorithm",
+          "stars": 33793
+        },
+        {
+          "repository": "lutzroeder/netron",
+          "stars": 33614
+        },
+        {
+          "repository": "google-research/tuning_playbook",
+          "stars": 30402
+        },
+        {
+          "repository": "academic/awesome-datascience",
+          "stars": 30240
+        },
+        {
+          "repository": "ChristosChristofidis/awesome-deep-learning",
+          "stars": 29101
+        },
+        {
+          "repository": "ml-explore/mlx",
+          "stars": 28944
+        },
+        {
+          "repository": "Hannibal046/Awesome-LLM",
+          "stars": 27452
+        },
+        {
+          "repository": "OpenAPITools/openapi-generator",
+          "stars": 26829
+        },
+        {
+          "repository": "lucidrains/vit-pytorch",
+          "stars": 25553
+        },
+        {
+          "repository": "Dujltqzv/Some-Many-Books",
+          "stars": 25260
+        },
+        {
+          "repository": "timqian/chinese-independent-blogs",
+          "stars": 24307
+        },
+        {
+          "repository": "lukasmasuch/best-of-ml-python",
+          "stars": 23847
+        },
+        {
+          "repository": "marimo-team/marimo",
+          "stars": 23326
+        },
+        {
+          "repository": "huggingface/datasets",
+          "stars": 22089
+        },
+        {
+          "repository": "EthicalML/awesome-production-machine-learning",
+          "stars": 21040
+        },
+        {
+          "repository": "fchollet/deep-learning-with-python-notebooks",
+          "stars": 20352
+        },
+        {
+          "repository": "unixorn/awesome-zsh-plugins",
+          "stars": 18092
+        },
+        {
+          "repository": "swagger-api/swagger-codegen",
+          "stars": 17792
+        },
+        {
+          "repository": "huggingface/transformers.js",
+          "stars": 16379
+        },
+        {
+          "repository": "quarkusio/quarkus",
+          "stars": 15963
+        },
+        {
+          "repository": "google-deepmind/mujoco",
+          "stars": 15904
+        },
+        {
+          "repository": "jobbole/awesome-java-cn",
+          "stars": 15677
+        },
+        {
+          "repository": "paperswithbacktest/awesome-systematic-trading",
+          "stars": 14989
+        },
+        {
+          "repository": "google-deepmind/alphafold",
+          "stars": 14911
+        },
+        {
+          "repository": "borisdayma/dalle-mini",
+          "stars": 14717
+        },
+        {
+          "repository": "fauxpilot/fauxpilot",
+          "stars": 14671
+        },
+        {
+          "repository": "mfornos/awesome-microservices",
+          "stars": 14552
+        },
+        {
+          "repository": "Physical-Intelligence/openpi",
+          "stars": 14411
+        },
+        {
+          "repository": "cactus-compute/needle",
+          "stars": 14326
+        },
+        {
+          "repository": "EleutherAI/lm-evaluation-harness",
+          "stars": 14319
+        },
+        {
+          "repository": "unifyai/ivy",
+          "stars": 14170
+        },
+        {
+          "repository": "DLR-RM/stable-baselines3",
+          "stars": 13936
+        },
+        {
+          "repository": "eugeneyan/open-llms",
+          "stars": 12888
+        },
+        {
+          "repository": "google-research/vision_transformer",
+          "stars": 12762
+        },
+        {
+          "repository": "ritchieng/the-incredible-pytorch",
+          "stars": 12670
+        },
+        {
+          "repository": "diff-usion/Awesome-Diffusion-Models",
+          "stars": 12380
+        },
+        {
+          "repository": "RUCAIBox/LLMSurvey",
+          "stars": 12229
+        },
+        {
+          "repository": "cleanlab/cleanlab",
+          "stars": 11720
+        },
+        {
+          "repository": "serverless/examples",
+          "stars": 11512
+        },
+        {
+          "repository": "lucidrains/DALLE2-pytorch",
+          "stars": 11305
+        },
+        {
+          "repository": "huggingface/tokenizers",
+          "stars": 11203
+        },
+        {
+          "repository": "openvinotoolkit/openvino",
+          "stars": 11070
+        },
+        {
+          "repository": "mathjax/MathJax",
+          "stars": 10943
+        },
+        {
+          "repository": "google/dopamine",
+          "stars": 10929
+        },
+        {
+          "repository": "skypilot-org/skypilot",
+          "stars": 10751
+        },
+        {
+          "repository": "NVIDIA/cutlass",
+          "stars": 10659
+        },
+        {
+          "repository": "vwxyzjn/cleanrl",
+          "stars": 10607
+        },
+        {
+          "repository": "satellite-image-deep-learning/techniques",
+          "stars": 10292
+        },
+        {
+          "repository": "kyutai-labs/pocket-tts",
+          "stars": 10079
+        },
+        {
+          "repository": "aikorea/awesome-rl",
+          "stars": 10025
+        },
+        {
+          "repository": "huggingface/accelerate",
+          "stars": 9926
+        },
+        {
+          "repository": "FasterXML/jackson",
+          "stars": 9835
+        },
+        {
+          "repository": "pymc-devs/pymc",
+          "stars": 9826
+        },
+        {
+          "repository": "OpenFeign/feign",
+          "stars": 9800
+        },
+        {
+          "repository": "arogozhnikov/einops",
+          "stars": 9626
+        },
+        {
+          "repository": "ai-boost/awesome-prompts",
+          "stars": 9139
+        },
+        {
+          "repository": "google-deepmind/alphafold3",
+          "stars": 8684
+        },
+        {
+          "repository": "google-deepmind/weathernext",
+          "stars": 7722
+        },
+        {
+          "repository": "anaibol/awesome-serverless",
+          "stars": 7591
+        },
+        {
+          "repository": "swagger-api/swagger-core",
+          "stars": 7532
+        },
+        {
+          "repository": "openlm-research/open_llama",
+          "stars": 7518
+        },
+        {
+          "repository": "LargeWorldModel/LWM",
+          "stars": 7424
+        },
+        {
+          "repository": "google/flax",
+          "stars": 7357
+        },
+        {
+          "repository": "NVIDIA/warp",
+          "stars": 7244
+        },
+        {
+          "repository": "flwrlabs/flower",
+          "stars": 7184
+        },
+        {
+          "repository": "probml/pyprobml",
+          "stars": 7170
+        },
+        {
+          "repository": "facebook/pyrefly",
+          "stars": 7149
+        },
+        {
+          "repository": "deepchem/deepchem",
+          "stars": 7091
+        },
+        {
+          "repository": "google/gemma.cpp",
+          "stars": 7066
+        },
+        {
+          "repository": "gilbarbara/logos",
+          "stars": 6849
+        },
+        {
+          "repository": "awesome-NeRF/awesome-NeRF",
+          "stars": 6771
+        },
+        {
+          "repository": "google-research/text-to-text-transfer-transformer",
+          "stars": 6561
+        },
+        {
+          "repository": "cleverhans-lab/cleverhans",
+          "stars": 6459
+        },
+        {
+          "repository": "promptslab/Awesome-Prompt-Engineering",
+          "stars": 6409
+        },
+        {
+          "repository": "aymericdamien/TopDeepLearning",
+          "stars": 6392
+        },
+        {
+          "repository": "kingoflolz/mesh-transformer-jax",
+          "stars": 6389
+        },
+        {
+          "repository": "maziarraissi/PINNs",
+          "stars": 6223
+        },
+        {
+          "repository": "Vedenin/useful-java-links",
+          "stars": 6210
+        },
+        {
+          "repository": "tensorchord/Awesome-LLMOps",
+          "stars": 5967
+        },
+        {
+          "repository": "google-deepmind/gemma",
+          "stars": 5816
+        },
+        {
+          "repository": "NVIDIA/DALI",
+          "stars": 5785
+        },
+        {
+          "repository": "cxxr/better-java",
+          "stars": 5740
+        },
+        {
+          "repository": "sapientinc/PRAXIST",
+          "stars": 5584
+        },
+        {
+          "repository": "RLinf/RLinf",
+          "stars": 5508
+        }
+      ]
+    },
+    {
+      "query": "tpu in:name,description,readme stars:>7700 archived:true",
+      "total_count": 7,
+      "returned": 7,
+      "sort": "Search results retained as returned; the selected list is independently sorted by observed stars.",
+      "candidates": [
+        {
+          "repository": "google-research/bert",
+          "stars": 40040
+        },
+        {
+          "repository": "EleutherAI/gpt-neo",
+          "stars": 8252
+        },
+        {
+          "repository": "facebookresearch/mae",
+          "stars": 8360
+        },
+        {
+          "repository": "tensorflow/tensor2tensor",
+          "stars": 17476
+        },
+        {
+          "repository": "facebookresearch/DiT",
+          "stars": 8676
+        },
+        {
+          "repository": "google/trax",
+          "stars": 8304
+        },
+        {
+          "repository": "huggingface/text-generation-inference",
+          "stars": 10882
+        }
+      ]
+    },
+    {
+      "query": "pallas in:name,description,readme stars:>7700",
+      "total_count": 2,
+      "returned": 2,
+      "sort": "Search results retained as returned; the selected list is independently sorted by observed stars.",
+      "candidates": [
+        {
+          "repository": "sgl-project/sglang",
+          "stars": 38203
+        },
+        {
+          "repository": "PaddlePaddle/PaddleSpeech",
+          "stars": 12698
+        }
+      ]
+    }
+  ],
+  "selected": [
+    {
+      "fixture": "ai_engineering",
+      "repository": "rohitg00/ai-engineering-from-scratch",
+      "stars": 74254,
+      "archived": false,
+      "ranking_revision": "3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a",
+      "tested_revision": "3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a",
+      "qualification": "Complete in-tree JAX MNIST MLP/train implementation; matching JAX chapter documents Google Cloud TPU installation. Teaching repositories with real computational source are included.",
+      "evidence": [
+        "https://github.com/rohitg00/ai-engineering-from-scratch/blob/3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a/phases/03-deep-learning-core/12-intro-to-jax/code/jax_intro.py",
+        "https://github.com/rohitg00/ai-engineering-from-scratch/blob/3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a/phases/03-deep-learning-core/12-intro-to-jax/docs/en.md"
+      ],
+      "rank": 1
+    },
+    {
+      "fixture": "keras",
+      "repository": "keras-team/keras",
+      "stars": 64390,
+      "archived": false,
+      "ranking_revision": "b83168cc3e6e04c3b2b0e6ff521f4e58c018160d",
+      "tested_revision": "cfebb2af8a202fcb31b8b86766f44eabe6295a7a",
+      "qualification": "JAX backend BatchNorm/attention and TPU CI; native Splash wrapper",
+      "evidence": [
+        "https://github.com/keras-team/keras/blob/cfebb2af8a202fcb31b8b86766f44eabe6295a7a/.github/workflows/tpu_tests.yml",
+        "https://github.com/keras-team/keras/blob/cfebb2af8a202fcb31b8b86766f44eabe6295a7a/keras/src/backend/jax/ops/nn.py"
+      ],
+      "version_note": "Tested fixed source snapshot; default branch advanced during research.",
+      "rank": 2
+    },
+    {
+      "fixture": "google_research",
+      "repository": "google-research/google-research",
+      "stars": 39037,
+      "archived": false,
+      "ranking_revision": "0f585ccae259c32a877edfd48362c18a0010545f",
+      "tested_revision": "0f585ccae259c32a877edfd48362c18a0010545f",
+      "qualification": "ALX JAX psum TPU implementation and IMP Performer",
+      "evidence": [
+        "https://github.com/google-research/google-research/blob/0f585ccae259c32a877edfd48362c18a0010545f/alx/README.md",
+        "https://github.com/google-research/google-research/blob/0f585ccae259c32a877edfd48362c18a0010545f/alx/als.py"
+      ],
+      "rank": 3
+    },
+    {
+      "fixture": "jax",
+      "repository": "jax-ml/jax",
+      "stars": 36503,
+      "archived": false,
+      "ranking_revision": "1fc5157820a209f1ae779e46be1288d217a53292",
+      "tested_revision": "32544801e26115ac1794926d027148abf3baf009",
+      "qualification": "JAX framework and native TPU Pallas matmul",
+      "evidence": [
+        "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/experimental/pallas/ops/tpu/matmul.py",
+        "https://github.com/jax-ml/jax/blob/32544801e26115ac1794926d027148abf3baf009/jax/_src/nn/functions.py"
+      ],
+      "version_note": "Tested pinned JAX 0.11.2 source matching the installed execution environment; ranking uses the observed repository.",
+      "rank": 4
+    },
+    {
+      "fixture": "diffusers",
+      "repository": "huggingface/diffusers",
+      "stars": 34816,
+      "archived": false,
+      "ranking_revision": "3b56af0c5268049588cf470e38955f4c18002498",
+      "tested_revision": "3b56af0c5268049588cf470e38955f4c18002498",
+      "qualification": "Retained legacy Flax TPU ControlNet training helpers; current main package no longer ships Flax models",
+      "evidence": [
+        "https://github.com/huggingface/diffusers/blob/3b56af0c5268049588cf470e38955f4c18002498/examples/controlnet/README.md",
+        "https://github.com/huggingface/diffusers/blob/3b56af0c5268049588cf470e38955f4c18002498/examples/controlnet/train_controlnet_flax.py"
+      ],
+      "rank": 5
+    },
+    {
+      "fixture": "mujoco",
+      "repository": "google-deepmind/mujoco",
+      "stars": 15905,
+      "archived": false,
+      "ranking_revision": "a72c9b84d003a1980a651a271a04edafde93d7e5",
+      "tested_revision": "a72c9b84d003a1980a651a271a04edafde93d7e5",
+      "qualification": "MJX-JAX implements MuJoCo in JAX; upstream doc/mjx.rst explicitly supports Google Cloud TPUs and reports v5 TPU benchmarks.",
+      "evidence": [
+        "https://github.com/google-deepmind/mujoco/blob/a72c9b84d003a1980a651a271a04edafde93d7e5/doc/mjx.rst",
+        "https://github.com/google-deepmind/mujoco/blob/a72c9b84d003a1980a651a271a04edafde93d7e5/mjx/mujoco/mjx/_src/math.py"
+      ],
+      "rank": 6
+    },
+    {
+      "fixture": "alphafold",
+      "repository": "google-deepmind/alphafold",
+      "stars": 14911,
+      "archived": false,
+      "ranking_revision": "c77e5d2a8961d1a353632c462914ff0a32a950f6",
+      "tested_revision": "c77e5d2a8961d1a353632c462914ff0a32a950f6",
+      "qualification": "JAX geometry explicitly avoids low-precision TPU matmul",
+      "evidence": [
+        "https://github.com/google-deepmind/alphafold/blob/c77e5d2a8961d1a353632c462914ff0a32a950f6/alphafold/model/folding.py",
+        "https://github.com/google-deepmind/alphafold/blob/c77e5d2a8961d1a353632c462914ff0a32a950f6/alphafold/model/utils.py"
+      ],
+      "rank": 7
+    },
+    {
+      "fixture": "dalle_mini",
+      "repository": "borisdayma/dalle-mini",
+      "stars": 14717,
+      "archived": false,
+      "ranking_revision": "f0be4de610285a002052024a1e096126f9452cc4",
+      "tested_revision": "f0be4de610285a002052024a1e096126f9452cc4",
+      "qualification": "JAX/Flax model and TPU training",
+      "evidence": [
+        "https://github.com/borisdayma/dalle-mini/blob/f0be4de610285a002052024a1e096126f9452cc4/README.md",
+        "https://github.com/borisdayma/dalle-mini/blob/f0be4de610285a002052024a1e096126f9452cc4/src/dalle_mini/model/modeling.py"
+      ],
+      "rank": 8
+    },
+    {
+      "fixture": "vision_transformer",
+      "repository": "google-research/vision_transformer",
+      "stars": 12762,
+      "archived": false,
+      "ranking_revision": "64801f1b3b367b3611cc27a3d45cc22870a36fb3",
+      "tested_revision": "64801f1b3b367b3611cc27a3d45cc22870a36fb3",
+      "qualification": "Flax/JAX ViT implementation and documented TPU training",
+      "evidence": [
+        "https://github.com/google-research/vision_transformer/blob/64801f1b3b367b3611cc27a3d45cc22870a36fb3/README.md",
+        "https://github.com/google-research/vision_transformer/blob/64801f1b3b367b3611cc27a3d45cc22870a36fb3/vit_jax/models_vit.py"
+      ],
+      "rank": 9
+    },
+    {
+      "fixture": "cleanrl",
+      "repository": "vwxyzjn/cleanrl",
+      "stars": 10608,
+      "archived": false,
+      "ranking_revision": "fe8d8a03c41a7ef5b523e2e354bd01c363e786bb",
+      "tested_revision": "fe8d8a03c41a7ef5b523e2e354bd01c363e786bb",
+      "qualification": "JAX DDPG actor and documented VM-with-TPU experiment",
+      "evidence": [
+        "https://github.com/vwxyzjn/cleanrl/blob/fe8d8a03c41a7ef5b523e2e354bd01c363e786bb/docs/rl-algorithms/ddpg.md",
+        "https://github.com/vwxyzjn/cleanrl/blob/fe8d8a03c41a7ef5b523e2e354bd01c363e786bb/cleanrl/ddpg_continuous_action_jax.py"
+      ],
+      "rank": 10
+    }
+  ],
+  "excluded": [
+    {
+      "repository": "huggingface/transformers",
+      "reason": "Current tree removed Flax examples/model implementations; current TPU path is Torch, not an in-tree JAX implementation."
+    },
+    {
+      "repository": "vllm-project/vllm",
+      "reason": "TPU platform delegates to the external tpu_inference package; external implementation not attributed to this repository."
+    },
+    {
+      "repository": "tensorflow/models",
+      "reason": "Reviewed TPU implementations are TensorFlow; JAX hits are references/migration notes."
+    },
+    {
+      "repository": "xai-org/grok-1",
+      "reason": "JAX model present; no explicit TPU implementation/support evidence found in reviewed source/README."
+    },
+    {
+      "repository": "sgl-project/sglang",
+      "reason": "TPU docs point to separate sglang-jax/sglang-torchtpu repositories; external source not counted as main-repo implementation."
+    },
+    {
+      "repository": "xai-org/x-algorithm",
+      "reason": "Reviewed Pallas kernels target Triton/GPU; no TPU implementation evidence."
+    },
+    {
+      "repository": "Physical-Intelligence/openpi",
+      "reason": "JAX model present; reviewed training/model/sharding files do not establish TPU support."
+    },
+    {
+      "repository": "unifyai/ivy",
+      "reason": "Current JAX backend explicitly lists tpu in invalid_devices."
+    },
+    {
+      "repository": "jina-ai/clip-as-service",
+      "reason": "TPU mentioned in Colab instructions; no JAX implementation found by code search."
+    },
+    {
+      "repository": "google/dopamine",
+      "reason": "JAX agents present; reviewed TPU-specific implementation is in the TensorFlow tfagents path."
+    },
+    {
+      "repository": "skypilot-org/skypilot",
+      "reason": "Reviewed JAX example installs jax[tpu] and prints devices; orchestration/external projects do not supply an in-tree computational layer/function."
+    },
+    {
+      "repository": "pymc-devs/pymc",
+      "reason": "Generic JAX sampler is insufficient by itself to establish a TPU implementation; no explicit TPU evidence found in reviewed README/JAX path."
+    },
+    {
+      "repository": "arogozhnikov/einops",
+      "reason": "Generic JAX backend; no explicit TPU implementation/support evidence found in reviewed material."
+    },
+    {
+      "repository": "google-research/bert",
+      "reason": "Archived TPU implementation is TensorFlow, no import jax code search hits."
+    },
+    {
+      "repository": "tensorflow/tensor2tensor",
+      "reason": "Archived TPU implementation is TensorFlow, no import jax code search hits."
+    },
+    {
+      "repository": "huggingface/text-generation-inference",
+      "reason": "No import jax implementation found in current source."
+    },
+    {
+      "repository": "facebookresearch/DiT",
+      "reason": "Archived model is PyTorch, no import jax implementation found."
+    },
+    {
+      "repository": "facebookresearch/mae",
+      "reason": "Archived model is PyTorch, no import jax implementation found."
+    },
+    {
+      "repository": "EleutherAI/gpt-neo",
+      "reason": "Archived TPU code uses Mesh TensorFlow rather than JAX/Pallas."
+    },
+    {
+      "repository": "sindresorhus/awesome",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "😎 Awesome lists about all kinds of interesting topics [NOTE: Pull requests are temporarily disabled until I have a chance to catch up with the existing ones]",
+      "stars": 525028
+    },
+    {
+      "repository": "vinta/awesome-python",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "The definitive list that answers \"I want to do X in Python, which tool should I use?\"",
+      "stars": 330411
+    },
+    {
+      "repository": "ripienaar/free-for-dev",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A list of SaaS, PaaS and IaaS offerings that have free tiers of interest to devops and infradev",
+      "stars": 140061
+    },
+    {
+      "repository": "fighting41love/funNLP",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "中英文敏感词、语言检测、中外手机/电话归属地/运营商查询、名字推断性别、手机号抽取、身份证抽取、邮箱抽取、中日文人名库、中文缩写库、拆字词典、词汇情感值、停用词、反动词表、暴恐词表、繁简体转换、英文模拟中文发音、汪峰歌词生成器、职业名称词库、同义词库、反义词库、否定词库、汽车品牌词库、汽车零件词库、连续英文切割、各种中文词向量、公司名字大全、古诗词库、IT词库、财经词库、成语词库、地名词库、历史名人词库、诗词词库、医学词库、饮食词库、法律词库、汽车词库、动物词库、中文聊天语料、中文谣言数据、百度中文问答数据集、句子",
+      "stars": 84170
+    },
+    {
+      "repository": "josephmisiti/awesome-machine-learning",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A curated list of awesome Machine Learning frameworks, libraries and software.",
+      "stars": 74665
+    },
+    {
+      "repository": "labmlai/annotated_deep_learning_paper_implementations",
+      "reason": "Complete JAX transformer tutorial found, but reviewed source and associated README provide no TPU execution/setup evidence.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/labmlai/annotated_deep_learning_paper_implementations/blob/HEAD/labml_nn/transformers/jax_transformer/__init__.py"
+      ],
+      "stars": 67600,
+      "code_search": {
+        "total_count": 1,
+        "paths": [
+          "labml_nn/transformers/jax_transformer/__init__.py"
+        ]
+      }
+    },
+    {
+      "repository": "akullpp/awesome-java",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A curated list of awesome frameworks, libraries and software for the Java programming language.",
+      "stars": 49358
+    },
+    {
+      "repository": "huggingface/pytorch-image-models",
+      "reason": "JAX text matches concern pretrained-weight conversion/references; the computational model backend is PyTorch.",
+      "inspection": "source/code-search audit",
+      "description": "The largest collection of PyTorch image encoders / backbones. Including train, eval, inference, export scripts, and pretrained weights -- ResNet, ResNeXT, EfficientNet, NFNet, Vision Transformer (ViT), MobileNetV4, MobileNet-V3 & V2, RegNet, DPN, CSPNet, Swin ",
+      "stars": 37249,
+      "evidence": [
+        "https://github.com/huggingface/pytorch-image-models/blob/HEAD/timm/models/vision_transformer.py"
+      ]
+    },
+    {
+      "repository": "HKUDS/Vibe-Trading",
+      "reason": "JAX hits are changelog/dependency text, not a computational implementation.",
+      "inspection": "GitHub code-search paths",
+      "stars": 36734,
+      "code_search": {
+        "total_count": 2,
+        "paths": [
+          "CHANGELOG.md",
+          "frontend/package-lock.json"
+        ]
+      }
+    },
+    {
+      "repository": "hankcs/HanLP",
+      "reason": "No JAX code-search hits; no in-tree JAX/Pallas implementation established in this discovery snapshot.",
+      "inspection": "GitHub code search",
+      "stars": 36530,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "mli/paper-reading",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "深度学习经典、新论文逐段精读",
+      "stars": 34019
+    },
+    {
+      "repository": "tinygrad/tinygrad",
+      "reason": "No import jax code-search hits; its own tensor/compiler backend is not JAX/Pallas.",
+      "inspection": "code search and cited local source where present",
+      "stars": 33795,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "lutzroeder/netron",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Visualizer for neural network, deep learning and machine learning models",
+      "stars": 33614
+    },
+    {
+      "repository": "Lightning-AI/pytorch-lightning",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Pretrain, finetune ANY AI model of ANY size on 1 or 10,000+ GPUs with zero code changes.",
+      "stars": 31433
+    },
+    {
+      "repository": "google-research/tuning_playbook",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A playbook for systematically maximizing the performance of deep learning models.",
+      "stars": 30402
+    },
+    {
+      "repository": "academic/awesome-datascience",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": ":memo: An awesome Data Science repository to learn and apply for real world problems.",
+      "stars": 30240
+    },
+    {
+      "repository": "ageron/handson-ml2",
+      "reason": "No JAX code-search hits; no in-tree JAX/Pallas implementation established in this discovery snapshot.",
+      "inspection": "GitHub code search",
+      "stars": 29955,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "harvard-edge/cs249r_book",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "Machine Learning Systems: Foundations, Scaling, Agentic AI, and Physical AI (Vols I–IV) • Harvard CS249r | https://mlsysbook.ai",
+      "stars": 29678
+    },
+    {
+      "repository": "ChristosChristofidis/awesome-deep-learning",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A curated list of awesome Deep Learning tutorials, projects and communities.",
+      "stars": 29101
+    },
+    {
+      "repository": "ml-explore/mlx",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "MLX: An array framework for Apple silicon",
+      "stars": 28944
+    },
+    {
+      "repository": "Hannibal046/Awesome-LLM",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "Awesome-LLM: a curated list of Large Language Model",
+      "stars": 27452
+    },
+    {
+      "repository": "OpenAPITools/openapi-generator",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "OpenAPI Generator allows generation of API client libraries (SDK generation), server stubs, documentation and configuration automatically given an OpenAPI Spec (v2, v3)",
+      "stars": 26829
+    },
+    {
+      "repository": "lucidrains/vit-pytorch",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Implementation of Vision Transformer, a simple way to achieve SOTA in vision classification with only a single transformer encoder, in Pytorch",
+      "stars": 25553
+    },
+    {
+      "repository": "Dujltqzv/Some-Many-Books",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "个人收藏书籍列表　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　",
+      "stars": 25260
+    },
+    {
+      "repository": "liguodongiot/llm-action",
+      "reason": "In-tree Alpa JAX example explicitly configures Ray GPU resources; no TPU path found in reviewed implementation.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/liguodongiot/llm-action/blob/HEAD/llm-train/alpa/train/pipeshard_parallelism.py"
+      ],
+      "stars": 25225,
+      "code_search": {
+        "total_count": 7,
+        "paths": [
+          "ai-framework/jax/README.md",
+          "ai-framework/jax/reference.md",
+          "llm-train/alpa/train/pipeshard_parallelism.py",
+          "llm-train/alpa/train/pipeshard_parallelism.ipynb",
+          "docs/llm-base/distribution-parallelism/auto-parallel/Alpa.md",
+          "docs/llm-summarize/大模型实践总结.md",
+          "docs/llm-summarize/大模型实践总结-20230930.md"
+        ]
+      }
+    },
+    {
+      "repository": "djsime1/awesome-flipperzero",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "🐬 A collection of awesome resources for the Flipper Zero device.",
+      "stars": 24554
+    },
+    {
+      "repository": "timqian/chinese-independent-blogs",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "中文独立博客列表",
+      "stars": 24307
+    },
+    {
+      "repository": "lukasmasuch/best-of-ml-python",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "🏆 A ranked list of awesome machine learning Python libraries. Updated weekly.",
+      "stars": 23847
+    },
+    {
+      "repository": "marimo-team/marimo",
+      "reason": "JAX/Flax hits are notebook formatting and output serialization; no TPU computational implementation established.",
+      "inspection": "code search and cited local source where present",
+      "stars": 23326,
+      "code_search": {
+        "total_count": 28,
+        "paths": [
+          "examples/ai/chat/README.md",
+          "README.md",
+          "docs/index.md",
+          "docs/guides/lint_rules/rules/incompatible_package.md",
+          "README_Chinese.md",
+          "README_Spanish.md",
+          "marimo/_lint/rules/wasm/incompatible_packages.py",
+          "marimo/_plugins/stateless/image.py",
+          "README_Japanese.md",
+          "README_Traditional_Chinese.md",
+          "marimo/_save/encode.py",
+          "marimo/_output/formatters/flax_formatters.py",
+          "docs/guides/exporting/webassembly_html.md",
+          "marimo/_utils/inline_script_metadata.py",
+          "pyproject.toml",
+          "frontend/src/components/editor/app-container.tsx",
+          "marimo/_output/md.py",
+          "marimo/_plugins/ui/_impl/from_panel.py",
+          "frontend/src/plugins/impl/plotly/PlotlyPlugin.tsx",
+          "mkdocs.yml",
+          "frontend/src/components/editor/cell/code/cell-editor.tsx",
+          "tests/_utils/test_inline_script_metadata.py",
+          "marimo/_smoke_tests/formatters/flax_formatters.py",
+          "tests/_save/test_hash.py",
+          "tests/_runtime/packages/test_package_utils.py",
+          "tests/_output/formatters/test_flax_formatters.py",
+          "tests/_lint/test_wasm_rules.py",
+          "tests/_cli/snapshots/export/ipynb/ipynb_with_media_outputs.txt"
+        ]
+      }
+    },
+    {
+      "repository": "huggingface/datasets",
+      "reason": "JAX code converts/places dataset arrays; reviewed JAX usage docs do not establish a TPU computational layer.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/huggingface/datasets/blob/HEAD/docs/source/use_with_jax.mdx"
+      ],
+      "stars": 22089,
+      "code_search": {
+        "total_count": 23,
+        "paths": [
+          "docs/source/use_with_jax.mdx",
+          "src/datasets/formatting/jax_formatter.py",
+          "setup.py",
+          "README.md",
+          "src/datasets/config.py",
+          "src/datasets/formatting/__init__.py",
+          "src/datasets/formatting/tf_formatter.py",
+          "src/datasets/formatting/torch_formatter.py",
+          "docs/source/use_with_spark.mdx",
+          "src/datasets/formatting/np_formatter.py",
+          "docs/source/process.mdx",
+          "docs/source/_toctree.yml",
+          "src/datasets/dataset_dict.py",
+          "src/datasets/utils/file_utils.py",
+          "src/datasets/arrow_dataset.py",
+          "src/datasets/features/features.py",
+          "src/datasets/iterable_dataset.py",
+          "src/datasets/utils/resources/languages.json",
+          "tests/utils.py",
+          "tests/test_formatting.py",
+          "tests/features/test_features.py",
+          "tests/test_arrow_dataset.py",
+          "tests/test_iterable_dataset.py"
+        ]
+      }
+    },
+    {
+      "repository": "huggingface/peft",
+      "reason": "No JAX code-search hits; no in-tree JAX/Pallas implementation established in this discovery snapshot.",
+      "inspection": "GitHub code search",
+      "stars": 21851,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "google/skills",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Agent Skills for Google products and technologies",
+      "stars": 21585
+    },
+    {
+      "repository": "EthicalML/awesome-production-machine-learning",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A curated list of awesome open source libraries to deploy, monitor, version and scale your machine learning",
+      "stars": 21040
+    },
+    {
+      "repository": "fchollet/deep-learning-with-python-notebooks",
+      "reason": "Reviewed all 16 JAX search-hit notebooks/README: TPU training appears only as two empty headings in chapter18, without a TPU computational code cell or setup; generic JAX-backed Keras examples alone do not establish the selected TPU scope.",
+      "inspection": "source/code-search audit",
+      "description": "Jupyter notebooks for the code samples of the book \"Deep Learning with Python\"",
+      "stars": 20352,
+      "evidence": [
+        "https://github.com/fchollet/deep-learning-with-python-notebooks/blob/HEAD/chapter18_best-practices-for-the-real-world.ipynb"
+      ]
+    },
+    {
+      "repository": "nari-labs/dia",
+      "reason": "JAX mentions in layers/state refer to a PyTorch port; actual implementation imports torch.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/nari-labs/dia/blob/HEAD/dia/layers.py"
+      ],
+      "stars": 19406,
+      "code_search": {
+        "total_count": 2,
+        "paths": [
+          "dia/state.py",
+          "dia/layers.py"
+        ]
+      }
+    },
+    {
+      "repository": "unixorn/awesome-zsh-plugins",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A collection of ZSH frameworks, plugins, themes and tutorials.",
+      "stars": 18092
+    },
+    {
+      "repository": "swagger-api/swagger-codegen",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "swagger-codegen contains a template-driven engine to generate documentation, API clients and server stubs in different languages by parsing your OpenAPI / Swagger definition.",
+      "stars": 17792
+    },
+    {
+      "repository": "hashicorp/nomad",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Nomad is an easy-to-use, flexible, and performant workload orchestrator that can deploy a mix of microservice, batch, containerized, and non-containerized applications. Nomad is easy to operate and scale and has native Consul and Vault integrations.",
+      "stars": 17039
+    },
+    {
+      "repository": "bharathgs/Awesome-pytorch-list",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A comprehensive list of pytorch related content on github,such as different models,implementations,helper libraries,tutorials etc.",
+      "stars": 16728
+    },
+    {
+      "repository": "huggingface/transformers.js",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "State-of-the-art Machine Learning for the web. Run 🤗 Transformers directly in your browser, with no need for a server!",
+      "stars": 16379
+    },
+    {
+      "repository": "quarkusio/quarkus",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Quarkus: Supersonic Subatomic Java. ",
+      "stars": 15963
+    },
+    {
+      "repository": "jobbole/awesome-java-cn",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "Java资源大全中文版，包括开发库、开发工具、网站、博客、微信、微博等，由伯乐在线持续更新。",
+      "stars": 15677
+    },
+    {
+      "repository": "zai-org/ChatGLM2-6B",
+      "reason": "No JAX code-search hits; no in-tree JAX/Pallas implementation established in this discovery snapshot.",
+      "inspection": "GitHub code search",
+      "stars": 15492,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "paperswithbacktest/awesome-systematic-trading",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A curated list of awesome libraries, packages, strategies, books, blogs, tutorials for systematic trading.",
+      "stars": 14989
+    },
+    {
+      "repository": "fauxpilot/fauxpilot",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "FauxPilot - an open-source alternative to GitHub Copilot server",
+      "stars": 14671
+    },
+    {
+      "repository": "mfornos/awesome-microservices",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A curated list of Microservice Architecture related principles and technologies.",
+      "stars": 14552
+    },
+    {
+      "repository": "cactus-compute/needle",
+      "reason": "JAX model present; reviewed model and README have no explicit TPU implementation/support evidence.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/cactus-compute/needle/blob/HEAD/needle/model/architecture.py"
+      ],
+      "stars": 14326,
+      "code_search": {
+        "total_count": 21,
+        "paths": [
+          "requirements-train.txt",
+          "needle/model/run.py",
+          "needle/model/whistle.py",
+          "needle/model/quantize.py",
+          "llms.txt",
+          "needle/model/finetune.py",
+          "needle/model/whistle_finetune.py",
+          "README.md",
+          "needle/model/build.py",
+          "needle/model/architecture.py",
+          "needle/cli.py",
+          "pyproject.toml",
+          "needle/model/architecture_mlx.py",
+          "tests/test_mlx.py",
+          "tests/conftest.py",
+          "tests/test_lora.py",
+          "tests/test_build.py",
+          "tests/test_quantize_mlx.py",
+          "tests/test_whistle_finetune.py",
+          "tests/test_fetch.py",
+          ".github/workflows/release.yaml"
+        ]
+      }
+    },
+    {
+      "repository": "EleutherAI/lm-evaluation-harness",
+      "reason": "No import jax implementation found; README references external JAX-backed runners.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/EleutherAI/lm-evaluation-harness/blob/HEAD/README.md"
+      ],
+      "stars": 14319,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "visenger/awesome-mlops",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "A curated list of references for MLOps ",
+      "stars": 14253
+    },
+    {
+      "repository": "DLR-RM/stable-baselines3",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "PyTorch version of Stable Baselines, reliable implementations of reinforcement learning algorithms. ",
+      "stars": 13936
+    },
+    {
+      "repository": "Lightning-AI/litgpt",
+      "reason": "No JAX code-search hits; no in-tree JAX/Pallas implementation established in this discovery snapshot.",
+      "inspection": "GitHub code search",
+      "stars": 13729,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "zai-org/ChatGLM3",
+      "reason": "No JAX code-search hits; no in-tree JAX/Pallas implementation established in this discovery snapshot.",
+      "inspection": "GitHub code search",
+      "stars": 13637,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "adam-maj/tiny-gpu",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "A minimal GPU design in Verilog to learn how GPUs work from the ground up",
+      "stars": 13136
+    },
+    {
+      "repository": "eugeneyan/open-llms",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "📋 A list of open LLMs available for commercial use.",
+      "stars": 12888
+    },
+    {
+      "repository": "PaddlePaddle/PaddleSpeech",
+      "reason": "No import jax code-search hits; Paddle speech implementation, unrelated Pallas text match.",
+      "inspection": "code search and cited local source where present",
+      "stars": 12698,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "ritchieng/the-incredible-pytorch",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "The Incredible PyTorch: a curated list of tutorials, papers, projects, communities and more relating to PyTorch. ",
+      "stars": 12670
+    },
+    {
+      "repository": "FareedKhan-dev/train-llm-from-scratch",
+      "reason": "Reviewed current model code uses PyTorch; TPU mention is an experimental device backend, not JAX.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/FareedKhan-dev/train-llm-from-scratch/blob/HEAD/src/models/modern/mlp.py"
+      ],
+      "stars": 12503,
+      "code_search": {
+        "total_count": 25,
+        "paths": [
+          "docs/javascripts/mathjax.js",
+          "CONTRIBUTING.md",
+          "requirements-post.txt",
+          "docs/howto/type_safety.md",
+          "src/models/modern/mlp.py",
+          "src/models/modern/norm.py",
+          "src/models/modern/rope.py",
+          "src/models/modern/block.py",
+          "CHANGELOG.md",
+          "src/inference/sampling.py",
+          "src/models/modern/kv_cache.py",
+          "src/inference/quantize.py",
+          "src/models/modern/moe.py",
+          "README.md",
+          "src/models/lora.py",
+          "src/optim/muon.py",
+          "mkdocs.yml",
+          "src/post_training/dpo.py",
+          "src/inference/speculative.py",
+          "src/post_training/grpo.py",
+          "pyproject.toml",
+          "src/models/modern/model.py",
+          "requirements.txt",
+          "src/models/modern/attention.py",
+          "tests/conftest.py"
+        ]
+      }
+    },
+    {
+      "repository": "diff-usion/Awesome-Diffusion-Models",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": " A collection of resources and papers on Diffusion Models",
+      "stars": 12380
+    },
+    {
+      "repository": "RUCAIBox/LLMSurvey",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "The official GitHub page for the survey paper \"A Survey of Large Language Models\".",
+      "stars": 12229
+    },
+    {
+      "repository": "NielsRogge/Transformers-Tutorials",
+      "reason": "JAX hits reference external models/backends; named TPU training tutorial uses HuggingFace Accelerate/PyTorch.",
+      "inspection": "code search and cited local source where present",
+      "stars": 11774,
+      "code_search": {
+        "total_count": 5,
+        "paths": [
+          "Perceiver/README.md",
+          "README.md",
+          "GPT-J-6B/Inference_with_GPT_J_6B.ipynb",
+          "T5/Fine_tuning_Dutch_T5_base_on_CNN_Daily_Mail_for_summarization_(on_TPU_using_HuggingFace_Accelerate).ipynb",
+          "LLaVA-NeXT-Video/Fine_tune_LLaVa_NeXT_Video_with_HFTrainer.ipynb"
+        ]
+      }
+    },
+    {
+      "repository": "cleanlab/cleanlab",
+      "reason": "JAX code-search match is README only; no in-tree TPU/JAX layer established.",
+      "inspection": "code search and cited local source where present",
+      "stars": 11720,
+      "code_search": {
+        "total_count": 1,
+        "paths": [
+          "README.md"
+        ]
+      }
+    },
+    {
+      "repository": "serverless/examples",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Serverless Examples – A collection of boilerplates and examples of serverless architectures built with the Serverless Framework on AWS Lambda, Microsoft Azure, Google Cloud Functions, and more.",
+      "stars": 11512
+    },
+    {
+      "repository": "lucidrains/DALLE2-pytorch",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Implementation of DALL-E 2, OpenAI's updated text-to-image synthesis neural network,  in Pytorch",
+      "stars": 11305
+    },
+    {
+      "repository": "huggingface/tokenizers",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "💥 Fast State-of-the-Art Tokenizers optimized for Research and Production",
+      "stars": 11203
+    },
+    {
+      "repository": "openvinotoolkit/openvino",
+      "reason": "JAX frontend imports/converts graphs to OpenVINO; this is not a TPU execution implementation.",
+      "inspection": "code search and cited local source where present",
+      "stars": 11070,
+      "code_search": {
+        "total_count": 158,
+        "paths": [
+          "src/frontends/jax/src/jax.cpp",
+          "src/frontends/jax/src/jax_framework_node.hpp",
+          "tools/ovc/openvino/tools/ovc/moc_frontend/jax_frontend_utils.py",
+          "docs/articles_en/openvino-workflow/model-preparation/convert-model-jax.rst",
+          "src/bindings/python/src/openvino/frontend/jax/utils.py",
+          "src/bindings/python/src/openvino/frontend/jax/passes.py",
+          "src/bindings/python/src/openvino/frontend/jax/__init__.py",
+          "src/bindings/python/src/pyopenvino/frontend/jax/decoder.cpp",
+          "src/frontends/jax/include/openvino/frontend/jax/decoder.hpp",
+          "src/bindings/python/src/pyopenvino/frontend/jax/decoder.hpp",
+          "src/bindings/python/src/openvino/tools/ovc/moc_frontend/jax_frontend_utils.pyi",
+          "src/frontends/jax/include/openvino/frontend/jax/frontend.hpp",
+          "src/bindings/python/src/pyopenvino/frontend/jax/py_module.cpp",
+          "src/bindings/python/src/pyopenvino/frontend/jax/CMakeLists.txt",
+          "src/frontends/jax/include/openvino/frontend/jax/visibility.hpp",
+          "src/bindings/python/src/openvino/frontend/jax/jaxpr_decoder.py",
+          "src/frontends/jax/include/openvino/frontend/jax/node_context.hpp",
+          "src/frontends/jax/src/utils.cpp",
+          "src/frontends/jax/src/utils.hpp",
+          "src/frontends/jax/src/place.hpp",
+          "src/frontends/jax/src/place.cpp",
+          "src/frontends/jax/src/decoder.cpp",
+          "src/frontends/jax/src/frontend.cpp",
+          "src/frontends/jax/src/op_table.cpp",
+          "src/frontends/jax/src/op_table.hpp",
+          "src/frontends/jax/src/CMakeLists.txt",
+          "src/frontends/jax/src/input_model.cpp",
+          "src/frontends/jax/src/input_model.hpp",
+          "src/frontends/jax/src/node_context.cpp",
+          "src/frontends/jax/src/translate_session.hpp",
+          "src/frontends/jax/src/translate_session.cpp",
+          "src/frontends/jax/include/openvino/frontend/jax/extension/conversion.hpp",
+          "src/frontends/jax/src/op/erfc.cpp",
+          "src/frontends/jax/src/op/slice.cpp",
+          "src/frontends/jax/src/op/rsqrt.cpp",
+          "src/frontends/jax/src/op/square.cpp",
+          "src/frontends/jax/src/op/reduce.cpp",
+          "src/frontends/jax/src/op/argmax.cpp",
+          "src/frontends/jax/src/op/convert.cpp",
+          "src/frontends/jax/src/op/reshape.cpp",
+          "src/frontends/jax/src/op/squeeze.cpp",
+          "src/frontends/jax/src/op/select_n.cpp",
+          "src/frontends/jax/src/op/constant.cpp",
+          "src/frontends/jax/src/op/transpose.cpp",
+          "src/frontends/jax/src/op/binary_op.cpp",
+          "src/frontends/jax/src/op/dot_general.cpp",
+          "src/frontends/jax/src/op/concatenate.cpp",
+          "src/frontends/jax/src/op/convolution.cpp",
+          "src/frontends/jax/src/op/integer_pow.cpp",
+          "src/frontends/jax/src/op/reduce_window.cpp",
+          "src/frontends/jax/src/op/broadcast_in_dim.cpp",
+          "src/frontends/README.md",
+          "cmake/coverage.cmake",
+          "cmake/packaging/npm.cmake",
+          "cmake/packaging/rpm.cmake",
+          "cmake/packaging/nsis.cmake",
+          "src/frontends/CMakeLists.txt",
+          "cmake/packaging/archive.cmake",
+          "README.md",
+          "src/bindings/python/sources.cmake",
+          "cmake/packaging/debian.cmake",
+          "cmake/packaging/common-libraries.cmake",
+          ".claude/skills/code-review/references/bindings.md",
+          ".claude/skills/code-review/references/frontend.md",
+          "docs/dev/static_libraries.md",
+          "setup.py",
+          "docs/dev/cmake_options_for_custom_compilation.md",
+          "src/frontends/common/src/manager.cpp",
+          "tools/ovc/openvino/tools/ovc/convert_impl.py",
+          "cmake/features.cmake",
+          "src/bindings/python/src/openvino/tools/ovc/convert_impl.pyi",
+          ".claude/skills/code-review/SKILL.md",
+          "src/bindings/python/src/pyopenvino/CMakeLists.txt",
+          "docs/articles_en/openvino-workflow/model-preparation/convert-model-keras.rst",
+          "docs/articles_en/openvino-workflow/model-preparation.rst",
+          "src/bindings/python/src/openvino/tools/ovc/moc_frontend/__init__.pyi",
+          "pyproject.toml",
+          "docs/articles_en/openvino-workflow/model-preparation/convert-model-to-ir.rst",
+          "docs/dev/ci/github_actions/overview.md",
+          "docs/articles_en/openvino-workflow/model-preparation/conversion-parameters.rst",
+          "src/frontends/common_translators/include/unconverted_ops_report.hpp",
+          "docs/articles_en/about-openvino/release-notes-openvino.rst",
+          "src/plugins/intel_gpu/docs/ternocl_int2_bonsai2_from_scratch.md",
+          "docs/articles_en/about-openvino/release-notes-openvino/system-requirements.rst",
+          "docs/articles_en/openvino-workflow/deployment-locally/optimial-binary-size-conditional-compilation.rst",
+          "docs/dev/ov_dependencies.txt",
+          "docs/sphinx_setup/conf.py",
+          "docs/sphinx_setup/_templates/layout.html",
+          "docs/Doxyfile.config",
+          "licensing/documentation-third-party-programs.txt",
+          "tests/requirements_jax",
+          "tests/model_hub_tests/jax/jax_utils.py",
+          "tests/layer_tests/jax_tests/jax_layer_test_class.py",
+          "tests/layer_tests/jax_tests/test_div.py",
+          "tests/layer_tests/jax_tests/test_exp.py",
+          "tests/layer_tests/jax_tests/test_add.py",
+          "tests/layer_tests/jax_tests/test_mul.py",
+          "tests/layer_tests/jax_tests/test_erf.py",
+          "tests/layer_tests/jax_tests/test_sub.py",
+          "tests/layer_tests/jax_tests/test_erfc.py"
+        ]
+      }
+    },
+    {
+      "repository": "mathjax/MathJax",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Beautiful and accessible math in all browsers",
+      "stars": 10943
+    },
+    {
+      "repository": "NVIDIA/cutlass",
+      "reason": "JAX FFI/CuTe examples target CUDA GPUs, not TPU Pallas.",
+      "inspection": "source/code-search audit",
+      "description": "CUDA Templates and Python DSLs for High-Performance Linear Algebra",
+      "stars": 10659,
+      "evidence": [
+        "https://github.com/NVIDIA/cutlass/blob/HEAD/examples/python/CuTeDSL/dsl_tutorials/jax/cute_dsl_jax_kernels.py"
+      ]
+    },
+    {
+      "repository": "satellite-image-deep-learning/techniques",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "Techniques for deep learning with satellite & aerial imagery",
+      "stars": 10292
+    },
+    {
+      "repository": "ymcui/Chinese-BERT-wwm",
+      "reason": "No JAX code-search hits; no in-tree JAX/Pallas implementation established in this discovery snapshot.",
+      "inspection": "GitHub code search",
+      "stars": 10232,
+      "code_search": {
+        "total_count": 0,
+        "paths": []
+      }
+    },
+    {
+      "repository": "kyutai-labs/pocket-tts",
+      "reason": "JAX search match is README only; no in-tree JAX TPU layer established.",
+      "inspection": "code search and cited local source where present",
+      "stars": 10079,
+      "code_search": {
+        "total_count": 1,
+        "paths": [
+          "README.md"
+        ]
+      }
+    },
+    {
+      "repository": "aikorea/awesome-rl",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "Reinforcement learning resources curated",
+      "stars": 10025
+    },
+    {
+      "repository": "google-deepmind/sonnet",
+      "reason": "Namespaced sonnet.src.functional.jax is implemented with TensorFlow, not the JAX package; TPU tests list TensorFlow devices.",
+      "inspection": "code search and cited local source where present",
+      "evidence": [
+        "https://github.com/google-deepmind/sonnet/blob/HEAD/sonnet/src/functional/jax.py"
+      ],
+      "stars": 9977,
+      "code_search": {
+        "total_count": 2,
+        "paths": [
+          "sonnet/functional.py",
+          "sonnet/src/functional/jax_test.py"
+        ]
+      }
+    },
+    {
+      "repository": "huggingface/accelerate",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "🚀 A simple way to launch, train, and use PyTorch models on almost any device and distributed configuration, automatic mixed precision (including fp8), and easy-to-configure FSDP and DeepSpeed support",
+      "stars": 9926
+    },
+    {
+      "repository": "lyhue1991/eat_tensorflow2_in_30_days",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Tensorflow2.0 🍎🍊 is delicious, just eat it! 😋😋",
+      "stars": 9908
+    },
+    {
+      "repository": "FasterXML/jackson",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Main Portal page for the Jackson project",
+      "stars": 9835
+    },
+    {
+      "repository": "OpenFeign/feign",
+      "reason": "Tooling or unrelated language/domain; discovery hit did not establish a TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "Feign makes writing java http clients easier",
+      "stars": 9800
+    },
+    {
+      "repository": "unit8co/darts",
+      "reason": "JAX search match is changelog only; no in-tree JAX TPU layer established.",
+      "inspection": "code search and cited local source where present",
+      "stars": 9562,
+      "code_search": {
+        "total_count": 1,
+        "paths": [
+          "CHANGELOG.md"
+        ]
+      }
+    },
+    {
+      "repository": "ai-boost/awesome-prompts",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "Curated list of chatgpt prompts from the top-rated GPTs in the GPTs Store. Prompt Engineering, prompt attack & prompt protect. Advanced Prompt Engineering papers.",
+      "stars": 9139
+    },
+    {
+      "repository": "dair-ai/ML-Papers-Explained",
+      "reason": "Repository is a resource list/book/reference collection; metadata discovery hit did not identify a TPU JAX/Pallas computational implementation.",
+      "inspection": "metadata triage only",
+      "description": "Explanation to key concepts in ML",
+      "stars": 8908
+    },
+    {
+      "repository": "vahidk/EffectiveTensorflow",
+      "reason": "Project describes a different execution framework; discovery hit did not establish an in-tree TPU JAX/Pallas implementation.",
+      "inspection": "metadata triage only",
+      "description": "TensorFlow tutorials and best practices.",
+      "stars": 8578
+    }
+  ],
+  "below_cutoff": [
+    {
+      "repository": "google-deepmind/alphafold3",
+      "stars": 8684,
+      "fixture": "alphafold3",
+      "note": "Tested as additional coverage before completing high-star source audit; not counted among selected ten."
+    },
+    {
+      "repository": "google/trax",
+      "stars": 8304,
+      "fixture": "trax",
+      "note": "Tested as additional coverage before MJX eligibility correction; not counted among selected ten."
+    },
+    {
+      "repository": "google-deepmind/weathernext",
+      "stars": 7722
+    },
+    {
+      "repository": "LargeWorldModel/LWM",
+      "stars": 7424
+    },
+    {
+      "repository": "google/flax",
+      "stars": 7357
+    },
+    {
+      "repository": "kingoflolz/mesh-transformer-jax",
+      "stars": 6389
+    }
+  ],
+  "cutoff_stars": 10608,
+  "extra_tested_fixtures": [
+    "alphafold3",
+    "trax"
+  ]
+}

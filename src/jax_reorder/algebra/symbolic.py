@@ -170,6 +170,7 @@ SCALAR: dict[str, Callable[..., sp.Basic]] = {
     "cosh": sp.cosh,
     "tanh": sp.tanh,
     "sqrt": sp.sqrt,
+    "rsqrt": lambda a: sp.Pow(a, -sp.Rational(1, 2)),
     "eq": sp.Eq,
     "ne": sp.Ne,
     "lt": sp.StrictLessThan,
@@ -965,6 +966,10 @@ class SymbolicBuilder:
                 domain &= args[0] > 0
             elif name == "sqrt":
                 domain &= args[0] >= 0
+            elif name == "rsqrt":
+                # Reciprocal square root is finite and real only for positive a;
+                # retain this even when later arithmetic cancels the expression.
+                domain &= args[0] > 0
             elif name == "integer_pow" and params["y"] < 0:
                 domain &= sp.Ne(args[0], 0)
             elif name == "pow":

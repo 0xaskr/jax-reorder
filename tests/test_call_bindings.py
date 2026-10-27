@@ -18,7 +18,6 @@ import numpy as np
 import pytest
 from jax._src import core, pjit
 
-from tests import call_bindings
 from jax_reorder import (
     CorrespondenceError,
     Status,
@@ -28,6 +27,7 @@ from jax_reorder import (
 )
 from jax_reorder.core.correspondence import verify_correspondence
 from jax_reorder.functions import compare_functions
+from tests import call_bindings
 
 
 @pytest.mark.parametrize("candidate", [call_bindings.reordered, call_bindings.output_reordered])

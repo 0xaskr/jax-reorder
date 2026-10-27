@@ -113,6 +113,7 @@ PURE_SCHEMAS.update(
         lax.broadcast_in_dim_p: frozenset({"shape", "broadcast_dimensions", "sharding"}),
         lax.iota_p: frozenset({"dtype", "shape", "dimension", "sharding"}),
         lax.transpose_p: frozenset({"permutation"}),
+        lax.squeeze_p: frozenset({"dimensions"}),
         lax.reshape_p: frozenset({"new_sizes", "dimensions", "sharding"}),
         lax.slice_p: frozenset({"start_indices", "limit_indices", "strides"}),
         lax.concatenate_p: frozenset({"dimension"}),

@@ -32,6 +32,7 @@ from .normalization import (
     CallBoundary,
     RewriteEvidence,
     _outputs_equal,
+    _retain_call_source,
     _same_rewrite,
 )
 from .remote_memory import functionalize_remote_call
@@ -301,30 +302,26 @@ def _check_protocol(
             coordinates=coordinates,
             axis_ranges=ranges,
         )
-    return (
-        RewriteEvidence(
-            "device-local-bound-core-resource-check"
-            if execution
-            else "device-local-resource-check",
-            1,
-            call.kernel.origin.path,
-            projection,
-            (
-                _boundary(
-                    view,
-                    site,
-                    tuple(input_types[p] for p in ports),
-                    tuple(b.array for b in call.blocks[call.num_inputs :]),
-                    (ParameterView("source_input_ports", ports), ParameterView("axes", axes)),
-                ),
+    proof = RewriteEvidence(
+        "device-local-bound-core-resource-check" if execution else "device-local-resource-check",
+        1,
+        call.kernel.origin.path,
+        projection,
+        (
+            _boundary(
+                view,
+                site,
+                tuple(input_types[p] for p in ports),
+                tuple(b.array for b in call.blocks[call.num_inputs :]),
+                (ParameterView("source_input_ports", ports), ParameterView("axes", axes)),
             ),
-            bindings=site.arguments,
-            deferred_padding=defer_padding,
-            execution_cores=execution_cores,
-            execution=execution,
         ),
-        core_evidence,
+        bindings=site.arguments,
+        deferred_padding=defer_padding,
+        execution_cores=execution_cores,
+        execution=execution,
     )
+    return _retain_call_source(proof, call), core_evidence
 
 
 def _remote_projection(
@@ -392,7 +389,7 @@ def _remote_projection(
             ParameterView("local_outputs", remote.local_outputs),
         ),
     )
-    return RewriteEvidence(
+    proof = RewriteEvidence(
         "device-local-remote-memory-to-values",
         1,
         call.kernel.origin.path,
@@ -403,6 +400,7 @@ def _remote_projection(
         execution_cores=execution_cores,
         execution=execution,
     )
+    return _retain_call_source(proof, call)
 
 
 def project_local_view(

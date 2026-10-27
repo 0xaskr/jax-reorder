@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import jax
 from jax._src import config, core
+from jax._src.frozen_dict import FrozenDict
 from jax._src.pallas import core as pc
 from jax._src.pallas import primitives as pp
 from jax._src.pallas.mosaic import core as mc
@@ -134,8 +135,21 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
         path + ".interpret",
         "only native interpret=False source graphs are supported",
     )
-    for name in ("mesh", "metadata"):
-        _require(p[name] is None, path + "." + name, f"{name} is not yet adapted")
+    _require(p["mesh"] is None, path + ".mesh", "mesh is not yet adapted")
+    metadata = p["metadata"]
+    if metadata is not None:
+        _require(
+            type(metadata) is FrozenDict
+            and all(type(k) is str and type(v) is str for k, v in metadata.items()),
+            path + ".metadata",
+            "metadata requires the locked FrozenDict of string keys and values",
+        )
+        _require(
+            "mesh_axes" not in metadata,
+            path + ".metadata",
+            "reserved mesh_axes metadata requires a named-mesh lowering contract",
+        )
+        metadata = tuple(sorted(metadata.items()))
     cost = p["cost_estimate"]
     if cost is not None:
         _schema(
@@ -209,10 +223,32 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
         "inconsistent block mapping arity",
     )
     rank = len(gm.grid)
-    expected_tree = jax.tree.structure(((0,) * (rank + prefetch_count), {}))
+    tree = gm.index_map_tree
     _require(
-        type(gm.index_map_tree) is jax.tree_util.PyTreeDef
-        and gm.index_map_tree == expected_tree
+        type(tree) is jax.tree_util.PyTreeDef
+        and tree.node_data() == (tuple, None)
+        and len(tree.children()) == 2,
+        path,
+        "unexpected index map bindings",
+    )
+    args_tree, kwargs_tree = tree.children()
+    _require(
+        args_tree.node_data() == (tuple, None) and kwargs_tree == jax.tree.structure({}),
+        path,
+        "unexpected index map bindings",
+    )
+    leaf_tree, none_tree = jax.tree.structure(0), jax.tree.structure(None)
+    argument_trees = args_tree.children()
+    _require(
+        len(argument_trees) >= rank
+        and all(child == leaf_tree for child in argument_trees[:rank])
+        and all(child in (leaf_tree, none_tree) for child in argument_trees[rank:]),
+        path,
+        "index map bindings require coordinate leaves followed by flat leaves or None",
+    )
+    index_map_bindings = tuple(child == leaf_tree for child in argument_trees)
+    _require(
+        sum(index_map_bindings) == rank + prefetch_count
         and len(gm.index_map_avals) == rank + prefetch_count,
         path,
         "unexpected index map bindings",
@@ -445,6 +481,8 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
         scratch=tuple(scratch),
         prefetch=cast(tuple[RefType, ...], prefetch),
         cost_estimate=cost,
+        metadata=metadata,
+        index_map_bindings=index_map_bindings,
     )
 
 

@@ -19,12 +19,12 @@ import jax
 import pytest
 from jax._src import core
 
+from jax_reorder import Status, TraceError, compare_functions, compare_jaxprs
 from tests.full_layers.builders import BLOCK_PROFILES, PROFILES, BlockCase, Glm5Case
 from tests.full_layers.runner import FAMILIES, verify
 from tests.full_layers.upstream import original_imports
 from tests.sglang_layers.builders import cpu_mesh
 from tests.sglang_layers.upstream import ROOT
-from jax_reorder import Status, TraceError, compare_functions, compare_jaxprs
 
 pytestmark = pytest.mark.filterwarnings(
     r"ignore:'\.value' access is now deprecated:DeprecationWarning"

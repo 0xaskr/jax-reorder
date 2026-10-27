@@ -6,7 +6,7 @@ Failure to match normalized formulas is not mathematical inequivalence.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..errors import (
     ComparisonBudgetError,
@@ -76,6 +76,28 @@ class RewriteEvidence:
     deferred_padding: bool = False
     execution_cores: int | None = None
     execution: CoreExecutionBinding | None = None
+    # Descriptive source data is retained for replay, not an array-value contract.
+    call_metadata: tuple[tuple[str, str], ...] | None = None
+    index_map_bindings: tuple[bool, ...] = ()
+
+
+def _retain_call_source(proof: RewriteEvidence, call: PallasCallView) -> RewriteEvidence:
+    projection = proof.projection
+    if call.metadata is not None:
+        projection = replace(
+            projection,
+            assumptions=projection.assumptions
+            + (
+                "locked JAX 0.11.2 Pallas metadata is retained as diagnostic HLO attributes "
+                "and does not change kernel values",
+            ),
+        )
+    return replace(
+        proof,
+        projection=projection,
+        call_metadata=call.metadata,
+        index_map_bindings=call.index_map_bindings,
+    )
 
 
 @dataclass(frozen=True)
@@ -115,6 +137,10 @@ def _same_rewrite(left: RewriteEvidence, right: RewriteEvidence) -> bool:
         (left.rule, left.version, left.source, left.boundaries, left.shard_dependencies)
         == (right.rule, right.version, right.source, right.boundaries, right.shard_dependencies)
         and left.bindings == right.bindings
+        and left.call_metadata == right.call_metadata
+        and type(left.index_map_bindings) is tuple
+        and all(type(value) is bool for value in left.index_map_bindings)
+        and left.index_map_bindings == right.index_map_bindings
         and left.deferred_padding == right.deferred_padding
         and (type(left.execution_cores), left.execution_cores)
         == (type(right.execution_cores), right.execution_cores)
@@ -305,7 +331,7 @@ def _normalize_bound_call(
         else (),
         kernel_argument_policy=call.kernel_argument_policy,
     )
-    return RewriteEvidence(
+    proof = RewriteEvidence(
         "bound-local-memory-to-values",
         1,
         call.kernel.origin.path,
@@ -315,6 +341,7 @@ def _normalize_bound_call(
         deferred_padding=defer_padding,
         execution_cores=execution_cores,
     )
+    return _retain_call_source(proof, call)
 
 
 def normalize_view(
@@ -381,7 +408,7 @@ def normalize_view(
                 execution_cores=execution_cores,
                 execution=execution,
             )
-            return RewriteEvidence(
+            proof = RewriteEvidence(
                 "remote-memory-to-global-values" if shards else "communication-memory-to-values",
                 2 if shards else 1,
                 call.kernel.origin.path,
@@ -391,6 +418,7 @@ def normalize_view(
                 execution_cores=execution_cores,
                 execution=execution,
             )
+            return _retain_call_source(proof, call)
         if execution is not None:
             raise UnsupportedJaxprError(
                 call.kernel.origin.path,
@@ -458,7 +486,7 @@ def normalize_view(
                 )
             output_dependencies.append(tuple(sorted(used)))
         shard_proofs.append(tuple(output_dependencies))
-    return RewriteEvidence(
+    proof = RewriteEvidence(
         "local-control-memory-to-values" if local else "blocked-memory-to-global-values",
         1 if local else 2,
         call.kernel.origin.path,
@@ -468,6 +496,7 @@ def normalize_view(
         deferred_padding=defer_padding,
         execution_cores=execution_cores,
     )
+    return _retain_call_source(proof, call)
 
 
 def verify_normalized_evidence(

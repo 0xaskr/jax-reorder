@@ -1,0 +1,35 @@
+{
+  "repository": "google/trax",
+  "revision": "31022d6cd7dd525ed11a04d84cd3936228499173",
+  "license": "Apache-2.0",
+  "files": {
+    "normalization": {
+      "path": "trax/layers/normalization.py",
+      "snapshot": "trax/layers/normalization.py.txt",
+      "sha256": "3d3394bb60fd643aa05498a95be2afaff0a2ca4842444e7a3d0adeb2573dae2a",
+      "git_blob": "a095475a4d165c8cb5cc99deb2fb47dfedf8e0b5",
+      "url": "https://github.com/google/trax/blob/31022d6cd7dd525ed11a04d84cd3936228499173/trax/layers/normalization.py"
+    },
+    "backend": {
+      "path": "trax/fastmath/jax.py",
+      "snapshot": "trax/fastmath/jax.py.txt",
+      "sha256": "b414d5989551348c7a405205f90e21fd4eb6764d9f507bbaee7766e85c20016f",
+      "git_blob": "658e1d219e3f800d98564596aa3443e4ce8cd681",
+      "url": "https://github.com/google/trax/blob/31022d6cd7dd525ed11a04d84cd3936228499173/trax/fastmath/jax.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "url": "https://github.com/google/trax/blob/31022d6cd7dd525ed11a04d84cd3936228499173/LICENSE"
+    },
+    "readme": {
+      "path": "README.md",
+      "snapshot": "README.md.txt",
+      "sha256": "b97e2d47ed0f47d9eae06b040f83feac273fddca1a2e2c6a853dd68cd7a96399",
+      "git_blob": "33884979adf39dc2abd7eed79aa485910db76e9c",
+      "url": "https://github.com/google/trax/blob/31022d6cd7dd525ed11a04d84cd3936228499173/README.md"
+    }
+  }
+}

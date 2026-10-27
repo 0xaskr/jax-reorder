@@ -1,0 +1,31 @@
+{
+  "repository": "google-research/vision_transformer",
+  "revision": "64801f1b3b367b3611cc27a3d45cc22870a36fb3",
+  "license": "Apache-2.0",
+  "stars_observed": 12762,
+  "observed_at": "2026-10-27",
+  "scope": "Selected complete model-layer definitions; CPU numerical evidence, no TPU hardware claim.",
+  "files": {
+    "model": {
+      "path": "vit_jax/models_vit.py",
+      "snapshot": "vit_jax/models_vit.py.txt",
+      "sha256": "c19d8f90b8f889d87bce68eb0d5c14c80ff4e1c9208ecc206007e630945fd13c",
+      "git_blob": "6a384032751671eff811da2b5e8ca3e5622dfe09",
+      "url": "https://github.com/google-research/vision_transformer/blob/64801f1b3b367b3611cc27a3d45cc22870a36fb3/vit_jax/models_vit.py"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE",
+      "sha256": "4bebd04f269afe8437d003b4254204bd841dcb8106b96cb72158803ff9d711c2",
+      "git_blob": "a90877c740b53b21e725a41dab5dff2615b755ac",
+      "url": "https://github.com/google-research/vision_transformer/blob/64801f1b3b367b3611cc27a3d45cc22870a36fb3/LICENSE"
+    },
+    "readme": {
+      "path": "README.md",
+      "snapshot": "README.md.txt",
+      "sha256": "df3b96c16a7cc643f3e2b68697869beba222546109673d7e07de05ae38111daa",
+      "git_blob": "4f01df14620db47eddb02c30eb3115e1267a2793",
+      "url": "https://github.com/google-research/vision_transformer/blob/64801f1b3b367b3611cc27a3d45cc22870a36fb3/README.md"
+    }
+  }
+}

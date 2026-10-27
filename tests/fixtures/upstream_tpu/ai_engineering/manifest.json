@@ -1,0 +1,28 @@
+{
+  "repository": "rohitg00/ai-engineering-from-scratch",
+  "revision": "3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a",
+  "license": "MIT",
+  "files": {
+    "mlp": {
+      "path": "phases/03-deep-learning-core/12-intro-to-jax/code/jax_intro.py",
+      "snapshot": "phases/03-deep-learning-core/12-intro-to-jax/code/jax_intro.py.txt",
+      "sha256": "8cf3a1b254792e8802305161f5ef82940e0651f38210cde21d6cac96ca078d84",
+      "git_blob": "20e6becc6bd8e6f9026395164460fe9adfece627",
+      "url": "https://github.com/rohitg00/ai-engineering-from-scratch/blob/3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a/phases/03-deep-learning-core/12-intro-to-jax/code/jax_intro.py"
+    },
+    "tpu_evidence": {
+      "path": "phases/03-deep-learning-core/12-intro-to-jax/docs/en.md",
+      "snapshot": "phases/03-deep-learning-core/12-intro-to-jax/docs/en.md.txt",
+      "sha256": "9fe3133043ee5c5841555859f2e60f3cd11c6ee194ae7dd4ff6788a97d307a50",
+      "git_blob": "8ae40bd49a642653a1a645f02a86d28e22ee031b",
+      "url": "https://github.com/rohitg00/ai-engineering-from-scratch/blob/3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a/phases/03-deep-learning-core/12-intro-to-jax/docs/en.md"
+    },
+    "license": {
+      "path": "LICENSE",
+      "snapshot": "LICENSE.txt",
+      "sha256": "d116e214adbcab1c96e680695bcda5c629f00d72425f83e18770ce5e156c17d4",
+      "git_blob": "61442168db9acb554e944f3f8c006e4ac1e91310",
+      "url": "https://github.com/rohitg00/ai-engineering-from-scratch/blob/3f9715c62a3bedcffb68a260f1a65ee2dd9cc10a/LICENSE"
+    }
+  }
+}

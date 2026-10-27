@@ -9,7 +9,6 @@ import pytest
 from jax._src import core
 from jax.experimental import pallas as pl
 
-from tests.pallas_kernels import CASES, upstream
 from jax_reorder import (
     ComparisonBudgetError,
     Status,
@@ -28,6 +27,7 @@ from jax_reorder.core.normalization import (
     verify_normalized_evidence,
 )
 from jax_reorder.core.tensor_memory import functionalize_tensor_call
+from tests.pallas_kernels import CASES, upstream
 from tests.pallas_oracle import run_worker
 from tests.pallas_projection_oracle import at_point
 from tests.pallas_upstream_state_cases import (
