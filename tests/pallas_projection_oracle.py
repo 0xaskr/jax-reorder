@@ -118,6 +118,7 @@ def at_point(root, inputs, point):
                             "max": np.maximum,
                             "min": np.minimum,
                             "exp": np.exp,
+                            "exp2": np.exp2,
                             "eq": np.equal,
                             "ne": np.not_equal,
                             "lt": np.less,
