@@ -23,6 +23,7 @@ from ._typing import ArrayAval, Equation
 from .expression import SymbolicTensor, coordinates, rename_bounds, substitute
 from .finiteness import Source
 from .pallas_domains import lower_padding_domains
+from .pallas_precision import highest_precision
 
 if TYPE_CHECKING:
     from .symbolic import SymbolicBuilder
@@ -69,7 +70,10 @@ def _operation(
         (expanded,) = builder.operation(broadcast, [replace(original, memory_validity=sp.true)], 0)
         values = [replace(expanded, memory_validity=original.memory_validity)]
     (result,) = builder.operation(
-        equation, [replace(v, memory_validity=sp.true) for v in values], 0
+        equation,
+        [replace(v, memory_validity=sp.true) for v in values],
+        0,
+        pallas_precision=builder.pallas_precision_paired,
     )
     if all(v.memory_validity == sp.true for v in values):
         return result
@@ -721,11 +725,18 @@ def projected_outputs(
                                 if p.name.startswith("__"):
                                     continue
                                 if p.name in {"precision", "out_sharding"}:
-                                    if p.value != ("none",):
+                                    if (
+                                        p.name == "precision"
+                                        and highest_precision(p.value)
+                                        and builder.pallas_precision_paired
+                                    ):
+                                        params[p.name] = (lax.Precision.HIGHEST,) * 2
+                                    elif p.value != ("none",):
                                         raise UnsupportedJaxprError(
                                             "algebra.pallas.tensor", f"non-default {p.name}"
                                         )
-                                    params[p.name] = None
+                                    else:
+                                        params[p.name] = None
                                 elif p.name == "preferred_element_type":
                                     params[p.name] = (
                                         None

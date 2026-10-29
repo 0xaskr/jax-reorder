@@ -106,7 +106,7 @@ PURE_SCHEMAS.update(
         lax.mul_p: frozenset({"out_dtype"}),
         **{
             getattr(lax, f"{name}_p"): frozenset({"accuracy"})
-            for name in ("sin", "cos", "exp", "log", "sqrt", "rsqrt", "tanh")
+            for name in ("sin", "cos", "exp", "exp2", "log", "sqrt", "rsqrt", "tanh")
         },
         lax.integer_pow_p: frozenset({"y"}),
         lax.convert_element_type_p: frozenset({"new_dtype", "weak_type", "sharding"}),
@@ -116,6 +116,7 @@ PURE_SCHEMAS.update(
         lax.squeeze_p: frozenset({"dimensions"}),
         lax.reshape_p: frozenset({"new_sizes", "dimensions", "sharding"}),
         lax.slice_p: frozenset({"start_indices", "limit_indices", "strides"}),
+        lax.pad_p: frozenset({"padding_config"}),
         lax.concatenate_p: frozenset({"dimension"}),
         sp.broadcast_to_p: frozenset({"shape"}),
         lax.dot_general_p: frozenset(
@@ -169,7 +170,25 @@ JIT_SCHEMA = frozenset(
 def parameter(name: str, value: Any, path: str) -> ParameterView:
     # These fields have a primitive-specific, type-checked schema. Give analysis
     # their semantic values rather than asking it to decode JAX descriptors.
-    if name in {"axis", "dimension", "y", "weak_type", "unique_indices", "indices_are_sorted"}:
+    if name == "padding_config":
+        # np.pad emits NumPy integer edges in the locked frontend. Normalize
+        # only exact integer triples, retaining negative edges (cropping).
+        require(
+            type(value) is tuple
+            and all(
+                type(part) is tuple
+                and len(part) == 3
+                and all(type(n) is int or isinstance(n, np.integer) for n in part)
+                and int(cast(Any, part[2])) >= 0
+                for part in value
+            ),
+            path,
+            "invalid static padding configuration",
+        )
+        result = tuple(
+            tuple(int(n) for n in part) for part in cast(tuple[tuple[Any, ...], ...], value)
+        )
+    elif name in {"axis", "dimension", "y", "weak_type", "unique_indices", "indices_are_sorted"}:
         require(type(value) in (int, bool), path, "unexpected scalar parameter")
         result = value
     elif name in ("dimensions", "strides") and value is None:

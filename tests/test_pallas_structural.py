@@ -14,6 +14,7 @@ import pytest
 from jax import lax
 from jax._src import core
 from jax._src.pallas import primitives as pp
+from jax._src.state import types as state_types
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu as pltpu
 
@@ -259,6 +260,75 @@ def test_private_allocations_can_rename_without_changing_resource_uses(scoped):
         return program(body, scratch=scratch)[1]
 
     assert_equivalent(build(False), build(True))
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_unused_private_allocations_keep_their_multiset_without_factorial_search(scoped):
+    scratch = (
+        *(pltpu.VMEM((1, 1), jnp.float32) for _ in range(2)),
+        *(pltpu.VMEM((1, 1, 1, 1, 1), jnp.float32) for _ in range(5)),
+        pltpu.SemaphoreType.DMA((5, 2)),
+        pltpu.VMEM((1, 1, 1, 1, 1, 1), jnp.float32),
+    )
+
+    def build(resources, use=False):
+        def body(x, y, *unused):
+            if use:
+                unused[0][...] = jnp.ones(unused[0].shape, jnp.float32)
+            y[...] = x[...]
+
+        if scoped:
+
+            def kernel(x, y):
+                pl.run_scoped(lambda *refs: body(x, y, *refs), *resources)
+
+            return program(kernel)[1]
+        return program(body, scratch=resources)[1]
+
+    left, right = build(scratch), build(scratch[::-1])
+    before = str(left), str(right)
+    result = compare_jaxprs(left, right, search_budget=1)
+    assert result.status == Status.EQUIVALENT
+    verify_correspondence(left, right, result.correspondence)
+    assert (str(left), str(right)) == before
+    for normalized in (result.left, result.right):
+        core.check_jaxpr(normalized.jaxpr)
+        assert canonicalize(normalized.jaxpr, search_budget=1).graph == normalized.graph
+    for changed in (
+        build(scratch[:-1]),
+        build((*scratch[:-1], pltpu.SMEM((1, 1, 1, 1, 1, 1), jnp.float32))),
+        build(scratch, use=True),
+    ):
+        assert compare_jaxprs(left, changed, search_budget=1).status == Status.DIFFERENT
+
+
+def test_unused_scoped_allocation_transforms_move_with_their_slots():
+    def build(transforms):
+        def kernel(x, y):
+            def body(*unused):
+                y[...] = x[...]
+
+            pl.run_scoped(body, *(pltpu.VMEM((8, 128), jnp.float32) for _ in transforms))
+
+        graph = program(kernel)[1]
+        body = kernel_graph(graph)
+        scoped = body.eqns[0]
+        assert scoped.primitive is pp.run_scoped_p
+        scoped = scoped.replace(params={**scoped.params, "ref_transforms": transforms})
+        body = body.replace(eqns=[scoped, *body.eqns[1:]])
+        call = graph.eqns[0]
+        return graph.replace(eqns=[call.replace(params={**call.params, "jaxpr": body})])
+
+    transforms = (
+        (),
+        (state_types.ReshapeTransform((4, 256)),),
+        (state_types.ReshapeTransform((2, 512)),),
+    )
+    left, right = build(transforms), build(transforms[::-1])
+    result = compare_jaxprs(left, right, search_budget=1)
+    assert result.status == Status.EQUIVALENT
+    verify_correspondence(left, right, result.correspondence)
+    assert compare_jaxprs(left, build(((), (), ())), search_budget=1).status == Status.DIFFERENT
 
 
 def test_scoped_captures_follow_actual_operands_after_pure_reordering():

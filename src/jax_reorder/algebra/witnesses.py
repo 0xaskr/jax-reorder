@@ -20,6 +20,15 @@ from .budget import Budget
 from .expression import _rebuild, dag_atoms, substitute
 
 type _ExponentialPolynomial = dict[sp.Rational, sp.Rational]
+type DomainCache = dict[
+    tuple[
+        tuple[tuple[tuple[int, ...], str], ...],
+        tuple[tuple[str, tuple[str, str]], ...],
+        str,
+        sp.Basic,
+    ],
+    bool,
+]
 
 
 class _Unproved(Exception):
@@ -289,12 +298,18 @@ def exact_witness(
     casts: Mapping[str, tuple[str, str]] | None = None,
     *,
     finite_values: bool = False,
+    domain_cache: DomainCache | None = None,
 ) -> tuple[str, sp.Basic, sp.Basic] | None:
     """Try exact input patterns; return only a certified unequal pair."""
     from .sympy_ops import equal
 
     expressions = (left, right, *domains)
     casts = {} if casts is None else casts
+    domain_cache = {} if domain_cache is None else domain_cache
+    domain_context = (
+        tuple((tuple(value.shape), str(value.dtype)) for value in inputs),
+        tuple(sorted(casts.items())),
+    )
     if any(expression.has(sp.nan, sp.zoo, sp.oo, -sp.oo) for expression in expressions) or any(
         node.func.__name__.removeprefix("defined_") not in casts
         for expression in expressions
@@ -649,8 +664,25 @@ def exact_witness(
             return result
 
         try:
-            conditions = [visit(condition, {}) for condition in domains]
-            if any(condition != sp.true for condition in conditions):
+            valid = True
+            for condition in domains:
+                # Complete output domains are identical across coordinate
+                # searches. Their exact specialization depends on the input
+                # pattern, source types and cast definitions, not the chosen
+                # output coordinate. Cache only the final Boolean obligation;
+                # value reads still undergo their own bounds/cast checks.
+                key = (*domain_context, pattern, condition)
+                if key not in domain_cache:
+                    try:
+                        domain_cache[key] = visit(condition, {}) == sp.true
+                    except (_Unproved, sp.PolynomialError):
+                        # False also means unproved: reject this witness
+                        # pattern, without claiming the condition is false.
+                        domain_cache[key] = False
+                if not domain_cache[key]:
+                    valid = False
+                    break
+            if not valid:
                 continue
             domains_validated[0] = True
             a, b = visit(left, {}), visit(right, {})

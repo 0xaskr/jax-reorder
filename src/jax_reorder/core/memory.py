@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import numpy as np
@@ -40,6 +40,7 @@ from .model import (
 )
 from .storage import Piece, Span, Storage
 from .tensor_domain import POINTWISE_PRIMITIVES, TensorDomain
+from .value_usage import consumed_values
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,65 @@ def _substitute(value: Expression, bindings: dict[str, IndexExpr]) -> Expression
     return done[id(value)]
 
 
+def _share_expression(value: Expression) -> Expression:
+    """Restore exact DAG sharing after coordinate substitution copies subtrees."""
+    done: dict[int, Expression] = {}
+    labels: dict[int, int] = {}
+    interned: dict[tuple[object, ...], Expression] = {}
+    pending = [(value, False)]
+    while pending:
+        item, ready = pending.pop()
+        if id(item) in done:
+            continue
+        if type(item) not in (IndexExpr, Predicate, ValueExpr, bool):
+            raise UnsupportedJaxprError("tensor.sharing", "unreviewed value expression")
+        original: tuple[Expression, ...] = (
+            item.args
+            if isinstance(item, IndexExpr)
+            else item.operands
+            if isinstance(item, (ValueExpr, Predicate))
+            else ()
+        )
+        if original and not ready:
+            pending.append((item, True))
+            pending.extend((child, False) for child in original)
+            continue
+        children = tuple(done[id(child)] for child in original)
+        child_labels = tuple(labels[id(child)] for child in children)
+        # Flat child labels avoid recursively hashing an expanded expression
+        # tree. Dictionary lookup still compares the complete exact key;
+        # neither digests nor algebraic identities establish equality here.
+        if isinstance(item, ValueExpr):
+            key = (
+                ValueExpr,
+                item.operation,
+                item.type,
+                child_labels,
+                item.parameters,
+                item.data,
+                item.input,
+            )
+        elif isinstance(item, Predicate):
+            key = (Predicate, item.operation, child_labels)
+        elif isinstance(item, IndexExpr):
+            key = (IndexExpr, item.kind, child_labels, item.value)
+        else:
+            key = (bool, item)
+        shared = interned.get(key)
+        if shared is None:
+            if all(a is b for a, b in zip(children, original, strict=True)):
+                shared = item
+            elif isinstance(item, IndexExpr):
+                shared = replace(item, args=cast(tuple[IndexExpr, ...], children))
+            else:
+                assert isinstance(item, (Predicate, ValueExpr))
+                shared = replace(item, operands=children)
+            interned[key] = shared
+            labels[id(shared)] = len(labels)
+        done[id(item)] = shared
+    return done[id(value)]
+
+
 def expressions_equal(left: tuple[Expression, ...], right: tuple[Expression, ...]) -> bool:
     """Exact DAG equality with sharing-aware traversal, without digest equality."""
     if len(left) != len(right):
@@ -275,6 +335,7 @@ def functionalize_call(call: PallasCallView, *, budget: AnalysisBudget) -> Memor
     All operations, including dead operations, pass admission and access checks.
     """
     path = call.kernel.origin.path
+    used = consumed_values(call.kernel)
     if call.aliases or call.interpret or len(call.grid) != 1 or call.num_outputs == 0:
         raise UnsupportedJaxprError(path, "unsupported kernel execution contract")
     if call.compiler is None or not call.compiler.default_execution_options:
@@ -514,7 +575,7 @@ def functionalize_call(call: PallasCallView, *, budget: AnalysisBudget) -> Memor
                 array_types[access.ref.id],
             )
             if access.value is None:
-                if isinstance(old, Uninitialized):
+                if result.id in used and isinstance(old, Uninitialized):
                     raise UnsupportedJaxprError(loc, "read of uninitialized output/scratch storage")
                 value = old
             else:

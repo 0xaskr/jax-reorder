@@ -600,7 +600,7 @@ def test_nondefault_layout_policy_is_admitted_and_retained_in_the_signature():
 
 
 @pytest.mark.parametrize(
-    "option", ["disable_bounds_checks", "skip_device_barrier", "shape_invariant_numerics"]
+    "option", ["disable_semaphore_checks", "skip_device_barrier", "shape_invariant_numerics"]
 )
 def test_layout_review_does_not_admit_unreviewed_execution_flags(option):
     options = {"needs_layout_passes": False, option: option != "shape_invariant_numerics"}

@@ -311,11 +311,14 @@ def adapt_call(eq: Any, adapter: JaxAdapter, path: str) -> PallasCallView:
         _require(type(block.transformed_block_aval) is st.AbstractRef, loc, "unknown Ref type")
         _require(
             block.transformed_block_aval.memory_space
-            in (pc.MemorySpace.DEFAULT, pc.MemorySpace.ANY)
+            in (pc.MemorySpace.DEFAULT, pc.MemorySpace.ANY, mc.MemorySpace.VMEM)
             and block.transformed_block_aval.kind is None,
             loc,
             "non-default Ref storage is not yet adapted",
         )
+        # The locked TPU backend resolves ordinary DEFAULT block arrays to
+        # VMEM. An explicit VMEM block uses the same buffered copy lifecycle;
+        # retain its source descriptor while using that existing state model.
         region = adapter.region(block.index_map_jaxpr, loc + ".index_map")
         _require(
             len(region.inputs) == rank + prefetch_count and len(region.outputs) == len(shape),
@@ -513,7 +516,21 @@ def adapt_memory_access(eq: Any, operands: tuple[Operand, ...], path: str) -> Me
     _require(isinstance(ref, ValueRef), path, "memory access must bind a Ref")
     if any(
         type(transform) in (st.ReshapeTransform, st.TransposeTransform) for transform in transforms
+    ) or (
+        len(transforms) > 1
+        and any(
+            type(transform) is indexing.NDIndexer
+            and any(
+                type(index) is not indexing.Slice
+                or any(type(v) is not int for v in (index.start, index.size, index.stride))
+                for index in transform.indices
+            )
+            for transform in transforms
+        )
     ):
+        # Scalar selection changes the intermediate rank, and dynamic slices
+        # cannot be composed into a static NDIndexer. Preserve the reviewed
+        # view chain so the resource executor checks each intermediate bound.
         storage_shape = eq.invars[0].aval.inner_aval.shape
         views = adapt_ref_transforms(transforms, storage_shape, path)
         indices = tuple(SliceIndex(0, n, 1) for n in storage_shape)

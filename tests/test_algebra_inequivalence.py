@@ -128,8 +128,8 @@ def test_no_false_inequivalence_for_equal_outputs(left, right, shapes):
     [
         (lambda x: jnp.sin(x), lambda x: x + 1, jnp.float32, Status.INEQUIVALENT),
         (lambda x: jnp.exp(x), lambda x: x, jnp.float32, Status.INEQUIVALENT),
-        (lambda x: jnp.log(x), lambda x: x, jnp.float32, MathematicalUndecidedError),
-        (lambda x: x / x, lambda x: x + 1, jnp.float32, MathematicalUndecidedError),
+        (lambda x: jnp.log(x), lambda x: x, jnp.float32, Status.INEQUIVALENT),
+        (lambda x: x / x, lambda x: x + 1, jnp.float32, Status.INEQUIVALENT),
         (lambda x: x + (-jnp.inf), lambda x: x + 1, jnp.float32, MathematicalUndecidedError),
         (
             lambda x: (x + 1, jnp.sin(x)),
@@ -168,10 +168,42 @@ def test_captured_tensor_is_not_fresh_independent_input():
     assert compare_algebraic_jaxprs(first, second).status == Status.INEQUIVALENT
 
 
-@pytest.mark.parametrize("operation", [jnp.log, lambda x: x + (-jnp.inf)])
-def test_dead_partial_or_nonfinite_work_does_not_make_domain_assumptions(operation):
+@pytest.mark.parametrize("operation", [jnp.log, lambda x: x / x])
+def test_partial_negative_uses_a_shared_defined_input(operation):
+    result = compare_algebraic_jaxprs(*graphs(operation, lambda x: x + 1, ()))
+    assert result.status is Status.INEQUIVALENT
+    assert any(
+        q.answer is False and q.method == "exact representable input witness: one"
+        for q in result.backend_result.queries
+    )
+    # x=1 belongs to both original domains; this is independent of the
+    # symbolic witness construction and does not require a domain assumption.
+    assert float(operation(jnp.float32(1))) != 2
+
+
+@pytest.mark.parametrize("same_output", [False, True])
+def test_dead_partial_work_preserves_its_domain_in_complete_output_comparison(same_output):
     def first(x):
-        operation(x)
+        jnp.log(x)
+        return x + 1
+
+    left, right = graphs(first, lambda x: x + (1 if same_output else 2), ())
+    if same_output:
+        # Ordinary JAX lowering still retains dead partial-function domains.
+        with pytest.raises(MathematicalUndecidedError, match="condition_undecided"):
+            compare_algebraic_jaxprs(left, right)
+        return
+    result = compare_algebraic_jaxprs(left, right)
+    assert result.status is Status.INEQUIVALENT
+    assert any(
+        q.method == "exact representable input witness: one" and (q.left, q.right) == ("2", "3")
+        for q in result.backend_result.queries
+    )
+
+
+def test_dead_nonfinite_work_does_not_make_domain_assumptions():
+    def first(x):
+        x + (-jnp.inf)
         return x + 1
 
     left, right = graphs(first, lambda x: x + 2, ())

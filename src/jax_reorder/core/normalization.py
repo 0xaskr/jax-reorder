@@ -79,6 +79,8 @@ class RewriteEvidence:
     # Descriptive source data is retained for replay, not an array-value contract.
     call_metadata: tuple[tuple[str, str], ...] | None = None
     index_map_bindings: tuple[bool, ...] = ()
+    output_boundary: str = "kernel"
+    output_bindings: tuple[BindingExpr, ...] = ()
 
 
 def _retain_call_source(proof: RewriteEvidence, call: PallasCallView) -> RewriteEvidence:
@@ -137,6 +139,8 @@ def _same_rewrite(left: RewriteEvidence, right: RewriteEvidence) -> bool:
         (left.rule, left.version, left.source, left.boundaries, left.shard_dependencies)
         == (right.rule, right.version, right.source, right.boundaries, right.shard_dependencies)
         and left.bindings == right.bindings
+        and left.output_boundary == right.output_boundary
+        and left.output_bindings == right.output_bindings
         and left.call_metadata == right.call_metadata
         and type(left.index_map_bindings) is tuple
         and all(type(value) is bool for value in left.index_map_bindings)
@@ -548,6 +552,8 @@ def verify_normalized_evidence(
             )
             for source, proof in ((left, evidence.left), (right, evidence.right))
         )
+    except ComparisonBudgetError:
+        raise
     except (UnsupportedJaxprError, ValueError) as error:
         raise CorrespondenceError("normalized", "rewrite evidence does not replay") from error
     if not _same_rewrite(evidence.left, a) or not _same_rewrite(evidence.right, b):

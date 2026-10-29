@@ -25,6 +25,7 @@ def compare_local_values(
     algebra_budget: int,
     algebra_timeout: float,
     executions: tuple[CoreExecutionBinding | None, CoreExecutionBinding | None],
+    output_boundary: str = "kernel",
 ) -> AlgebraComparison:
     budget = Budget(algebra_budget)
     analysis = AnalysisBudget(algebra_budget)
@@ -37,7 +38,11 @@ def compare_local_values(
     for side, view, execution in zip(("left", "right"), views, executions, strict=True):
         try:
             site, proof, core = project_local_view(
-                view, budget=analysis, defer_padding=True, execution=execution
+                view,
+                budget=analysis,
+                defer_padding=True,
+                execution=execution,
+                output_boundary=output_boundary,
             )
         except ComparisonError as error:
             raise error.at(side) from error
@@ -49,7 +54,12 @@ def compare_local_values(
             "local.contract", "local inputs, outputs or axis bindings differ"
         )
     assumptions = (
-        "device-local kernel values only; parent output assembly and postprocessing are excluded",
+        (
+            "device-local kernel values observed through complete ordered parent output views"
+            if output_boundary == "parent"
+            else "device-local kernel values only; parent output assembly "
+            "and postprocessing are excluded"
+        ),
         "corresponding source input ports, local signatures and bound logical axes",
     )
     if any(proof.projection.communication or proof.remote for proof in proofs):
@@ -75,7 +85,11 @@ def compare_local_values(
             "conditional on the caller-supplied exact core program mapping "
             "and order for each source",
         )
-    kind = "structural" if _key(sites[0]) == _key(sites[1]) else "normalized"
+    kind = (
+        "structural"
+        if _key(sites[0], output_boundary) == _key(sites[1], output_boundary)
+        else "normalized"
+    )
     if not any(proof.deferred_padding for proof in proofs) and (
         kind == "structural" or _outputs_equal(proofs[0], proofs[1], analysis)
     ):

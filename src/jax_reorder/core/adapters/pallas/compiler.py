@@ -155,4 +155,20 @@ def adapt_compiler(
     ) and matches_defaults(
         {"dimension_semantics", "needs_layout_passes", "fuse_transposed_lhs_in_matmul"}
     )
-    return CompilerView(explicit, "mosaic_tpu", parameters, standard, reviewed_layout), semantics
+    reviewed_resources = (
+        source.vmem_limit_bytes is not None or source.disable_bounds_checks
+    ) and matches_defaults(
+        {
+            "dimension_semantics",
+            "needs_layout_passes",
+            "fuse_transposed_lhs_in_matmul",
+            "vmem_limit_bytes",
+            "disable_bounds_checks",
+        }
+    )
+    return (
+        CompilerView(
+            explicit, "mosaic_tpu", parameters, standard, reviewed_layout, reviewed_resources
+        ),
+        semantics,
+    )

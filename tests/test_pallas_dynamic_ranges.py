@@ -177,9 +177,7 @@ def test_reviewed_transpose_hint_keeps_source_attributes_and_complete_values():
     assert not np.array_equal(layout_function(interpret=True, wrong=True)(x, z), reference)
 
 
-@pytest.mark.parametrize(
-    "option", ("disable_bounds_checks", "disable_semaphore_checks", "skip_device_barrier")
-)
+@pytest.mark.parametrize("option", ("disable_semaphore_checks", "skip_device_barrier"))
 def test_hint_does_not_admit_unreviewed_execution_or_safety_options(option):
     with pytest.raises(UnsupportedJaxprError, match="reviewed native execution contract"):
         normalize_view(layout_view(**{option: True}), budget=AnalysisBudget(100000))

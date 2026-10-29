@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 from ..errors import UnsupportedJaxprError
 from .index_domain import AnalysisBudget, IndexExpr, axis
+from .masked_access import resolve_defined
 from .memory import Expression, ValueExpr, _literal, _substitute, scalar_type
 from .model import (
     ArrayType,
@@ -22,7 +23,7 @@ from .model import (
     ValueType,
 )
 from .tensor_domain import coordinate, coordinate_ranges, requires_tensor_coordinates
-from .tensor_values import tensor_value
+from .tensor_values import project_coordinates, tensor_value
 from .value_operations import pure_value
 
 
@@ -90,6 +91,89 @@ class CallSite:
     arguments: tuple[BindingExpr, ...]
     wrappers: tuple[OperationView, ...]
     outputs: tuple[BindingExpr, ...]
+
+
+_PARENT_OUTPUT_VIEWS = frozenset(
+    {"reshape", "transpose", "squeeze", "slice", "concatenate", "broadcast_in_dim"}
+)
+
+
+def parent_output_values(
+    site: CallSite,
+    values: tuple[Expression, ...],
+    *,
+    budget: AnalysisBudget,
+    ranges: dict[str, tuple[int, int]],
+) -> tuple[Expression, ...]:
+    """Compose every ordered parent view before proving observable definedness."""
+    call = site.operation.call
+    assert call is not None
+    cache: dict[int, Expression] = {}
+
+    def emit(value: BindingExpr) -> Expression:
+        if id(value) in cache:
+            return cache[id(value)]
+        path = "parent.outputs"
+        budget.spend(path)
+        if not isinstance(value.type, ArrayType):
+            raise UnsupportedJaxprError(path, "parent output requires an array view")
+        typ = value.type
+        if value.operation == "kernel_output":
+            port = value.port
+            if (
+                type(port) is not int
+                or not 0 <= port < len(values)
+                or typ != call.blocks[call.num_inputs + port].array
+            ):
+                raise UnsupportedJaxprError(path, "parent kernel output binding differs")
+            result = _substitute(
+                values[port],
+                {f"output:{i}": coordinate("local", i) for i in range(len(typ.shape))},
+            )
+        else:
+            if value.operation not in _PARENT_OUTPUT_VIEWS or not value.operands:
+                raise UnsupportedJaxprError(
+                    path, f"unreviewed parent output operation {value.operation}"
+                )
+            input_types = tuple(a.type for a in value.operands if isinstance(a.type, ArrayType))
+            if len(input_types) != len(value.operands):
+                raise UnsupportedJaxprError(path, "parent view has a non-array operand")
+            op = OperationView(
+                0,
+                value.operation,
+                (),
+                (ValueDef(0, typ),),
+                value.parameters,
+                (),
+                value.context,
+                Origin(path),
+            )
+            result = tensor_value(
+                op,
+                tuple(emit(a) for a in value.operands),
+                input_types,
+                {**ranges, **coordinate_ranges("local", typ.shape)},
+                {},
+                (),
+                budget,
+            )
+        cache[id(value)] = result
+        return result
+
+    outputs = []
+    for i, binding in enumerate(site.outputs):
+        value = emit(binding)
+        assert isinstance(binding.type, ArrayType)
+        output_ranges = {**ranges, **coordinate_ranges("output", binding.type.shape)}
+        value = project_coordinates(
+            value,
+            {f"local:{d}": coordinate("output", d) for d in range(len(binding.type.shape))},
+            {},
+            output_ranges,
+            budget,
+        )
+        outputs.append(resolve_defined(value, output_ranges, budget, f"parent.outputs[{i}]"))
+    return tuple(outputs)
 
 
 def extract_call(view: ProgramView, *, budget: AnalysisBudget) -> CallSite:

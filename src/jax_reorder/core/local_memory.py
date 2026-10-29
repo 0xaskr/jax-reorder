@@ -57,6 +57,7 @@ from .storage import Piece, Span, Storage
 from .tensor_domain import multidimensional, restoring_outputs
 from .tensor_memory import functionalize_tensor_call
 from .value_operations import pure_value, static_integer
+from .value_usage import consumed_values
 
 
 @dataclass(frozen=True)
@@ -92,11 +93,13 @@ def functionalize_local_call(
     axis_ranges: dict[str, tuple[int, int]] | None = None,
     execution_cores: int | None = None,
     defer_padding: bool = False,
+    defer_output_initialization: bool = False,
 ) -> MemoryProjection:
     if execution_cores is not None and (type(execution_cores) is not int or execution_cores != 1):
         raise ValueError("execution_cores currently requires an explicit single-core binding")
     if (
-        restoring_outputs(call)
+        defer_output_initialization
+        or restoring_outputs(call)
         or multidimensional(call)
         or defer_padding
         and has_unmasked_padding(call)
@@ -109,6 +112,7 @@ def functionalize_local_call(
             axis_ranges=axis_ranges,
             execution_cores=execution_cores,
             defer_padding=defer_padding,
+            defer_output_initialization=defer_output_initialization,
         )
     try:
         return _functionalize_independent_call(
@@ -293,6 +297,7 @@ def _functionalize_independent_call(
         source: RegionView, arguments: tuple[Binding, ...], suffix: str = ""
     ) -> tuple[Binding, ...]:
         nonlocal memories, regular, dma_state, control_guard
+        used = consumed_values(source)
         env = dict(zip((v.id for v in source.inputs), arguments, strict=True))
         env.update((v.id, _literal(vv, source.origin.path)) for v, vv in source.constants)
         value_types = {v.id: v.type for v in source.inputs}
@@ -638,9 +643,9 @@ def _functionalize_independent_call(
                 )
                 if not isinstance(old, Uninitialized):
                     old = _substitute(old, {"global": address})
-                if access.value is None:
+                if access.value is None and any(v.id in used for v in op.results):
                     expression(old, loc)
-                else:
+                elif access.value is not None:
                     incoming = value(access.value)
                     incoming = _substitute(
                         incoming, {"global": add(axis("global"), integer(-span.start))}

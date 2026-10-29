@@ -16,6 +16,7 @@ from jax._src import core
 from ..core.canonical import canonicalize, compare_jaxprs
 from ..core.core_execution import CoreExecutionBinding, validate_binding_shape
 from ..core.correspondence import GraphCorrespondence, build_correspondence
+from ..core.local import validate_output_boundary
 from ..errors import (
     ComparisonContractError,
     ComparisonError,
@@ -53,6 +54,7 @@ def compare_algebraic_jaxprs(
     execution: CoreExecutionBinding
     | tuple[CoreExecutionBinding, CoreExecutionBinding]
     | None = None,
+    output_boundary: str = "kernel",
 ) -> AlgebraComparison:
     """以可信 SymPy 比较两份完整前向 jaxpr 的数学输出。
 
@@ -78,6 +80,7 @@ def compare_algebraic_jaxprs(
     validate_timeout(algebra_timeout)
     if scope not in ("function", "device_local"):
         raise ValueError("scope must be function or device_local")
+    validate_output_boundary(output_boundary, scope)
     if execution is None:
         executions = (None, None)
     elif isinstance(execution, CoreExecutionBinding):
@@ -102,6 +105,7 @@ def compare_algebraic_jaxprs(
             algebra_budget=algebra_budget,
             algebra_timeout=algebra_timeout,
             executions=executions,
+            output_boundary=output_boundary,
         )
     structural = compare_jaxprs(left, right, include_derivative_rules=False)
     if structural.status == Status.EQUIVALENT and execution is None:

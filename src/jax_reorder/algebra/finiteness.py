@@ -302,6 +302,7 @@ class Finiteness:
             lax.dot_general_p,
             lax.reduce_sum_p,
             lax.exp_p,
+            lax.exp2_p,
             lax.sin_p,
             lax.cos_p,
             lax.tanh_p,

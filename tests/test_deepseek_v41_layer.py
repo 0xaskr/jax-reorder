@@ -89,7 +89,7 @@ def test_original_layer_and_algebraic_candidates(profile, dtype, name):
 def test_shape_preserving_wrong_candidates_are_rejected_with_witness(name, dtype):
     args = cancellation_inputs((1, 1, 4, 7), dtype)
     function = getattr(candidates, name)
-    if dtype == jnp.bfloat16 or name == "wrong_rounding":
+    if name == "wrong_rounding" or (dtype == jnp.bfloat16 and name == "wrong_transpose"):
         with pytest.raises(MathematicalUndecidedError, match="condition_undecided") as error:
             compare_functions(original().hc_post, function, *args, modes=("forward", "jvp", "vjp"))
         assert error.value.path.startswith("forward.algebra")
@@ -98,6 +98,11 @@ def test_shape_preserving_wrong_candidates_are_rejected_with_witness(name, dtype
             original().hc_post, function, *args, modes=("forward", "jvp", "vjp")
         )
         assert all(mode.status == Status.INEQUIVALENT for mode in report.modes)
+        if dtype == jnp.bfloat16:
+            assert any(
+                q.answer is False and "exact representable input witness" in q.method
+                for q in report.modes[0].algebra.backend_result.queries
+            )
     assert not np.array_equal(np.asarray(original().hc_post(*args)), np.asarray(function(*args)))
 
 

@@ -68,6 +68,7 @@ from .tensor_owner_partition import functionalize_partitioned_owners
 from .tensor_storage import Box, BoxPiece, TensorStorage, full_box
 from .tensor_values import project_coordinates, tensor_value
 from .value_operations import integer_value_bounds, static_integer
+from .value_usage import consumed_values
 
 
 @dataclass(frozen=True)
@@ -220,6 +221,7 @@ def functionalize_tensor_call(
     program_point: tuple[int, ...] | None = None,
     semaphore_observer: Callable[[str, int, int, int, Origin], None] | None = None,
     defer_padding: bool = False,
+    defer_output_initialization: bool = False,
 ) -> MemoryProjection:
     try:
         return _functionalize_tensor_call(
@@ -232,6 +234,7 @@ def functionalize_tensor_call(
             program_point=program_point,
             semaphore_observer=semaphore_observer,
             defer_padding=defer_padding,
+            defer_output_initialization=defer_output_initialization,
         )
     except UnsupportedJaxprError:
         serial = [i for i, g in enumerate(call.grid) if g.size > 1 and g.semantics == "arbitrary"]
@@ -257,6 +260,7 @@ def functionalize_tensor_call(
                 execution_cores=execution_cores,
                 banked_interleaving=True,
                 defer_padding=defer_padding,
+                defer_output_initialization=defer_output_initialization,
             )
 
         return functionalize_banked_grid(
@@ -280,6 +284,7 @@ def _functionalize_tensor_call(
     program_point: tuple[int, ...] | None = None,
     semaphore_observer: Callable[[str, int, int, int, Origin], None] | None = None,
     defer_padding: bool = False,
+    defer_output_initialization: bool = False,
     banked_interleaving: bool = False,
     owner_plan: GridPlan | None = None,
     owner_suffix: str = "",
@@ -291,7 +296,11 @@ def _functionalize_tensor_call(
         call.interpret
         or not call.num_outputs
         or call.compiler is None
-        or not (call.compiler.default_execution_options or call.compiler.reviewed_layout_options)
+        or not (
+            call.compiler.default_execution_options
+            or call.compiler.reviewed_layout_options
+            or call.compiler.reviewed_resource_options
+        )
     ):
         raise UnsupportedJaxprError(
             path, "tensor projection needs a reviewed native execution contract"
@@ -348,6 +357,7 @@ def _functionalize_tensor_call(
                 axis_ranges=owner_ranges,
                 execution_cores=execution_cores,
                 defer_padding=defer_padding,
+                defer_output_initialization=defer_output_initialization,
                 banked_interleaving=banked_interleaving,
                 owner_plan=plan,
                 owner_suffix=suffix,
@@ -537,6 +547,7 @@ def _functionalize_tensor_call(
         source: RegionView, arguments: tuple[Binding, ...], suffix: str = ""
     ) -> tuple[Binding, ...]:
         nonlocal memories, regular, dma_state, next_resource
+        used = consumed_values(source)
         env = dict(zip((v.id for v in source.inputs), arguments, strict=True))
         env.update((v.id, _literal(c, source.origin.path)) for v, c in source.constants)
         value_types = {v.id: v.type for v in source.inputs}
@@ -1614,9 +1625,29 @@ def _functionalize_tensor_call(
                                             loc,
                                             "tensor DMA source includes undefined input padding",
                                         )
-                    pieces = tuple(p for box in source_boxes for p in memories[src].read(box, loc))
+                    partial_output = (
+                        defer_output_initialization
+                        and src >= count
+                        and npre + call.num_inputs <= dst < count
+                        and dst in unbuffered
+                        and not isinstance(source_choice, _DmaSourceChoice)
+                    )
+                    pieces = tuple(
+                        p
+                        for box in source_boxes
+                        for p in memories[src].read(box, loc, initialized=not partial_output)
+                    )
+                    if partial_output:
+                        pieces = tuple(
+                            replace(p, value=ValueExpr("undefined", scalar_type(types[src])))
+                            if p.value is None
+                            else p
+                            for p in pieces
+                        )
                     for piece in pieces:
                         assert piece.value is not None
+                        if partial_output:
+                            continue
                         require_defined(
                             piece.value,
                             {
@@ -1680,7 +1711,7 @@ def _functionalize_tensor_call(
                         current = tuple(
                             VersionSlice(p.box.linear_bounds(types[src].shape), p.version)
                             for box in payload.source_boxes
-                            for p in memories[src].read(box, loc)
+                            for p in memories[src].read(box, loc, initialized=False)
                         )
                         if current != transfer.source_versions:
                             raise UnsupportedJaxprError(loc, "tensor DMA source changed in flight")
@@ -1952,7 +1983,7 @@ def _functionalize_tensor_call(
                     for piece in memories[resource].read(box, loc, initialized=False)
                 )
                 old = partial_value(pieces, types[resource])
-                if access.value is None:
+                if access.value is None and any(v.id in used for v in op.results):
                     # An inactive lane does not read the underlying storage.
                     # Active scratch/output lanes must already be initialized.
                     for region in active:
@@ -2311,7 +2342,9 @@ def _functionalize_tensor_call(
                 )
         assert result is not None
         outputs.append(
-            resolve_defined(
+            result
+            if defer_output_initialization
+            else resolve_defined(
                 result,
                 {**(axis_ranges or {}), **coordinate_ranges("output", domain.shape)},
                 budget,

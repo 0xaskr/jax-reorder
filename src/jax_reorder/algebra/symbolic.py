@@ -159,6 +159,7 @@ SCALAR: dict[str, Callable[..., sp.Basic]] = {
     "square": lambda a: a**2,
     "abs": sp.Abs,
     "exp": sp.exp,
+    "exp2": lambda a: sp.Pow(2, a),
     "log": sp.log,
     "sin": sp.sin,
     "cos": sp.cos,
@@ -213,6 +214,7 @@ class SymbolicBuilder:
         # 规范化表达式缓存；键含 shape，只影响构造成本，不改变运算身份。
         self.canonical_values: dict[tuple[sp.Basic, Shape], sp.Basic] = {}
         self.element_casts: dict[str, tuple[str, str]] = {}
+        self.pallas_precision_paired = False
 
     def input(self, aval: ArrayAval, position: int) -> SymbolicTensor:
         """为第 position 个函数输入建立符号值。
@@ -579,7 +581,12 @@ class SymbolicBuilder:
         )
 
     def operation(
-        self, eq: Equation, values: Sequence[SymbolicTensor], position: int
+        self,
+        eq: Equation,
+        values: Sequence[SymbolicTensor],
+        position: int,
+        *,
+        pallas_precision: bool = False,
     ) -> Sequence[SymbolicTensor]:
         """转换一条方程：先建立来源与有限性，再选择逐点映射或不透明同余。
 
@@ -805,7 +812,7 @@ class SymbolicBuilder:
             # 含符号的整数运算，以及依赖不透明函数结果的值域转换。失败方向必须
             # 保守：保留整个运算同余，而不是猜测数学等价。
             return self.opaque(eq, values, sources)
-        outputs = self._operation(eq, values, position)
+        outputs = self._operation(eq, values, position, pallas_precision=pallas_precision)
         if region:
             return outputs
         # 纯布局运算的输出有限性由输入决定；其余运算的 finite 已由 result() 按
@@ -850,7 +857,12 @@ class SymbolicBuilder:
         return result
 
     def _operation(
-        self, eq: Equation, values: Sequence[SymbolicTensor], position: int
+        self,
+        eq: Equation,
+        values: Sequence[SymbolicTensor],
+        position: int,
+        *,
+        pallas_precision: bool = False,
     ) -> Sequence[SymbolicTensor]:
         """把一条已核对原语映射成逐点/索引表达式，返回按端口排列的 SymbolicTensor。
 
@@ -1212,8 +1224,13 @@ class SymbolicBuilder:
             )
         if name == "dot_general":
             if params.get("precision") not in (None, (None, None)):
-                # 显式精度属于浮点执行细节，不在理想实数适配的契约内。
-                raise UnsupportedJaxprError(path, "non-default dot precision")
+                if not (
+                    pallas_precision
+                    and self.pallas_precision_paired
+                    and params["precision"] == (lax.Precision.HIGHEST,) * 2
+                ):
+                    raise UnsupportedJaxprError(path, "non-default dot precision")
+                self.rules.add("pallas.paired-highest-precision:v1")
             left, right = values
             (ca, cb), (ba, bb) = params["dimension_numbers"]
             ia, ib = [None] * len(left.shape), [None] * len(right.shape)

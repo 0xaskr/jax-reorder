@@ -10,7 +10,13 @@ from jax._src.pallas import primitives as pp
 from jax.experimental import pallas as pl
 from jax.experimental.pallas import tpu
 
-from jax_reorder import CorrespondenceError, Status, UnsupportedJaxprError, compare_jaxprs
+from jax_reorder import (
+    CorrespondenceError,
+    Status,
+    UnsupportedJaxprError,
+    compare_jaxprs,
+    compare_pallas_kernels,
+)
 from jax_reorder.core.adapters.jax import adapt
 from jax_reorder.core.index_domain import AnalysisBudget, axis
 from jax_reorder.core.memory import _substitute
@@ -543,3 +549,33 @@ def test_dma_source_definedness_is_required_even_when_the_transfer_result_is_unu
         x = np.arange(256, dtype=np.float32)
         for point in np.ndindex(x.shape):
             assert at_point(proof.projection.outputs[0], (x,), point) == x[point]
+
+
+@pytest.mark.parametrize("initialize_padding", [False, True])
+def test_parent_crop_does_not_hide_uninitialized_rows_in_a_full_tail_dma(initialize_padding):
+    def kernel(x, y, temporary, semaphore):
+        temporary[:16, :] = x[...]
+        if initialize_padding:
+            temporary[16:, :] = jnp.zeros((16, 128), jnp.float32)
+        tpu.async_copy(temporary, y, semaphore).wait()
+
+    function = pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((32, 128), jnp.float32),
+        out_specs=pl.BlockSpec(memory_space=pl.ANY),
+        scratch_shapes=(tpu.VMEM((32, 128), jnp.float32), tpu.SemaphoreType.DMA),
+    )
+    source = jax.make_jaxpr(lambda x: function(x)[:16])(
+        jax.ShapeDtypeStruct((16, 128), jnp.float32)
+    )
+    if not initialize_padding:
+        with pytest.raises(UnsupportedJaxprError, match="uninitialized"):
+            compare_pallas_kernels(source, source, equivalence="semantic")
+        return
+    result = compare_pallas_kernels(source, source, equivalence="semantic")
+    assert result.status is Status.EQUIVALENT and result.protocol_checked
+    proof = result.left_protocol.projection
+    assert len(proof.communication) == len(proof.waits) == 1
+    x = np.arange(16 * 128, dtype=np.float32).reshape(16, 128)
+    for i, j in ((0, 0), (15, 127), (16, 0), (31, 127)):
+        assert at_point(proof.outputs[0], (x,), (i, j)) == (x[i, j] if i < 16 else 0)

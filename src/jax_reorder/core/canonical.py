@@ -51,7 +51,7 @@ from .correspondence import GraphCorrespondence, build_correspondence, verify_co
 from .params import semantic_parameters
 from .semantics import Encoder, Frozen, replace_nested
 from .support import supported_primitive_identities
-from .unrooted import DEFAULT_SEARCH_BUDGET, canonical_order, order_key, reorder_form
+from .unrooted import DEFAULT_SEARCH_BUDGET, _variables, canonical_order, order_key, reorder_form
 
 type NormalizationTask[T] = Generator[tuple[core.Jaxpr, str, bool], Canonicalized, T]
 
@@ -424,7 +424,12 @@ class _Normalizer:
         )
 
     def _capture_order(
-        self, result: Canonicalized, count: int, path: str, start: int = 0
+        self,
+        result: Canonicalized,
+        count: int,
+        path: str,
+        start: int = 0,
+        allocations: Sequence[Frozen] | None = None,
     ) -> tuple[int, ...]:
         """按规范子图的首次使用位置排列捕获前缀，不能顺带改变 carry 位置。"""
         slots = {}
@@ -440,7 +445,52 @@ class _Normalizer:
                 if ref[0] == "input" and start <= ref[1] < start + count:
                     slots.setdefault(ref[1], None)
         unused = [i for i in range(start, start + count) if i not in slots]
-        return (*slots, *self._free_slots(unused, path))
+        if allocations is None or not unused:
+            return (*slots, *self._free_slots(unused, path))
+        if len(allocations) != count:
+            raise InvalidJaxprError(path, "invalid private allocation metadata")
+
+        # Only locally allocated resources have no parent operand binding.
+        # Preserve every allocation but skip duplicate permutations if it is
+        # entirely absent from outputs, ALL nodes, effects and semantic fields.
+        # A dead computation or hidden Ref effect is still a use. Child Graphs
+        # have their own namespace and must not contribute local input numbers.
+        referenced: set[int] = set()
+
+        def record(ref: ValueReference) -> ValueReference:
+            if ref[0] == "input":
+                referenced.add(ref[1])
+            return ref
+
+        graph = result.graph
+        descriptor_bindings = False
+
+        def descriptor_reference(ref: ValueReference) -> ValueReference:
+            nonlocal descriptor_bindings
+            descriptor_bindings = True
+            return ref
+
+        _variables((graph.inputs, allocations), descriptor_reference)
+        if descriptor_bindings:
+            # A type/descriptor referring to another binding needs joint
+            # canonicalization; raw input numbers are not invariant keys.
+            return (*slots, *self._free_slots(unused, path))
+        for ref in graph.outputs:
+            record(ref)
+        _variables((graph.constants, graph.outputs, graph.effects), record)
+        for node in graph.nodes:
+            for ref in node.inputs:
+                record(ref)
+            _variables((node.inputs, node.outputs, node.params, node.effects, node.context), record)
+        groups: dict[Any, list[int]] = {}
+        for i in unused:
+            key = order_key((i in referenced, graph.inputs[i], allocations[i - start]))
+            groups.setdefault(key, []).append(i)
+        order = list(slots)
+        for key in sorted(groups):
+            group = groups[key]
+            order.extend(self._free_slots(group, path) if group[0] in referenced else group)
+        return tuple(order)
 
     def _output_order(
         self,
@@ -563,7 +613,28 @@ class _Normalizer:
         start = 0 if captured else len(child.invars) - len(params["grid_mapping"].scratch_avals)
         if start < 0:
             raise InvalidJaxprError(path, "invalid scratch allocation count")
-        resources = self._capture_order(result, len(child.invars) - start, path, start)
+        metadata = params["ref_transforms"] if captured else params["grid_mapping"].scratch_avals
+        if len(metadata) != len(child.invars) - start:
+            raise InvalidJaxprError(path, "invalid private allocation metadata")
+        bound_metadata = False
+
+        def bound(value: Any, location: str | None = None) -> Any:
+            # Static allocation descriptors need no variable/region context.
+            # If one contains bindings, retain exact search instead of using
+            # parent variable identities as private allocation sorting keys.
+            nonlocal bound_metadata
+            bound_metadata = True
+            return SimpleNamespace(graph=None) if location is not None else None
+
+        encoder = Encoder(bound, bound)
+        allocations = tuple(encoder.encode(value, path) for value in metadata)
+        resources = self._capture_order(
+            result,
+            len(child.invars) - start,
+            path,
+            start,
+            allocations=None if bound_metadata else allocations,
+        )
         rebound = self._rebind_inputs(result.jaxpr, (*range(start), *resources))
         executable = dict(eq.params)
         if not captured:

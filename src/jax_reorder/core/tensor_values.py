@@ -22,7 +22,15 @@ from .index_domain import (
 )
 from .lane_gather import lane_gather
 from .local_reshard import validate_local_broadcast, validate_reshard_operation
-from .memory import Expression, Predicate, ValueExpr, _substitute, scalar_type, truth
+from .memory import (
+    Expression,
+    Predicate,
+    ValueExpr,
+    _share_expression,
+    _substitute,
+    scalar_type,
+    truth,
+)
 from .model import ArrayType, OperationView, ParameterView
 from .tensor_domain import coordinate
 from .value_operations import pure_value
@@ -233,6 +241,55 @@ def tensor_value(
                 for i, (start, stride) in enumerate(zip(starts, strides, strict=True))
             },
         )
+    if name == "pad":
+        padding = p.get("padding_config")
+        if (
+            len(args) != 2
+            or len(input_types) != 2
+            or len(op.parameters) != 1
+            or type(padding) is not tuple
+            or len(padding) != len(input_shapes[0])
+            or len(typ.shape) != len(input_shapes[0])
+            or input_shapes[1]
+            or any(value.dtype != typ.dtype for value in input_types)
+            or any(
+                type(part) is not tuple
+                or len(part) != 3
+                or any(type(n) is not int for n in part)
+                or cast(int, part[2]) < 0
+                for part in padding
+            )
+        ):
+            raise UnsupportedJaxprError(path, "invalid static padding interface")
+        padding = cast(tuple[tuple[int, int, int], ...], padding)
+        if typ.shape != tuple(
+            n + low + high + max(n - 1, 0) * interior
+            for n, (low, high, interior) in zip(input_shapes[0], padding, strict=True)
+        ):
+            raise UnsupportedJaxprError(path, "padding output shape differs")
+        if not prod(input_shapes[0]):
+            return args[1]
+        bindings, predicates = {}, []
+        for dimension, (n, (low, _, interior)) in enumerate(
+            zip(input_shapes[0], padding, strict=True)
+        ):
+            shifted = add(coordinate("local", dimension), integer(-low))
+            stride = interior + 1
+            bindings[f"local:{dimension}"] = divide(shifted, stride)
+            predicates.extend(
+                (
+                    Predicate("ge", (shifted, integer(0))),
+                    Predicate("lt", (shifted, integer(n + (n - 1) * interior))),
+                )
+            )
+            if interior:
+                predicates.append(Predicate("eq", (modulo(shifted, stride), integer(0))))
+        valid = Predicate("and", tuple(predicates))
+        selected = truth(valid, ranges)
+        value = _substitute(args[0], bindings)
+        if selected is not None:
+            return value if selected else args[1]
+        return ValueExpr("select_n", scalar_type(typ), (valid, args[1], value))
     if name == "tile":
         shape = input_shapes[0]
         offset = len(typ.shape) - len(shape)
@@ -302,7 +359,7 @@ def project_coordinates(
     budget: AnalysisBudget,
 ) -> Expression:
     """Apply proved address identities and bounded integer rules, never CAS queries."""
-    root = _substitute(value, bindings)
+    root = _share_expression(_substitute(value, bindings))
     cache: dict[int, Expression] = {}
     # A tensor's bound coordinates only occur inside its operands. Install
     # their ranges on entry, in the same traversal that projects coordinates;

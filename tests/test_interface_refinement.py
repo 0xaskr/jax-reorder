@@ -1,5 +1,7 @@
 """Private-port invariants reduce search without discarding feedback or dead code."""
 
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -8,6 +10,7 @@ from jax import lax
 from jax._src import core
 
 from jax_reorder import ComparisonBudgetError, Status, canonicalize, compare_jaxprs
+from jax_reorder.core.canonical import Node, _AmbiguousSlots, _Normalizer
 from jax_reorder.core.correspondence import verify_correspondence
 
 
@@ -128,3 +131,35 @@ def test_unused_result_types_remain_invariant_under_private_slot_permutation(kin
     result = compare_jaxprs(left, right, search_budget=1)
     assert result.status == Status.EQUIVALENT
     assert canonicalize(result.right.jaxpr, search_budget=1).graph == result.right.graph
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "inputs",
+        "effects",
+        "constants",
+        "node.inputs",
+        "node.outputs",
+        "node.params",
+        "node.effects",
+        "node.context",
+    ],
+)
+def test_private_allocation_pruning_keeps_hidden_and_unrooted_references(field):
+    """Same-type slots are not interchangeable when any semantic field uses them."""
+    empty = canonicalize(jax.make_jaxpr(lambda x, y: ())(jnp.float32(1), jnp.float32(2)))
+    refs = (("input", 0), ("input", 1))
+    hidden = tuple(("variable", ref) for ref in refs)
+    if field.startswith("node."):
+        name = field.split(".")[1]
+        # No BFS root reaches this node. Its references still distinguish the
+        # resources, including references carried only in effects or metadata.
+        node = Node(lax.sin_p, (), (), (), (), ())
+        graph = replace(
+            empty.graph, nodes=(replace(node, **{name: refs if name == "inputs" else hidden}),)
+        )
+    else:
+        graph = replace(empty.graph, **{field: hidden})
+    with pytest.raises(_AmbiguousSlots):
+        _Normalizer()._capture_order(replace(empty, graph=graph), 2, "test", allocations=((), ()))

@@ -39,6 +39,7 @@ from ..errors import (
 from ._typing import SymbolicGraph
 from .budget import validate_timeout
 from .expression import SymbolicTensor, coordinates, dag_atoms, same_bound_expression
+from .pallas_precision import pair_pallas_precision
 from .symbolic import SymbolicBuilder
 from .sympy_ops import (
     boolean_piecewise,
@@ -48,6 +49,7 @@ from .sympy_ops import (
     finite_expansion,
     simplify,
 )
+from .witnesses import DomainCache, exact_witness
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,7 @@ def compare_symbolic(
     started = time.monotonic()
     builder = SymbolicBuilder(algebra_budget)
     records: list[SympyQuery] = []
+    witness_domains: DomainCache = {}
 
     def query(
         output: int,
@@ -183,8 +186,6 @@ def compare_symbolic(
         output: int, point: tuple[int, ...], x: SymbolicTensor, y: SymbolicTensor
     ) -> SympyResult | None:
         """Find an exact counterexample before an expensive whole-formula CAS query."""
-        from .witnesses import exact_witness
-
         ex, dx = x.read(point)
         ey, dy = y.read(point)
         witness = exact_witness(
@@ -195,6 +196,7 @@ def compare_symbolic(
             builder.budget,
             builder.element_casts,
             finite_values=x.finite and y.finite,
+            domain_cache=witness_domains,
         )
         if witness is None:
             return None
@@ -219,6 +221,7 @@ def compare_symbolic(
         )
 
     try:
+        builder.pallas_precision_paired = pair_pallas_precision(left, right, builder.budget)
         a, b = builder.graph(left), builder.graph(right)
         # 两侧输出数量、shape、dtype 必须一致；构造后再检查一次，防止适配器改变形状。
         if len(a) != len(b) or any(

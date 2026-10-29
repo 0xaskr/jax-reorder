@@ -27,7 +27,7 @@ from .algebra.budget import Budget, validate_timeout
 from .core._typing import TreeDef
 from .core.canonical import Comparison, compare_jaxprs, difference
 from .core.core_execution import CoreExecutionBinding
-from .core.local import LocalKernelComparison, compare_pallas_kernels
+from .core.local import LocalKernelComparison, compare_pallas_kernels, validate_output_boundary
 from .core.semantics import Encoder, Frozen, encoded_equal
 from .errors import (
     ComparisonContractError,
@@ -405,6 +405,7 @@ def compare_function_traces(
     execution: CoreExecutionBinding
     | tuple[CoreExecutionBinding, CoreExecutionBinding]
     | None = None,
+    output_boundary: str = "kernel",
 ) -> ModeComparison:
     """先核对两侧契约是否一致，再比较图，返回这个模式的结论。
 
@@ -424,6 +425,7 @@ def compare_function_traces(
         raise ValueError("equivalence must be auto or structural")
     if scope not in ("function", "device_local"):
         raise ValueError("scope must be function or device_local")
+    validate_output_boundary(output_boundary, scope)
     if scope == "device_local" and (left.mode != "forward" or right.mode != "forward"):
         raise ValueError("device_local scope requires forward mode only")
     if execution is not None and (
@@ -445,7 +447,13 @@ def compare_function_traces(
         # Local input avals are established by the bound kernel projection;
         # parent output packaging is outside this explicitly chosen scope.
         signatures = tuple(
-            replace(s, input_avals=(), output_avals=(), output_tree=()) for s in signatures
+            replace(
+                s,
+                input_avals=(),
+                output_avals=(),
+                output_tree=s.output_tree if output_boundary == "parent" else (),
+            )
+            for s in signatures
         )
     difference_path = difference(*signatures)
     if difference_path:
@@ -467,10 +475,13 @@ def compare_function_traces(
                     algebra_budget=algebra_budget,
                     algebra_timeout=algebra_timeout,
                     execution=execution,
+                    output_boundary=output_boundary,
                 )
                 status, kind = algebra.status, algebra.equivalence_kind
             else:
-                local = compare_pallas_kernels(left.jaxpr, right.jaxpr)
+                local = compare_pallas_kernels(
+                    left.jaxpr, right.jaxpr, output_boundary=output_boundary
+                )
                 status, kind = local.status, local.equivalence_kind
             return ModeComparison(
                 left.mode,
@@ -534,6 +545,7 @@ def compare_functions(
     execution: CoreExecutionBinding
     | tuple[CoreExecutionBinding, CoreExecutionBinding]
     | None = None,
+    output_boundary: str = "kernel",
 ) -> FunctionComparison:
     """对每个请求的模式分别追踪、核对契约、比较，最后汇总成一份报告。
 
@@ -557,6 +569,7 @@ def compare_functions(
         raise ValueError("equivalence must be auto or structural")
     if scope not in ("function", "device_local"):
         raise ValueError("scope must be function or device_local")
+    validate_output_boundary(output_boundary, scope)
     if scope == "device_local" and modes != ("forward",):
         raise ValueError("device_local scope requires forward mode only")
     Budget(algebra_budget)
@@ -616,6 +629,7 @@ def compare_functions(
                 algebra_timeout=algebra_timeout,
                 scope=scope,
                 execution=execution,
+                output_boundary=output_boundary,
             )
         )
     # 汇总取最保守的结论：任一模式 inequivalent 就整体 inequivalent；

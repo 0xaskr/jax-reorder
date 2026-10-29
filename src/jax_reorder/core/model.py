@@ -288,6 +288,9 @@ class CompilerView:
     # Reviewed TensorCore layout/codegen hints preserve logical coordinates and
     # dot dimensions. Exact options remain in parameters and call signatures.
     reviewed_layout_options: bool = False
+    # Capacity and runtime bounds-check settings preserve successful values only
+    # after the tensor executor proves every memory access independently.
+    reviewed_resource_options: bool = False
 
 
 @dataclass(frozen=True)

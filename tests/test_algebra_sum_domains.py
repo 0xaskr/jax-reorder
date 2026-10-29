@@ -7,7 +7,7 @@ import pytest
 import sympy as sp
 from jax.experimental import pallas as pl
 
-from jax_reorder import Status, compare_functions
+from jax_reorder import ComparisonBudgetError, Status, compare_functions
 from jax_reorder.algebra.budget import Budget
 from jax_reorder.algebra.sum_domains import compact_domain
 from jax_reorder.algebra.witnesses import exact_witness
@@ -529,6 +529,75 @@ def test_witness_cast_cache_separates_exact_values_and_both_dtypes(first, second
         )
         is None
     )
+
+
+@pytest.mark.parametrize("changed", ["shape", "dtype", "cast", "condition"])
+def test_witness_domain_cache_keeps_original_input_and_cast_obligations(changed):
+    cache = {}
+    inputs = [jax.ShapeDtypeStruct((2,), jnp.float32)]
+    data = sp.IndexedBase("x0", shape=(2,))
+    condition = sp.Eq(data[1], 1)
+    casts = {}
+    if changed == "dtype":
+        inputs = [jax.ShapeDtypeStruct((), jnp.float32)]
+        condition = sp.Eq(sp.Symbol("x0"), 1)
+    if changed == "cast":
+        condition = sp.Eq(sp.Function("defined_cast")(257), 1)
+        casts = {"cast": ("float32", "float16")}
+
+    def search():
+        return exact_witness(
+            sp.S.One,
+            sp.S.Zero,
+            (condition,),
+            inputs,
+            Budget(1000),
+            casts,
+            domain_cache=cache,
+        )
+
+    assert search() == ("one", 1, 0)
+    if changed == "shape":
+        inputs = [jax.ShapeDtypeStruct((1,), jnp.float32)]
+    elif changed == "dtype":
+        inputs = [jax.ShapeDtypeStruct((), jnp.bool_)]
+    elif changed == "cast":
+        casts = {"cast": ("float32", "bfloat16")}
+    else:
+        condition = data[1] < 0
+    assert search() is None
+
+
+def test_witness_domain_cache_keeps_candidate_assignments_separate():
+    x, _, z = sp.symbols("x0 x1 x2", real=True)
+    inputs = [jax.ShapeDtypeStruct((), jnp.float32)] * 3
+    casts = {"cast": ("float32", "float16")}
+    cache = {}
+    assert exact_witness(
+        sp.S.One, sp.S.Zero, (x > 0,), inputs, Budget(1000), casts, domain_cache=cache
+    ) == ("one", 1, 0)
+    # The isolated-last-input candidate sets x0=0 and violates the domain
+    # validated for the previous all-ones candidate.
+    assert exact_witness(
+        sp.Function("cast")(z),
+        sp.S.Zero,
+        (x > 0,),
+        inputs,
+        Budget(1000),
+        casts,
+        domain_cache=cache,
+    ) == ("one", 1, 0)
+
+
+def test_witness_domain_cache_does_not_store_budget_exhaustion_as_a_failed_candidate():
+    x = sp.Symbol("x0", real=True)
+    inputs = [jax.ShapeDtypeStruct((), jnp.float32)]
+    cache = {}
+    with pytest.raises(ComparisonBudgetError):
+        exact_witness(sp.S.One, sp.S.Zero, (x > 0,), inputs, Budget(1), domain_cache=cache)
+    assert exact_witness(
+        sp.S.One, sp.S.Zero, (x > 0,), inputs, Budget(100), domain_cache=cache
+    ) == ("one", 1, 0)
 
 
 @pytest.mark.parametrize("finite_values", [False, True])

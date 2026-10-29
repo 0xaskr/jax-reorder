@@ -230,7 +230,7 @@ def test_unsafe_memory_is_rejected_before_projection(mode, reason):
 
 
 @pytest.mark.parametrize("scope", [None, "function", "device_local"])
-def test_unused_uninitialized_read_is_still_checked(scope):
+def test_unused_uninitialized_read_retains_access_without_value_obligation(scope):
     # JAX's tracing DCE removes unused get operations. Insert the retained source
     # equation explicitly to exercise the complete-graph admission requirement.
     graph = trace()
@@ -243,11 +243,36 @@ def test_unused_uninitialized_read_is_still_checked(scope):
     )
     kernel = kernel.replace(eqns=[unused, *kernel.eqns], effects=kernel.effects | unused.effects)
     changed = graph.jaxpr.replace(eqns=[outer.replace(params={**outer.params, "jaxpr": kernel})])
-    with pytest.raises(UnsupportedJaxprError, match="uninitialized"):
+    if scope is None:
+        proof = normalize_view(adapt(changed).view, budget=AnalysisBudget())
+        assert proof.projection.origins
+    else:
+        assert compare_algebraic_jaxprs(changed, graph, scope=scope).status is Status.EQUIVALENT
+
+
+@pytest.mark.parametrize("scope", [None, "device_local"])
+@pytest.mark.parametrize("initialize", [False, True])
+def test_local_discarded_kernel_output_still_requires_initialization(scope, initialize):
+    signature = jax.ShapeDtypeStruct((8, 128), jnp.float32)
+
+    def kernel(x, y, placeholder):
+        y[...] = x[...]
+        if initialize:
+            placeholder[...] = jnp.zeros(placeholder.shape, placeholder.dtype)
+
+    function = pl.pallas_call(kernel, out_shape=(signature, signature))
+    graph = jax.make_jaxpr(lambda x: function(x)[0])(signature)
+
+    def compare():
         if scope is None:
-            normalize_view(adapt(changed).view, budget=AnalysisBudget())
-        else:
-            compare_algebraic_jaxprs(changed, graph, scope=scope)
+            return compare_pallas_kernels(graph, graph, equivalence="semantic")
+        return compare_algebraic_jaxprs(graph, graph, scope=scope)
+
+    if initialize:
+        assert compare().status is Status.EQUIVALENT
+    else:
+        with pytest.raises(UnsupportedJaxprError, match="uninitialized|coverage"):
+            compare()
 
 
 def _prefetch_dependency_graph(mode):

@@ -16,7 +16,7 @@ from ..errors import (
 from ..status import Status
 from .adapters.attributes import project_mesh_attribute
 from .adapters.jax import adapt
-from .call_bindings import BindingExpr, CallSite, binding_value, extract_call
+from .call_bindings import BindingExpr, CallSite, binding_value, extract_call, parent_output_values
 from .canonical import canonicalize
 from .communication import DMA_PROGRESS_ASSUMPTION
 from .core_execution import (
@@ -63,10 +63,18 @@ class LocalKernelComparison:
     left_execution: CoreExecutionEvidence | None = None
     right_execution: CoreExecutionEvidence | None = None
     equivalence: str = "structural"
+    output_boundary: str = "kernel"
 
     @property
     def equivalence_kind(self) -> str | None:
         return self.evidence.kind if self.status is Status.EQUIVALENT and self.evidence else None
+
+
+def validate_output_boundary(output_boundary: str, scope: str = "device_local") -> None:
+    if output_boundary not in ("kernel", "parent"):
+        raise ValueError("output_boundary must be kernel or parent")
+    if output_boundary != "kernel" and scope != "device_local":
+        raise ValueError("parent output_boundary requires device_local scope")
 
 
 def _axes(site: CallSite) -> tuple[tuple[str, int, str], ...]:
@@ -156,13 +164,14 @@ def _local_facts(site: CallSite) -> Callable[[Any], Any]:
     return local
 
 
-def _key(site: CallSite) -> tuple[Any, ...]:
+def _key(site: CallSite, output_boundary: str = "kernel") -> tuple[Any, ...]:
     local = _local_facts(site)
     return (
         local(site.operation.call),
         local(site.arguments),
         _axes(site),
         local(site.operation.context),
+        local(site.outputs) if output_boundary == "parent" else (),
     )
 
 
@@ -215,9 +224,20 @@ def _check_protocol(
     execution: CoreExecutionBinding | None,
     *,
     defer_padding: bool = False,
+    output_boundary: str = "kernel",
 ) -> tuple[RewriteEvidence, CoreExecutionEvidence | None]:
     call = site.operation.call
     assert call is not None
+    if output_boundary == "parent" and (
+        _has_remote(call)
+        or execution is not None
+        or execution_cores is not None
+        or any(w.shard_map is not None for w in site.wrappers)
+    ):
+        raise UnsupportedJaxprError(
+            "local.parent",
+            "parent output views require local execution without shard/core assembly",
+        )
     defer_padding = defer_padding and has_unmasked_padding(call)
     if _has_remote(call):
         return _remote_projection(view, site, budget, execution_cores, execution), None
@@ -292,6 +312,7 @@ def _check_protocol(
             axis_ranges=ranges,
             execution_cores=execution_cores,
             defer_padding=defer_padding,
+            defer_output_initialization=output_boundary == "parent",
         )
     else:
         projection, core_evidence = functionalize_core_execution(
@@ -302,6 +323,13 @@ def _check_protocol(
             coordinates=coordinates,
             axis_ranges=ranges,
         )
+    output_types = tuple(b.array for b in call.blocks[call.num_inputs :])
+    if output_boundary == "parent":
+        projection = replace(
+            projection,
+            outputs=parent_output_values(site, projection.outputs, budget=budget, ranges=ranges),
+        )
+        output_types = tuple(cast(ArrayType, value.type) for value in site.outputs)
     proof = RewriteEvidence(
         "device-local-bound-core-resource-check" if execution else "device-local-resource-check",
         1,
@@ -312,7 +340,7 @@ def _check_protocol(
                 view,
                 site,
                 tuple(input_types[p] for p in ports),
-                tuple(b.array for b in call.blocks[call.num_inputs :]),
+                output_types,
                 (ParameterView("source_input_ports", ports), ParameterView("axes", axes)),
             ),
         ),
@@ -320,6 +348,8 @@ def _check_protocol(
         deferred_padding=defer_padding,
         execution_cores=execution_cores,
         execution=execution,
+        output_boundary=output_boundary,
+        output_bindings=site.outputs if output_boundary == "parent" else (),
     )
     return _retain_call_source(proof, call), core_evidence
 
@@ -409,18 +439,29 @@ def project_local_view(
     budget: AnalysisBudget,
     defer_padding: bool = False,
     execution: CoreExecutionBinding | None = None,
+    output_boundary: str = "kernel",
 ) -> tuple[CallSite, RewriteEvidence, CoreExecutionEvidence | None]:
     """Project one bound kernel without imposing the parent output assembly."""
     site = extract_call(view, budget=budget)
     _axes(site)
     try:
-        evidence, core = _check_protocol(view, site, budget, None, execution)
+        evidence, core = _check_protocol(
+            view, site, budget, None, execution, output_boundary=output_boundary
+        )
     except UnsupportedJaxprError:
         if not defer_padding:
             raise
         # A fully proved projection can finish at the semantic stage. Defer
         # lane validity only when strict projection actually needs that proof.
-        evidence, core = _check_protocol(view, site, budget, None, execution, defer_padding=True)
+        evidence, core = _check_protocol(
+            view,
+            site,
+            budget,
+            None,
+            execution,
+            defer_padding=True,
+            output_boundary=output_boundary,
+        )
     return site, evidence, core
 
 
@@ -433,6 +474,7 @@ def compare_pallas_kernels(
     analysis_budget: int = 10000,
     execution_cores: int | None = None,
     execution: CoreExecutionBinding | None = None,
+    output_boundary: str = "kernel",
 ) -> LocalKernelComparison:
     """Compare one kernel per source graph, retaining lexical and axis bindings.
 
@@ -446,12 +488,15 @@ def compare_pallas_kernels(
     it does not configure native scheduling and requires check_protocol=True.
     Remote protocols accept only one core-0 stream, which the caller establishes
     identically on every device. execution_cores alone does not bind grid order.
+    output_boundary="parent" composes the complete ordered parent output views,
+    requires resource checking and supports local execution without shard/core assembly.
     """
     if type(check_protocol) is not bool:
         raise ValueError("check_protocol must be a bool")
     if equivalence not in ("structural", "semantic"):
         raise ValueError("equivalence must be structural or semantic")
-    check_protocol |= equivalence == "semantic"
+    validate_output_boundary(output_boundary)
+    check_protocol |= equivalence == "semantic" or output_boundary == "parent"
     if execution_cores is not None and (type(execution_cores) is not int or execution_cores != 1):
         raise ValueError("execution_cores currently requires an explicit single-core binding")
     if execution is not None and (
@@ -472,6 +517,7 @@ def compare_pallas_kernels(
             execution_cores,
             execution,
             equivalence,
+            output_boundary,
         )
     except RecursionError as error:
         raise ComparisonBudgetError(
@@ -489,6 +535,7 @@ def _compare_pallas_kernels(
     execution_cores: int | None,
     execution: CoreExecutionBinding | None,
     equivalence: str,
+    output_boundary: str,
 ) -> LocalKernelComparison:
     a, b = (
         adapt(
@@ -501,13 +548,17 @@ def _compare_pallas_kernels(
     x, y = extract_call(a, budget=budget), extract_call(b, budget=budget)
     (px, cx), (py, cy) = (
         (
-            _check_protocol(a, x, budget, execution_cores, execution),
-            _check_protocol(b, y, budget, execution_cores, execution),
+            _check_protocol(
+                a, x, budget, execution_cores, execution, output_boundary=output_boundary
+            ),
+            _check_protocol(
+                b, y, budget, execution_cores, execution, output_boundary=output_boundary
+            ),
         )
         if check_protocol
         else ((None, None), (None, None))
     )
-    equal = _key(x) == _key(y)
+    equal = _key(x, output_boundary) == _key(y, output_boundary)
     kind = "structural"
     if equivalence == "semantic":
         assert px is not None and py is not None
@@ -525,7 +576,14 @@ def _compare_pallas_kernels(
         left_execution=cx,
         right_execution=cy,
         equivalence=equivalence,
+        output_boundary=output_boundary,
     )
+    if output_boundary == "parent":
+        result = replace(
+            result,
+            assumptions=result.assumptions
+            + ("complete ordered parent output views determine observable initialized lanes",),
+        )
     if check_protocol:
         protocols = tuple(p for p in (px, py) if p is not None)
         assumptions = tuple(
@@ -595,6 +653,7 @@ def verify_pallas_kernel_comparison(
         execution_cores=result.execution_cores,
         execution=result.execution,
         equivalence=result.equivalence,
+        output_boundary=result.output_boundary,
     )
     if (result.status, result.evidence, result.scope, result.assumptions) != (
         replay.status,
