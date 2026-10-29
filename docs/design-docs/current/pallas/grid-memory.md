@@ -62,10 +62,16 @@ Buffered(1, ANY) 的同步恢复按锁定源契约处理；默认/IMMEDIATE 非�
 - store 只更新 active lane，inactive 保留原版本/初始化。load 只对实际读取施加越界、初始化与在途 DMA 冲突义务。
 - 无 `other` 的 masked load，以及 masked swap 的 inactive 返回值都保留未定义性；不能假定为零或可靠旧值。
 - 正确 select/where 可在同一 predicate 或已证明区域关系下屏蔽无效分支；不猜测不同数据 predicate 的代数关系。
-- 未定义值不得进入有效输出、索引、mask/控制条件或实际 DMA 源；`0 * undefined` 仍未定义。
+- 未定义值不得进入有效可观察输出、索引、mask/控制条件；`0 * undefined` 仍未定义。
   reduce/dot 检查全部参与输入，归约后再 mask 不能修复已经读入的 padding。
-- 自动输入已分配 VMEM padding 可先读再正确清理；越界 HBM、scratch/output 的 active 未初始化读取仍拒绝。
+- 自动输入已分配 VMEM padding 可先读再正确清理；越界 HBM、scratch/output 的 active 未初始化读取仍拒绝，
+  仅所在区域无任何 SSA 消费者的本地读取可豁免值初始化；地址、mask 和访问冲突检查照常执行。
   普通输出最终只要求有效 HBM 域有定义，不要求未提交 padding 初始化。
+- 默认仍要求所有实际 DMA 源有定义。显式父输出视图模式允许 scratch 到本地 ANY 输出
+  的 DMA 传播未定义填充，保留 undefined 标记、实际传输尺寸、逐笔源版本、冲突与等待；
+  只有完整父图证明这些 lane 未被观察时才成功。不能用于越界访问、输入 staging padding、
+  远端 DMA，不能将未定义值作为普通读取、控制或地址消费，也不能以算术消项建立定义性。
+  默认全部 kernel 端口模式不豁免该义务。
 - 远端数据 masked store 可保留 inactive 区域的条件未定义状态；互补写入、同谓词保护读取等已审核模式
   可完成初始化证明。实际消费仍须有定义，不推断任意不同数据谓词之间的关系；漏写、错误谓词、
   未定义值用于控制/索引/DMA 或缺 wait 仍拒绝，见[条件初始化回归](../../../../tests/test_pallas_remote_mask.py)。

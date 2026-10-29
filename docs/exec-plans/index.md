@@ -7,6 +7,7 @@
 
 | 计划 | 当前重点 |
 | --- | --- |
+| [KDA 完整资源与数学比较后续](active/kda-resource-completion.md) | 已获授权并实现父输出边界、未消费读取及本地填充传播；原始六配置资源自比较通过，继续跟踪大公式耗时、一般精度对应和历史编译策略 |
 | [JAX / Pallas 语义层](active/pallas-semantic-layer.md) | 优先修复整数归约/点积的数学语义；继续扩展数据条件、动态地址、并行共享 staging、索引/路由/终止及布局证明 |
 
 尚未解决事项统一维护在下方[待处理清单](#待处理)，具体复现和修复要求放入对应计划。
@@ -26,6 +27,7 @@ P0 表示阻塞，P1 表示当前迭代，P2 表示后续。启动或完成任�
 | AD-003 | 高阶求导及任意变换组合没有整体保证；add_any 累加换序的 VJP 图差异可由默认代数模式单独证明，区域接口改变仍可能无法完成比较并抛出异常 | P2 | 待处理 | [反馈用例](../../tests/test_feedback_bindings.py)、[代数边界](../design-docs/current/algebraic-equivalence.md#当前边界) |
 | PALLAS-001 | 已支持受限远端条件初始化、有界动态页 DMA 和设备局部数学比较；仍缺更一般的数据谓词关系、并行共享 staging、索引/路由/终止及物理布局证明。执行绑定、预算与源后端限制分别列明；core_map/mpmd_map、输入输出共享 HBM 暂不支持 | P1 | 进行中 | [准确范围](../design-docs/current/pallas/validation.md)、[当前计划](active/pallas-semantic-layer.md) |
 | PALLAS-002 | 第一版之外的全局扩展：一般多轴 mesh 跨设备值组装、动态路由/通信协议及多主机验证。有限单轴协议与多维 kernel grid 已有专用规则，不构成一般全局证明；这些缺口不阻塞设备局部图比较 | P2 | 待处理 | [通信范围](../design-docs/current/pallas/communication.md)、[通信验收](completed/communication-protocols.md) |
+| PALLAS-006 | KDA 7 月历史版的 collective_id/custom barrier 编译策略尚未审核；CP inactive 不能直接作为忽略这些参数的理由 | P2 | 待处理 | [原始代码验收](active/kda-resource-completion.md#新的后续问题) |
 | LAYER-002 | 原 FluxSingleTransformerBlock Explicit sharding 与 GLM5 单 head 配置被锁定 JAX 追踪拒绝；未篡改原计算绕过 | P2 | 待处理 | [原始拒绝回归](../../tests/test_full_attention.py) |
 | LAYER-003 | GLM5 稀疏 DSA、完整 MoE Decoder、其他配置和多主机/GPU/TPU 未验证 | P2 | 待处理 | [完整层范围](completed/validation/full-attention.md) |
 | DOC-001 | `.agents/README.md` 仍有 scaffold 旧描述；当前工作区该目录只读，本轮以 AGENTS/架构/开发文档为当前事实来源 | P2 | 待处理 | [项目入口](../../AGENTS.md)、[当前架构](../../ARCHITECTURE.md) |
@@ -36,6 +38,8 @@ P0 表示阻塞，P1 表示当前迭代，P2 表示后续。启动或完成任�
 | ALG-004 | 默认数学路径使用可信 SymPy；jax2sympy 的生产逻辑已直接并入项目构造器，其余数组转换代码保存在参考模块。支持完整标量/索引表达、非线性组合、原始条件及受限区域；旧独立证据和兼容 API 已删除。仍不完备：不透明排序/索引残差、未建模的整数 dtype 值域、无法确认的部分函数条件不能生成源程序负结论；一般递推与数据依赖终止仍明确拒绝或报告未决异常。已确认未正确拒绝的整数转换见 ALG-006～008 | P1 | 待处理 | [当前实现与边界](../design-docs/current/algebraic-equivalence.md#2026-10-16-可信-sympy-默认数学后端)、[迁移计划](completed/trusted-sympy-backend.md) |
 | ALG-005 | 符号 worker 默认墙钟限制按用户要求由 10 秒调整为 60 秒，可显式覆盖；展开预算保留，尚无进程 RSS 硬上限。时间范围不包括父进程 tracing/结构规范化；复杂 Piecewise/张量条件仍可能超预算或超时，构造规模基线不能代替大图查询性能保证 | P2 | 待处理 | [资源与规模记录](../design-docs/current/algebraic-equivalence.md#实现与结果接口)、[规模脚本](../../tools/experiments/equivalence_backends/trusted_sympy_scaling.py) |
 | ALG-009 | 普通 JAX 的纯死计算删减已确定设计，`freeze` 与 `SymbolicBuilder.graph/finish` 仍转换并保留这些计算的定义条件；Pallas 数学投影已有受限实现，不代表普通 JAX 已完成 | P2 | 待处理 | [决定与实际范围](../design-docs/current/algebraic-equivalence.md#2026-10-19-决定在代数-lowering-中删减未使用的纯计算)、[现有行为回归](../../tests/test_algebra_inequivalence.py) |
+| ALG-010 | HIGHEST 的完整点积及有序输出对应已接入，支持有限标量缩放迁移；更一般的布局/代数改写对应仍明确拒绝，不能只按精度集合放行 | P2 | 部分完成 | [配对范围](../design-docs/current/algebraic-equivalence.md#2026-10-29相同非默认点积精度)、[正反例](../../tests/test_pallas_precision_pairing.py) |
+| ALG-011 | 原始 KDA 的 dg 完整公式构造与坐标替换触发 SymPy 高开销，缩放正反例仍达默认 60 秒；需保持全部输出、内存定义性和完整输入反例前提的性能改进 | P1 | 待处理 | [限时诊断与范围](active/kda-resource-completion.md#新的后续问题) |
 | ALG-006 | 整数归约/点积遗漏溢出语义，可能错误判等价 | P1 | 待处理 | [复现与修复要求](active/pallas-semantic-layer.md#2026-10-26-审查确认的正确性缺陷) |
 | ALG-007 | iota 遗漏 dtype 值域，可能错误判等价 | P1 | 待处理 | [复现与修复要求](active/pallas-semantic-layer.md#2026-10-26-审查确认的正确性缺陷) |
 | ALG-008 | 空整数极值归约单位元错误，可能错误判不等价 | P2 | 待处理 | [复现与修复要求](active/pallas-semantic-layer.md#2026-10-26-审查确认的正确性缺陷) |
@@ -67,6 +71,9 @@ P0 表示阻塞，P1 表示当前迭代，P2 表示后续。启动或完成任�
 | BFS-006 | [已解决记录](completed/graph-equivalence-validation.md#已解决问题编号) |
 | LAYER-001 | [已解决记录](completed/pallas-structural-comparison.md#已解决问题编号) |
 | PALLAS-003 | [已解决记录](completed/pallas-broadcast-coordinates.md#已解决问题编号) |
+| PALLAS-004 | [完全未引用私有分配的精确对称剪枝](completed/kda-comparison-fixes.md#已解决问题编号) |
+| PALLAS-005 | [授权后的未消费读取、父输出边界与本地 DMA 填充传播；原始 KDA 六配置资源通过](active/kda-resource-completion.md#原始代码的父输出验收) |
+| TEST-001 | [共同定义域反例与重复条件检查修复](completed/kda-comparison-fixes.md#已解决问题编号) |
 
 旧 Pallas 边界、10 秒 CAS 失败与 60 秒复测保存在[历史问题快照](completed/context-history/tech-debt-2026-10-21.md)，不覆盖本节现行状态。
 
@@ -122,6 +129,8 @@ P0 表示阻塞，P1 表示当前迭代，P2 表示后续。启动或完成任�
 | [顺序输入 index_map](completed/pallas-ordered-index-map.md) | 当前 kernel 完成后计算下一输入映射 |
 | [顺序输出映射与纯死计算 lowering](completed/pallas-output-map-and-pure-lowering.md) | 输出生命周期与受限数学删减 |
 | [有界动态页与在途 DMA](completed/pallas-bounded-page-dma.md) | 逐笔页号、源版本、等待与输出关联 |
+| [KDA 比较与既有回归修复](completed/kda-comparison-fixes.md) | 私有分配搜索剪枝、pad/exp2 与 Ref/编译参数覆盖、共同定义域见证缓存及回归核验 |
+| [KDA backward 历史与 AI 候选验证](completed/kda-backward-history.md) | 最新 mega、三个历史版本与五个 AI 候选；53 组完整结构、106 次数值执行，局部资源/数学的原始读取阻塞单独记录 |
 
 ### 工程与文档
 
