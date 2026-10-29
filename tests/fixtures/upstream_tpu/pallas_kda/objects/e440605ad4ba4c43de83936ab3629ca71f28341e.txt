@@ -1,0 +1,1493 @@
+import os
+from functools import partial
+
+from jax.experimental.pallas import tpu as pltpu
+import functools
+import jax.numpy as jnp
+import jax
+
+from tops.hardware import get_tpu_config
+from tops.ops.utils import get_interpret
+from tops.utils import align_up
+from jax.experimental import pallas as pl
+from jaxtyping import Array, Float, Int
+from tops.ops.common.cp_utils import CPContext
+from tops.ops.kda.chunk_bwd_fusion import (
+  _chunk_segment_metadata,
+  _chunk_window_has_valid,
+  _matmul_in_dtype,
+  compute_intra_backward_sequential_to_chunk_refs,
+  compute_m1_recompute,
+  compute_reverse_cumsum_dg_scan,
+  compute_wy_backward,
+)
+
+
+# Mega-kernel tuning knobs. Each benchmark process reads MB/CB before JAX
+# tracing, so those variants can be swept without source edits. The backward
+# pipeline uses independent two-way input and output ping-pong buffers; output
+# storage never aliases an input tile.
+KDA_DMA_CHUNK_BATCH = int(os.environ.get("TOPS_KDA_DMA_CHUNK_BATCH", "6"))
+KDA_DMA_INPUT_BUFFER_COUNT = 2
+KDA_DMA_OUTPUT_BUFFER_COUNT = 2
+KDA_DMA_MINI_BATCH_ENV = os.environ.get("TOPS_KDA_MEGA_MINI_BATCH", None)
+KDA_DMA_MINI_BATCH = (
+  int(KDA_DMA_MINI_BATCH_ENV)
+  if KDA_DMA_MINI_BATCH_ENV is not None
+  else KDA_DMA_MINI_BATCH_ENV
+)
+
+
+@partial(jax.jit, static_argnames=["scale"])
+def compute_dav(bdo, bvn, bAqk, scale):
+  BT = bdo.shape[1]
+  m_causal = jnp.arange(BT)[:, None] >= jnp.arange(BT)[None, :]
+  bAqk_masked = jnp.where(m_causal[None, :, :], bAqk, 0.0)
+  bdAqk = jnp.matmul(
+    bdo.astype(jnp.float32), bvn.transpose(0, 2, 1), preferred_element_type=jnp.float32
+  )
+  bdAqk = jnp.where(m_causal[None, :, :], bdAqk * scale, 0.0)
+  bdv0 = jnp.matmul(
+    bAqk_masked.transpose(0, 2, 1),
+    bdo.astype(jnp.float32),
+    preferred_element_type=jnp.float32,
+  )
+  return bdAqk, bdv0
+
+
+def _bwd_mega_kernel(
+  chunk_seg_ids_ref,
+  cp_post_num_ref,
+  cp_is_last_ref,
+  q_ref,
+  k_ref,
+  v_ref,
+  beta_ref,
+  Aqk_ref,
+  Akk_ref,
+  g_ref,
+  h_ref,
+  do_ref,
+  dht_ref,
+  initial_state_ref,
+  dq_ref,
+  dk_ref,
+  dv_ref,
+  db_ref,
+  dg_ref,
+  dh0_ref,
+  h_all_ref,
+  *,
+  H,
+  B,
+  BT,
+  BT_PAD,
+  K,
+  V,
+  NT,
+  SCALE,
+  MB,
+  MB_PAD,
+  CHUNK_BATCH,
+  DMA_INPUT_BUFFER_COUNT,
+  DMA_OUTPUT_BUFFER_COUNT,
+  DISABLE_RECOMPUTE,
+  CP_ACTIVE,
+  CP_SIZE,
+  CP_AXIS_NAME,
+  HAS_H0,
+):
+  """Single-program M5 kernel with manual HBM<->VMEM DMA.
+
+  Cross-phase state is allocated inside each batch/head-group iteration with
+  pl.run_scoped. The enclosing pallas_call has no externally declared
+  temporary VMEM.
+  """
+  compute_dtype = q_ref.dtype
+  precision = None if compute_dtype == jnp.bfloat16 else jax.lax.Precision.HIGHEST
+  def _matmul_low(lhs, rhs, precision=precision):
+    return _matmul_in_dtype(lhs, rhs, compute_dtype, precision)
+
+
+  @jax.jit
+  def _dma_copy(src, dst, sem):
+    cp = pltpu.make_async_copy(src, dst, sem)
+    cp.start()
+    cp.wait()
+
+  @jax.jit
+  def _dma_in(hbm_ref, vmem_ref, sem, mb_offset, b, c):
+    src = hbm_ref.at[
+      (pl.ds(mb_offset * MB, MB), pl.ds(b, 1), pl.ds(c, 1), pl.ds(None), pl.ds(None))
+    ]
+    _dma_copy(src, vmem_ref, sem)
+
+  @jax.jit
+  def _dma_out(vmem_ref, hbm_ref, sem, mb_offset, b, c):
+    dst = hbm_ref.at[
+      (pl.ds(mb_offset * MB, MB), pl.ds(b, 1), pl.ds(c, 1), pl.ds(None), pl.ds(None))
+    ]
+    _dma_copy(vmem_ref, dst, sem)
+
+  def _async_copy(src, dst, sem, wait=False):
+    cp = pltpu.make_async_copy(src, dst, sem)
+    if wait:
+      cp.wait()
+    else:
+      cp.start()
+
+  def _dma_beta_in(beta_buf, sem, mb_offset, b, c, wait=False):
+    """Copy one compact [head-group, chunk] beta tile into VMEM."""
+    beta_offset = ((mb_offset * B + b) * NT + c) * MB_PAD
+    src = beta_ref.at[(pl.ds(beta_offset, MB_PAD), pl.ds(None))]
+    _async_copy(src, beta_buf, sem, wait=wait)
+
+  @jax.jit
+  def _dma_state_in(state_ref, vmem_ref, sem, mb_offset, b, seq):
+    src = state_ref.at[(pl.ds(mb_offset * MB, MB), b, seq, pl.ds(None), pl.ds(None))]
+    _dma_copy(src, vmem_ref, sem)
+
+  @jax.jit
+  def _dma_state_out(vmem_ref, state_ref, sem, mb_offset, b, seq):
+    dst = state_ref.at[(pl.ds(mb_offset * MB, MB), b, seq, pl.ds(None), pl.ds(None))]
+    _dma_copy(vmem_ref, dst, sem)
+
+  def sync_barrier():
+    barrier_sem = pltpu.get_barrier_semaphore()
+    for i in range(CP_SIZE):
+      pl.semaphore_signal(
+        barrier_sem,
+        device_id=i,
+        device_id_type=pl.DeviceIdType.MESH,
+      )
+    pl.semaphore_wait(barrier_sem, CP_SIZE)
+
+  def main_loop_body(
+    batch_idx,
+    mb_offset,
+    dh_tmp_ref,
+    dS_acc_ref=None,
+    M_acc_ref=None,
+    ag_buf_ref=None,
+  ):
+    # Compute first/last local segment IDs once per batch element
+    first_seg_id = chunk_seg_ids_ref[batch_idx, 0]
+    last_seg_id = first_seg_id
+    for seg_i in range(1, NT):
+      seg_i_id = chunk_seg_ids_ref[batch_idx, seg_i]
+      first_seg_id = jnp.where(
+        (first_seg_id == 0) & (seg_i_id != 0), seg_i_id, first_seg_id
+      )
+      last_seg_id = jnp.where(seg_i_id != 0, seg_i_id, last_seg_id)
+
+    # =================================================================
+    # Phase 1: Forward recompute_h  (only when !disable_recompute)
+    # =================================================================
+    if not DISABLE_RECOMPUTE:
+      @functools.partial(
+        pl.run_scoped,
+        k_fwd_buf=pltpu.VMEM((MB, 1, 1, BT, K), k_ref.dtype),
+        v_fwd_buf=pltpu.VMEM((MB, 1, 1, BT, V), v_ref.dtype),
+        beta_fwd_buf=pltpu.VMEM((MB_PAD, 128), beta_ref.dtype),
+        Akk_fwd_buf=pltpu.VMEM((MB, 1, 1, BT, BT_PAD), Akk_ref.dtype),
+        g_fwd_buf=pltpu.VMEM((MB, 1, 1, BT, K), g_ref.dtype),
+        h_fwd_out_buf=pltpu.VMEM((MB, 1, 1, K, V), jnp.float32),
+        g_fwd_scratch=pltpu.VMEM((MB, BT, K), jnp.float32),
+        in_sems_fwd=pltpu.SemaphoreType.DMA((5,)),
+        out_sem_fwd=pltpu.SemaphoreType.DMA,
+        state_sem_fwd=pltpu.SemaphoreType.DMA,
+      )
+      def _forward_recompute_scoped(
+        k_fwd_buf,
+        v_fwd_buf,
+        beta_fwd_buf,
+        Akk_fwd_buf,
+        g_fwd_buf,
+        h_fwd_out_buf,
+        g_fwd_scratch,
+        in_sems_fwd,
+        out_sem_fwd,
+        state_sem_fwd,
+      ):
+        @pl.loop(0, NT, unroll=False)
+        def forward_loop(chunk_id):
+          # chunk_id: 0 -> NT-1  (forward scan)
+          seg_cur, seq_idx, is_valid, is_first_chunk, is_last_chunk = (
+            _chunk_segment_metadata(chunk_seg_ids_ref, batch_idx, chunk_id, NT)
+          )
+
+          # Match PR #463's all-padding DMA skip. Invalid chunks are masked
+          # below, so their VMEM buffers do not need to be refreshed.
+          @pl.when(is_valid)
+          def _load_forward_chunk():
+            _dma_in(k_ref, k_fwd_buf, in_sems_fwd.at[0], mb_offset, batch_idx, chunk_id)
+            _dma_in(v_ref, v_fwd_buf, in_sems_fwd.at[1], mb_offset, batch_idx, chunk_id)
+            _dma_beta_in(
+              beta_fwd_buf, in_sems_fwd.at[2], mb_offset, batch_idx, chunk_id
+            )
+            _dma_beta_in(
+              beta_fwd_buf,
+              in_sems_fwd.at[2],
+              mb_offset,
+              batch_idx,
+              chunk_id,
+              wait=True,
+            )
+            _dma_in(
+              Akk_ref, Akk_fwd_buf, in_sems_fwd.at[3], mb_offset, batch_idx, chunk_id
+            )
+            _dma_in(g_ref, g_fwd_buf, in_sems_fwd.at[4], mb_offset, batch_idx, chunk_id)
+
+          @pl.when(~is_valid)
+          def _zero_forward_chunk():
+            k_fwd_buf[:] = jnp.zeros_like(k_fwd_buf[:])
+            v_fwd_buf[:] = jnp.zeros_like(v_fwd_buf[:])
+            beta_fwd_buf[:] = jnp.zeros_like(beta_fwd_buf[:])
+            Akk_fwd_buf[:] = jnp.zeros_like(Akk_fwd_buf[:])
+            g_fwd_buf[:] = jnp.zeros_like(g_fwd_buf[:])
+          g_fwd_scratch[:] = g_fwd_buf[:, 0, 0]
+          g_fwd_scratch[:] = jnp.where(
+            is_valid, g_fwd_scratch[:], jnp.zeros_like(g_fwd_scratch[:])
+          )
+
+          @pl.when(is_first_chunk)
+          def _load_initial():
+            if HAS_H0:
+              _dma_state_in(
+                initial_state_ref, dh_tmp_ref, state_sem_fwd, mb_offset, batch_idx, seq_idx
+              )
+            else:
+              dh_tmp_ref[:] = jnp.zeros_like(dh_tmp_ref[:])
+
+          @pl.when(is_valid)
+          def _recompute_h():
+            h_cur = dh_tmp_ref[:].astype(jnp.float32)
+            fk = k_fwd_buf[:, 0, 0].astype(compute_dtype)
+            fv = v_fwd_buf[:, 0, 0].astype(compute_dtype)
+            fb = beta_fwd_buf[:MB, :BT].astype(compute_dtype)
+            fA = Akk_fwd_buf[:, 0, 0, :, :BT].astype(compute_dtype)
+            fg = g_fwd_scratch[:].astype(jnp.float32)
+            fg_exp = jnp.exp2(fg)
+            fg_last = fg[:, BT - 1, :]
+            fv_beta = fv * fb[:, :, None]
+            fu = _matmul_low(fA, fv_beta)
+            fw = jnp.matmul(
+              fA.astype(jnp.float32),
+              (fk * fb[:, :, None] * fg_exp).astype(jnp.float32),
+              preferred_element_type=jnp.float32,
+            )
+            fvn = fu.astype(jnp.float32) - jnp.matmul(
+              fw.astype(jnp.float32),
+              h_cur,
+              precision=precision,
+              preferred_element_type=jnp.float32,
+            )
+            h_fwd_out_buf[:, 0, 0] = h_cur
+            _dma_out(h_fwd_out_buf, h_all_ref, out_sem_fwd, mb_offset, batch_idx, chunk_id)
+            fkg = fk * jnp.exp2(fg[:, BT - 1 : BT, :] - fg)
+            dh_tmp_ref[:] = dh_tmp_ref[:] * jnp.exp2(fg_last)[:, :, None]
+            dh_tmp_ref[:] = dh_tmp_ref[:] + jnp.matmul(
+              fkg.astype(jnp.float32).transpose(0, 2, 1),
+              fvn,
+              precision=precision,
+              preferred_element_type=jnp.float32,
+            )
+
+    # =================================================================
+    # Phase 2: Preprocess (dAv + CP accumulate)  (only when cp_active)
+    # =================================================================
+    if CP_ACTIVE:
+      @functools.partial(
+        pl.run_scoped,
+        q_cp_buf=pltpu.VMEM((2, MB, 1, 1, BT, K), q_ref.dtype),
+        k_cp_buf=pltpu.VMEM((2, MB, 1, 1, BT, K), k_ref.dtype),
+        v_cp_buf=pltpu.VMEM((2, MB, 1, 1, BT, V), v_ref.dtype),
+        do_cp_buf=pltpu.VMEM((2, MB, 1, 1, BT, V), do_ref.dtype),
+        beta_cp_buf=pltpu.VMEM((2, MB_PAD, 128), beta_ref.dtype),
+        Aqk_cp_buf=pltpu.VMEM((2, MB, 1, 1, BT, BT_PAD), Aqk_ref.dtype),
+        Akk_cp_buf=pltpu.VMEM((2, MB, 1, 1, BT, BT_PAD), Akk_ref.dtype),
+        g_cp_buf=pltpu.VMEM((2, MB, 1, 1, BT, K), g_ref.dtype),
+        h_cp_buf=pltpu.VMEM((2, MB, 1, 1, K, V), h_ref.dtype),
+        g_cp_scratch=pltpu.VMEM((MB, BT, K), jnp.float32),
+        in_sems_cp=pltpu.SemaphoreType.DMA((9, 2)),
+      )
+      def _cp_preprocess_scoped(
+        q_cp_buf,
+        k_cp_buf,
+        v_cp_buf,
+        do_cp_buf,
+        beta_cp_buf,
+        Aqk_cp_buf,
+        Akk_cp_buf,
+        g_cp_buf,
+        h_cp_buf,
+        g_cp_scratch,
+        in_sems_cp,
+      ):
+        def _dma_in_cp(hbm_ref, vmem_ref, sem, buf, c, wait=False):
+          src = hbm_ref.at[
+            (
+              pl.ds(mb_offset * MB, MB),
+              pl.ds(batch_idx, 1),
+              pl.ds(c, 1),
+              pl.ds(None),
+              pl.ds(None),
+            )
+          ]
+          _async_copy(src, vmem_ref.at[buf], sem, wait=wait)
+
+        def _start_cp_input_dma(buf, chunk_id, is_valid):
+          @pl.when(is_valid)
+          def _start_valid_cp_input_dma():
+            _dma_in_cp(q_ref, q_cp_buf, in_sems_cp.at[0, buf], buf, chunk_id)
+            _dma_in_cp(k_ref, k_cp_buf, in_sems_cp.at[1, buf], buf, chunk_id)
+            _dma_in_cp(v_ref, v_cp_buf, in_sems_cp.at[2, buf], buf, chunk_id)
+            _dma_beta_in(
+              beta_cp_buf.at[buf],
+              in_sems_cp.at[3, buf],
+              mb_offset,
+              batch_idx,
+              chunk_id,
+            )
+            _dma_in_cp(Aqk_ref, Aqk_cp_buf, in_sems_cp.at[4, buf], buf, chunk_id)
+            _dma_in_cp(Akk_ref, Akk_cp_buf, in_sems_cp.at[5, buf], buf, chunk_id)
+            _dma_in_cp(do_ref, do_cp_buf, in_sems_cp.at[6, buf], buf, chunk_id)
+            state_ref = h_ref if DISABLE_RECOMPUTE else h_all_ref
+            _dma_in_cp(
+              state_ref, h_cp_buf, in_sems_cp.at[7, buf], buf, chunk_id
+            )
+            _dma_in_cp(g_ref, g_cp_buf, in_sems_cp.at[8, buf], buf, chunk_id)
+
+          @pl.when(~is_valid)
+          def _zero_invalid_cp_inputs():
+            q_cp_buf[buf] = jnp.zeros_like(q_cp_buf[buf])
+            k_cp_buf[buf] = jnp.zeros_like(k_cp_buf[buf])
+            v_cp_buf[buf] = jnp.zeros_like(v_cp_buf[buf])
+            beta_cp_buf[buf] = jnp.zeros_like(beta_cp_buf[buf])
+            Aqk_cp_buf[buf] = jnp.zeros_like(Aqk_cp_buf[buf])
+            Akk_cp_buf[buf] = jnp.zeros_like(Akk_cp_buf[buf])
+            do_cp_buf[buf] = jnp.zeros_like(do_cp_buf[buf])
+            h_cp_buf[buf] = jnp.zeros_like(h_cp_buf[buf])
+            g_cp_buf[buf] = jnp.zeros_like(g_cp_buf[buf])
+
+        def _wait_cp_input_dma(buf, chunk_id, is_valid):
+          @pl.when(is_valid)
+          def _wait_valid_cp_input_dma():
+            _dma_in_cp(
+              q_ref, q_cp_buf, in_sems_cp.at[0, buf], buf, chunk_id, wait=True
+            )
+            _dma_in_cp(
+              k_ref, k_cp_buf, in_sems_cp.at[1, buf], buf, chunk_id, wait=True
+            )
+            _dma_in_cp(
+              v_ref, v_cp_buf, in_sems_cp.at[2, buf], buf, chunk_id, wait=True
+            )
+            _dma_beta_in(
+              beta_cp_buf.at[buf],
+              in_sems_cp.at[3, buf],
+              mb_offset,
+              batch_idx,
+              chunk_id,
+              wait=True,
+            )
+            _dma_in_cp(
+              Aqk_ref, Aqk_cp_buf, in_sems_cp.at[4, buf], buf, chunk_id, wait=True
+            )
+            _dma_in_cp(
+              Akk_ref, Akk_cp_buf, in_sems_cp.at[5, buf], buf, chunk_id, wait=True
+            )
+            _dma_in_cp(
+              do_ref, do_cp_buf, in_sems_cp.at[6, buf], buf, chunk_id, wait=True
+            )
+            state_ref = h_ref if DISABLE_RECOMPUTE else h_all_ref
+            _dma_in_cp(
+              state_ref,
+              h_cp_buf,
+              in_sems_cp.at[7, buf],
+              buf,
+              chunk_id,
+              wait=True,
+            )
+            _dma_in_cp(
+              g_ref, g_cp_buf, in_sems_cp.at[8, buf], buf, chunk_id, wait=True
+            )
+
+        first_chunk_id = NT - 1
+        _, _, first_is_valid, _, _ = _chunk_segment_metadata(
+          chunk_seg_ids_ref, batch_idx, first_chunk_id, NT
+        )
+        _start_cp_input_dma(0, first_chunk_id, first_is_valid)
+
+        @pl.loop(0, NT, unroll=False)
+        def preprocess_loop(rev_idx):
+          chunk_id = NT - 1 - rev_idx  # reverse scan: NT-1 -> 0
+          buf = rev_idx % 2
+          next_buf = 1 - buf
+
+          seg_cur, seq_idx, is_valid, is_first_chunk, is_last_chunk = (
+            _chunk_segment_metadata(chunk_seg_ids_ref, batch_idx, chunk_id, NT)
+          )
+          is_first_local_segment = is_valid & (seg_cur == first_seg_id)
+
+          _wait_cp_input_dma(buf, chunk_id, is_valid)
+
+          @pl.when(rev_idx + 1 < NT)
+          def _prefetch_next_cp_chunk():
+            next_chunk_id = chunk_id - 1
+            _, _, next_is_valid, _, _ = _chunk_segment_metadata(
+              chunk_seg_ids_ref, batch_idx, next_chunk_id, NT
+            )
+            _start_cp_input_dma(next_buf, next_chunk_id, next_is_valid)
+
+          g_cp_scratch[:] = g_cp_buf[buf, :, 0, 0]
+          g_cp_scratch[:] = jnp.where(
+            is_valid, g_cp_scratch[:], jnp.zeros_like(g_cp_scratch[:])
+          )
+
+          # Init CP accumulators at first chunk (rev_idx == 0 -> chunk_id == NT-1)
+          @pl.when(rev_idx == 0)
+          def _init_cp_acc():
+            dS_acc_ref[:] = jnp.zeros((MB, K, V), dtype=jnp.float32)
+            M_acc_ref[:] = jnp.broadcast_to(jnp.eye(K, dtype=jnp.float32), (MB, K, K))
+
+          bq = q_cp_buf[buf, :, 0, 0].astype(compute_dtype)
+          bk = k_cp_buf[buf, :, 0, 0].astype(compute_dtype)
+          bv = v_cp_buf[buf, :, 0, 0].astype(compute_dtype)
+          bg = g_cp_scratch[:].astype(jnp.float32)
+          bb = beta_cp_buf[buf, :MB, :BT].astype(compute_dtype)
+          bA = Akk_cp_buf[buf, :, 0, 0, :, :BT].astype(compute_dtype)
+          bAqk = Aqk_cp_buf[buf, :, 0, 0, :, :BT].astype(compute_dtype)
+          bdo = do_cp_buf[buf, :, 0, 0].astype(compute_dtype)
+          bh = h_cp_buf[buf, :, 0, 0].astype(jnp.float32)
+
+          bq = jnp.where(is_valid, bq, jnp.zeros_like(bq))
+          bk = jnp.where(is_valid, bk, jnp.zeros_like(bk))
+          bv = jnp.where(is_valid, bv, jnp.zeros_like(bv))
+          bb = jnp.where(is_valid, bb, jnp.zeros_like(bb))
+          bA = jnp.where(is_valid, bA, jnp.zeros_like(bA))
+          bAqk = jnp.where(is_valid, bAqk, jnp.zeros_like(bAqk))
+          bdo = jnp.where(is_valid, bdo, jnp.zeros_like(bdo))
+          bh = jnp.where(is_valid, bh, jnp.zeros_like(bh))
+
+          # M1 recompute + dAv
+          _, _, bvn, _, _ = compute_m1_recompute(
+            bq, bk, bv, bb, bA, bg, bh,
+            dtype=compute_dtype,
+            compute_dtype=compute_dtype,
+          )
+          bdAqk, bdv0 = compute_dav(bdo, bvn, bAqk, SCALE)
+          bkg = bk * jnp.exp2(bg[:, BT - 1 : BT, :] - bg)
+          bw = jnp.matmul(
+            bA.astype(jnp.float32),
+            (bk * bb[:, :, None] * jnp.exp2(bg)).astype(jnp.float32),
+            preferred_element_type=jnp.float32,
+          )
+          bqg = bq * jnp.exp2(bg)
+
+          @pl.when(is_first_local_segment)
+          def _cp_preprocess():
+            cp_decay = jnp.exp2(
+              jnp.maximum(bg[:, BT - 1, :], jnp.asarray(-126.0, dtype=jnp.float32))
+            )
+            dv_cur = (
+              jnp.matmul(bkg, dS_acc_ref[:], preferred_element_type=jnp.float32)
+              + bdv0
+            )
+            dS_acc_ref[:] = (
+              dS_acc_ref[:] * cp_decay[:, :, None]
+              + jnp.matmul(
+                bqg.transpose(0, 2, 1), bdo, preferred_element_type=jnp.float32
+              )
+              * SCALE
+              - jnp.matmul(
+                bw.transpose(0, 2, 1), dv_cur, preferred_element_type=jnp.float32
+              )
+            )
+            kM = jnp.matmul(
+              bkg,
+              M_acc_ref[:],
+              precision=precision,
+              preferred_element_type=jnp.float32,
+            )
+            WkM = jnp.matmul(
+              bw.transpose(0, 2, 1),
+              kM,
+              precision=precision,
+              preferred_element_type=jnp.float32,
+            )
+            M_acc_ref[:] = M_acc_ref[:] * cp_decay[:, :, None] - WkM
+
+      # --- CP transition: ring exchange + merge ---
+      # Runs once per head_group, after all chunks of preprocess complete.
+      my_id = jax.lax.axis_index(CP_AXIS_NAME)
+
+      # Write accumulated dS/M to local slot in all-gather buffer
+      ag_buf_ref[my_id, :, :, :V] = dS_acc_ref[:]
+      ag_buf_ref[my_id, :, :, V : V + K] = M_acc_ref[:]
+
+      @functools.partial(
+        pl.run_scoped,
+        _send=pltpu.SemaphoreType.DMA,
+        _recv=pltpu.SemaphoreType.DMA((CP_SIZE - 1,)),
+      )
+      def _cp_ring(_send, _recv):
+        right = (my_id + 1) % CP_SIZE
+        for step in range(CP_SIZE - 1):
+          sync_barrier()
+          slot = (my_id - step) % CP_SIZE
+          op = pltpu.make_async_remote_copy(
+            src_ref=ag_buf_ref.at[slot],
+            dst_ref=ag_buf_ref.at[slot],
+            send_sem=_send,
+            recv_sem=_recv.at[step],
+            device_id=(right,),
+            device_id_type=pl.DeviceIdType.MESH,
+          )
+          op.start()
+          op.wait()
+
+      # Merge accumulated dS/dM from all ranks -> dh_tmp
+      my_post_num = cp_post_num_ref[batch_idx]
+      my_is_last = cp_is_last_ref[batch_idx]
+      merged = jnp.zeros((MB, K, V), dtype=jnp.float32)
+      for i in range(CP_SIZE):
+        idx = jnp.clip(my_id + my_post_num - i, 0, CP_SIZE - 1)
+        slot = ag_buf_ref[idx]
+        dS_i = slot[:, :, :V]
+        dM_i = slot[:, :, V : V + K]
+        new_merged = (
+          jnp.matmul(dM_i, merged, preferred_element_type=jnp.float32) + dS_i
+        )
+        active = (i < my_post_num) & (my_is_last == 0)
+        merged = jnp.where(active, new_merged, merged)
+      dh_tmp_ref[:] = merged
+
+    # =================================================================
+    # Phase 3: Backward (dhu + WY + intra + cumsum + write)  (always)
+    # =================================================================
+    @functools.partial(
+      pl.run_scoped,
+      q_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, K), q_ref.dtype),
+      k_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, K), k_ref.dtype),
+      v_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, V), v_ref.dtype),
+      do_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, V), do_ref.dtype),
+      beta_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, CHUNK_BATCH * MB_PAD, 128), beta_ref.dtype),
+      Aqk_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, BT_PAD), Aqk_ref.dtype),
+      Akk_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, BT_PAD), Akk_ref.dtype),
+      g_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, K), g_ref.dtype),
+      h_buf=pltpu.VMEM((DMA_INPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, K, V), h_ref.dtype),
+      # Keep output staging independent from the input ping-pong buffers so
+      # the next input prefetch never depends on the previous output DMA.
+      dq_buf=pltpu.VMEM((DMA_OUTPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, K), dq_ref.dtype),
+      dk_buf=pltpu.VMEM((DMA_OUTPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, K), dk_ref.dtype),
+      dv_buf=pltpu.VMEM((DMA_OUTPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, V), dv_ref.dtype),
+      db_buf=pltpu.VMEM((DMA_OUTPUT_BUFFER_COUNT, CHUNK_BATCH * MB_PAD, 128), db_ref.dtype),
+      dg_buf=pltpu.VMEM((DMA_OUTPUT_BUFFER_COUNT, MB, 1, CHUNK_BATCH, BT, K), dg_ref.dtype),
+      in_sems_bwd=pltpu.SemaphoreType.DMA((9, DMA_INPUT_BUFFER_COUNT)),
+      out_sems_bwd=pltpu.SemaphoreType.DMA((5, DMA_OUTPUT_BUFFER_COUNT)),
+      state_sems_bwd=pltpu.SemaphoreType.DMA((3,)),
+    )
+    def _backward_scoped(
+      q_buf,
+      k_buf,
+      v_buf,
+      do_buf,
+      beta_buf,
+      Aqk_buf,
+      Akk_buf,
+      g_buf,
+      h_buf,
+      dq_buf,
+      dk_buf,
+      dv_buf,
+      db_buf,
+      dg_buf,
+      in_sems_bwd,
+      out_sems_bwd,
+      state_sems_bwd,
+    ):
+      # Every positive CHUNK_BATCH uses the contiguous-window path, including CB1.
+      # Slots are consumed in reverse order so the cross-chunk dh recurrence
+      # remains sequential.
+      LOOP_NUM = pl.cdiv(NT, CHUNK_BATCH)
+      REM = NT % CHUNK_BATCH
+      DB_NT = LOOP_NUM * CHUNK_BATCH
+      DB_TAIL_PAD = 0 if REM == 0 else CHUNK_BATCH - REM
+
+      def start_dmas(descs):
+        for desc in descs:
+          desc.start()
+
+      def wait_dmas(descs):
+        for desc in descs:
+          desc.wait()
+
+      def dma_in_batch_desc(hbm_ref, vmem_ref, sem, buf, start_c):
+        src = hbm_ref.at[
+          (
+            pl.ds(mb_offset * MB, MB),
+            pl.ds(batch_idx, 1),
+            pl.ds(start_c, CHUNK_BATCH),
+            pl.ds(None),
+            pl.ds(None),
+          )
+        ]
+        return pltpu.make_async_copy(src, vmem_ref.at[buf], sem)
+
+      def dma_in_tail_desc(hbm_ref, vmem_ref, sem, buf):
+        src = hbm_ref.at[
+          (
+            pl.ds(mb_offset * MB, MB),
+            pl.ds(batch_idx, 1),
+            pl.ds(0, REM),
+            pl.ds(None),
+            pl.ds(None),
+          )
+        ]
+        return pltpu.make_async_copy(
+          src, vmem_ref.at[buf, :, :, :REM, :, :], sem
+        )
+
+      def dma_in_batch_beta_desc(buf, start_c):
+        beta_offset = ((mb_offset * B + batch_idx) * NT + start_c) * MB_PAD
+        packed_heads = CHUNK_BATCH * MB_PAD
+        src = beta_ref.at[(pl.ds(beta_offset, packed_heads), pl.ds(None))]
+        return pltpu.make_async_copy(
+          src, beta_buf.at[buf], in_sems_bwd.at[3, buf]
+        )
+
+      def dma_out_batch_desc(vmem_ref, hbm_ref, sem, buf, start_c):
+        dst = hbm_ref.at[
+          (
+            pl.ds(mb_offset * MB, MB),
+            pl.ds(batch_idx, 1),
+            pl.ds(start_c, CHUNK_BATCH),
+            pl.ds(None),
+            pl.ds(None),
+          )
+        ]
+        return pltpu.make_async_copy(vmem_ref.at[buf], dst, sem)
+
+      def dma_out_tail_desc(vmem_ref, hbm_ref, sem, buf):
+        dst = hbm_ref.at[
+          (
+            pl.ds(mb_offset * MB, MB),
+            pl.ds(batch_idx, 1),
+            pl.ds(0, REM),
+            pl.ds(None),
+            pl.ds(None),
+          )
+        ]
+        return pltpu.make_async_copy(
+          vmem_ref.at[buf, :, :, :REM, :, :], dst, sem
+        )
+
+      def dma_out_batch_db_desc(buf, start_c):
+        db_offset = (
+          ((mb_offset * B + batch_idx) * DB_NT + start_c + DB_TAIL_PAD) * MB_PAD
+        )
+        packed_heads = CHUNK_BATCH * MB_PAD
+        dst = db_ref.at[(pl.ds(db_offset, packed_heads), pl.ds(None))]
+        return pltpu.make_async_copy(
+          db_buf.at[buf], dst, out_sems_bwd.at[3, buf]
+        )
+
+      def dma_out_tail_db_desc(buf):
+        # A complete beta/db tile avoids Jellyfish's failing masked BF16
+        # StridedMemcopy path. Guard chunks are removed by the wrapper.
+        db_offset = ((mb_offset * B + batch_idx) * DB_NT) * MB_PAD
+        packed_heads = CHUNK_BATCH * MB_PAD
+        dst = db_ref.at[(pl.ds(db_offset, packed_heads), pl.ds(None))]
+        return pltpu.make_async_copy(
+          db_buf.at[buf], dst, out_sems_bwd.at[3, buf]
+        )
+
+      def input_batch_descs(buf, start_c):
+        descs = [
+          dma_in_batch_desc(
+            q_ref, q_buf, in_sems_bwd.at[0, buf], buf, start_c
+          ),
+          dma_in_batch_desc(
+            k_ref, k_buf, in_sems_bwd.at[1, buf], buf, start_c
+          ),
+          dma_in_batch_desc(
+            v_ref, v_buf, in_sems_bwd.at[2, buf], buf, start_c
+          ),
+          dma_in_batch_beta_desc(buf, start_c),
+          dma_in_batch_desc(
+            Aqk_ref, Aqk_buf, in_sems_bwd.at[4, buf], buf, start_c
+          ),
+          dma_in_batch_desc(
+            Akk_ref, Akk_buf, in_sems_bwd.at[5, buf], buf, start_c
+          ),
+          dma_in_batch_desc(
+            do_ref, do_buf, in_sems_bwd.at[6, buf], buf, start_c
+          ),
+          dma_in_batch_desc(
+            g_ref, g_buf, in_sems_bwd.at[8, buf], buf, start_c
+          ),
+          dma_in_batch_desc(
+            h_ref if DISABLE_RECOMPUTE else h_all_ref,
+            h_buf,
+            in_sems_bwd.at[7, buf],
+            buf,
+            start_c,
+          ),
+        ]
+        return descs
+
+      def input_tail_descs(buf):
+        # The regular operands use one REM-wide DMA. beta deliberately
+        # transfers a complete CHUNK_BATCH tile into the complete buffer;
+        # this is still one tail DMA and avoids the BF16 prefix-DMA crash.
+        descs = [
+          dma_in_tail_desc(q_ref, q_buf, in_sems_bwd.at[0, buf], buf),
+          dma_in_tail_desc(k_ref, k_buf, in_sems_bwd.at[1, buf], buf),
+          dma_in_tail_desc(v_ref, v_buf, in_sems_bwd.at[2, buf], buf),
+          dma_in_batch_beta_desc(buf, 0),
+          dma_in_tail_desc(
+            Aqk_ref, Aqk_buf, in_sems_bwd.at[4, buf], buf
+          ),
+          dma_in_tail_desc(
+            Akk_ref, Akk_buf, in_sems_bwd.at[5, buf], buf
+          ),
+          dma_in_tail_desc(do_ref, do_buf, in_sems_bwd.at[6, buf], buf),
+          dma_in_tail_desc(g_ref, g_buf, in_sems_bwd.at[8, buf], buf),
+          dma_in_tail_desc(
+            h_ref if DISABLE_RECOMPUTE else h_all_ref,
+            h_buf,
+            in_sems_bwd.at[7, buf],
+            buf,
+          ),
+        ]
+        return descs
+
+      def output_batch_descs(buf, start_c):
+        return (
+          dma_out_batch_desc(
+            dq_buf, dq_ref, out_sems_bwd.at[0, buf], buf, start_c
+          ),
+          dma_out_batch_desc(
+            dk_buf, dk_ref, out_sems_bwd.at[1, buf], buf, start_c
+          ),
+          dma_out_batch_desc(
+            dv_buf, dv_ref, out_sems_bwd.at[2, buf], buf, start_c
+          ),
+          dma_out_batch_db_desc(buf, start_c),
+          dma_out_batch_desc(
+            dg_buf, dg_ref, out_sems_bwd.at[4, buf], buf, start_c
+          ),
+        )
+
+      def output_tail_descs(buf):
+        return (
+          dma_out_tail_desc(
+            dq_buf, dq_ref, out_sems_bwd.at[0, buf], buf
+          ),
+          dma_out_tail_desc(
+            dk_buf, dk_ref, out_sems_bwd.at[1, buf], buf
+          ),
+          dma_out_tail_desc(
+            dv_buf, dv_ref, out_sems_bwd.at[2, buf], buf
+          ),
+          dma_out_tail_db_desc(buf),
+          dma_out_tail_desc(
+            dg_buf, dg_ref, out_sems_bwd.at[4, buf], buf
+          ),
+        )
+
+      def input_window_has_valid(full_start_c, is_tail):
+        full_has_valid = _chunk_window_has_valid(
+          chunk_seg_ids_ref,
+          batch_idx,
+          full_start_c,
+          CHUNK_BATCH,
+        )
+        if REM > 0:
+          tail_has_valid = _chunk_window_has_valid(
+            chunk_seg_ids_ref, batch_idx, 0, REM
+          )
+          return jnp.where(is_tail, tail_has_valid, full_has_valid)
+        return full_has_valid
+
+      def start_input_window(buf, full_start_c, is_tail, has_valid):
+        if REM > 0:
+          @pl.when(jnp.logical_and(is_tail, has_valid))
+          def _():
+            start_dmas(input_tail_descs(buf))
+
+          @pl.when(jnp.logical_and(jnp.logical_not(is_tail), has_valid))
+          def _():
+            start_dmas(input_batch_descs(buf, full_start_c))
+        else:
+          @pl.when(has_valid)
+          def _():
+            start_dmas(input_batch_descs(buf, full_start_c))
+
+      def wait_input_window(buf, full_start_c, is_tail, has_valid):
+        if REM > 0:
+          @pl.when(jnp.logical_and(is_tail, has_valid))
+          def _():
+            wait_dmas(input_tail_descs(buf))
+
+          @pl.when(jnp.logical_and(jnp.logical_not(is_tail), has_valid))
+          def _():
+            wait_dmas(input_batch_descs(buf, full_start_c))
+        else:
+          @pl.when(has_valid)
+          def _():
+            wait_dmas(input_batch_descs(buf, full_start_c))
+
+      def compute_chunk(
+        q_chunk_ref,
+        k_chunk_ref,
+        v_chunk_ref,
+        beta_chunk_ref,
+        Aqk_chunk_ref,
+        Akk_chunk_ref,
+        g_chunk_ref,
+        h_chunk_ref,
+        do_chunk_ref,
+        dq_chunk_ref,
+        dk_chunk_ref,
+        dv_chunk_ref,
+        db_chunk_ref,
+        dg_chunk_ref,
+        chunk_id,
+      ):
+        with jax.named_scope("_chunk_segment_metadata"):
+          seg_cur, seq_idx, is_valid, is_first_chunk, is_last_chunk = (
+            _chunk_segment_metadata(
+              chunk_seg_ids_ref, batch_idx, chunk_id, NT
+            )
+          )
+
+        if CP_ACTIVE:
+          is_last_local_segment = is_valid & (seg_cur == last_seg_id)
+
+          @pl.when(is_last_chunk & (~is_last_local_segment))
+          def _load_dht_cp():
+            _dma_state_in(
+              dht_ref,
+              dh_tmp_ref,
+              state_sems_bwd.at[1],
+              mb_offset,
+              batch_idx,
+              seq_idx,
+            )
+        else:
+          @pl.when(is_last_chunk)
+          def load_dht():
+            with jax.named_scope("_dma_state_in"):
+              _dma_state_in(
+                dht_ref,
+                dh_tmp_ref,
+                state_sems_bwd.at[1],
+                mb_offset,
+                batch_idx,
+                seq_idx,
+              )
+
+        @pl.when(jnp.logical_not(is_valid))
+        def _zero_invalid_slot():
+          dq_chunk_ref[:] = jnp.zeros_like(dq_chunk_ref[:])
+          dk_chunk_ref[:] = jnp.zeros_like(dk_chunk_ref[:])
+          dv_chunk_ref[:] = jnp.zeros_like(dv_chunk_ref[:])
+          db_chunk_ref[:] = jnp.zeros_like(db_chunk_ref[:])
+          dg_chunk_ref[:] = jnp.zeros_like(dg_chunk_ref[:])
+
+        @pl.when(is_valid)
+        def compute_valid_chunk():
+          with jax.named_scope("mega_compute_prepare"):
+            bq = q_chunk_ref[:].astype(compute_dtype)
+            bk = k_chunk_ref[:].astype(compute_dtype)
+            bv = v_chunk_ref[:].astype(compute_dtype)
+            bg = g_chunk_ref[:].astype(jnp.float32)
+            bb = beta_chunk_ref[pl.ds(0, MB), :BT].astype(compute_dtype)
+            bA = Akk_chunk_ref[:, :, :BT].astype(compute_dtype)
+            bdo = do_chunk_ref[:].astype(compute_dtype)
+            bh = h_chunk_ref[:].astype(jnp.float32)
+            g_exp_last = jnp.exp2(bg[:, BT - 1, :])
+
+          with jax.named_scope("mega_compute_m1"):
+            bAqk = Aqk_chunk_ref[:, :, :BT].astype(compute_dtype)
+            _, w, bvn, bqg, bkg = compute_m1_recompute(
+              bq, bk, bv, bb, bA, bg, bh,
+              dtype=compute_dtype,
+              compute_dtype=compute_dtype,
+            )
+            bw = w.astype(jnp.float32)
+          with jax.named_scope("mega_compute_dav"):
+            bdAqk, bdv0 = compute_dav(
+              bdo, bvn, bAqk, SCALE
+            )
+          del bAqk, w
+
+          # Finish the recurrence before WY/intra so bw/bqg do not
+          # remain live across the largest contractions.
+          with jax.named_scope("mega_compute_state_dv"):
+            dh = dh_tmp_ref[:].astype(jnp.float32)
+            bdv = (
+              jnp.matmul(
+                bkg.astype(jnp.float32), dh, preferred_element_type=jnp.float32
+              )
+              + bdv0
+            )
+          with jax.named_scope("mega_compute_dh"):
+            dh_next = dh * g_exp_last[:, :, None]
+            dh_next = dh_next + jnp.matmul(
+              jnp.concatenate([bqg * SCALE, -bw], axis=1).astype(
+                jnp.float32
+              ).transpose(
+                0, 2, 1
+              ),
+              jnp.concatenate(
+                [bdo.astype(jnp.float32), bdv], axis=1
+              ),
+              preferred_element_type=jnp.float32,
+            )
+            dh_tmp_ref[:] = dh_next
+          del bw, bqg, bkg, bdv0, g_exp_last, dh_next
+
+          with jax.named_scope("mega_compute_wy"):
+            (
+              dq_acc,
+              dk_acc,
+              b_dvb,
+              db_acc,
+              dg_acc,
+              dAkk_local,
+              b_dgk,
+            ) = compute_wy_backward(
+              bdo,
+              bdv,
+              bvn,
+              bv,
+              bh,
+              dh,
+              bq,
+              bk,
+              bg,
+              bb,
+              bA,
+              SCALE,
+              precision,
+              return_b_dgk=True,
+            )
+          del bdo, bdv, bvn, bv, bh, dh, bA
+
+          # Consume dV immediately instead of carrying b_dvb through
+          # the intra contraction and reverse cumsum.
+          with jax.named_scope("mega_compute_output"):
+            dv_chunk_ref[:] = (
+              b_dvb * bb[:, :, None]
+            ).astype(dv_chunk_ref.dtype)
+          del b_dvb
+
+          with jax.named_scope("mega_compute_intra"):
+            db_chunk_ref[:] = jnp.zeros_like(db_chunk_ref[:])
+            compute_intra_backward_sequential_to_chunk_refs(
+              bq,
+              bk,
+              bg,
+              bb,
+              bdAqk,
+              dAkk_local,
+              dq_acc,
+              dk_acc,
+              db_acc,
+              dg_acc,
+              dq_chunk_ref,
+              dk_chunk_ref,
+              db_chunk_ref,
+              dg_chunk_ref,
+              operand_dtype=q_ref.dtype,
+              b_dgk=b_dgk,
+            )
+          del dq_acc, dk_acc, db_acc, dg_acc, dAkk_local
+          del bq, bk, bg, bb, bdAqk, b_dgk
+
+          with jax.named_scope("mega_compute_cumsum"):
+            dg_total = dg_chunk_ref[:].astype(jnp.float32)
+            dg_reverse_cumsum = compute_reverse_cumsum_dg_scan(
+              dg_total
+            )
+          with jax.named_scope("mega_compute_output"):
+            dg_chunk_ref[:] = dg_reverse_cumsum.astype(
+              dg_chunk_ref.dtype
+            )
+
+        @pl.when(is_first_chunk)
+        def write_dh0():
+          with jax.named_scope("_dma_state_out"):
+            _dma_state_out(
+              dh_tmp_ref,
+              dh0_ref,
+              state_sems_bwd.at[2],
+              mb_offset,
+              batch_idx,
+              seq_idx,
+            )
+
+      assert DMA_INPUT_BUFFER_COUNT == 2 and DMA_OUTPUT_BUFFER_COUNT == 2
+      initial_is_tail = REM > 0 and LOOP_NUM == 1
+      initial_start_c = 0 if initial_is_tail else NT - CHUNK_BATCH
+      initial_has_valid = input_window_has_valid(
+        initial_start_c, initial_is_tail
+      )
+      with jax.named_scope("mega_dma_input_start"):
+        start_input_window(
+          0, initial_start_c, initial_is_tail, initial_has_valid
+        )
+
+      # input ping-pong and output ping
+      @pl.loop(0, LOOP_NUM, unroll=False)
+      def async_loop(loop_idx):
+        input_buf = loop_idx % 2
+        next_input_buf = 1 - input_buf
+        output_buf = loop_idx % 2
+        full_start_c = NT - (loop_idx + 1) * CHUNK_BATCH
+        is_tail = loop_idx == LOOP_NUM - 1
+        if REM > 0:
+          safe_full_start_c = jnp.where(is_tail, 0, full_start_c)
+        else:
+          is_tail = False
+          safe_full_start_c = full_start_c
+
+        has_valid = input_window_has_valid(
+          safe_full_start_c, is_tail
+        )
+        with jax.named_scope("mega_dma_input_wait"):
+          wait_input_window(
+            input_buf, safe_full_start_c, is_tail, has_valid
+          )
+
+        @pl.when(loop_idx + 1 < LOOP_NUM)
+        def prefetch_next_window():
+          next_full_start_c = NT - (loop_idx + 2) * CHUNK_BATCH
+          if REM > 0:
+            next_is_tail = loop_idx + 1 == LOOP_NUM - 1
+            next_safe_start_c = jnp.where(
+              next_is_tail, 0, next_full_start_c
+            )
+          else:
+            next_is_tail = False
+            next_safe_start_c = next_full_start_c
+          next_has_valid = input_window_has_valid(
+            next_safe_start_c, next_is_tail
+          )
+          with jax.named_scope("mega_dma_input_prefetch"):
+            start_input_window(
+              next_input_buf,
+              next_safe_start_c,
+              next_is_tail,
+              next_has_valid,
+            )
+
+        # Output(i - 2) owns the same ping-pong slot as output(i). Wait
+        # only when that slot is about to be reused; output(i - 1) remains
+        # in flight in the other slot while this window computes.
+        @pl.when(loop_idx >= DMA_OUTPUT_BUFFER_COUNT)
+        def _wait_reused_output():
+          previous_window = loop_idx - DMA_OUTPUT_BUFFER_COUNT
+          previous_start_c = NT - (previous_window + 1) * CHUNK_BATCH
+          with jax.named_scope("mega_dma_output_wait"):
+            wait_dmas(
+              output_batch_descs(output_buf, previous_start_c)
+            )
+
+        # =================== compute start ====================================
+        @pl.when(jnp.logical_not(is_tail))
+        def _process_full_window():
+          @pl.loop(0, CHUNK_BATCH, unroll=False)
+          def _process_full_slot(rev_slot):
+            slot = CHUNK_BATCH - 1 - rev_slot
+            compute_chunk(
+              q_buf.at[input_buf, :, 0, slot, :, :],
+              k_buf.at[input_buf, :, 0, slot, :, :],
+              v_buf.at[input_buf, :, 0, slot, :, :],
+              beta_buf.at[
+                input_buf, pl.ds(slot * MB_PAD, MB_PAD), :
+              ],
+              Aqk_buf.at[input_buf, :, 0, slot, :, :],
+              Akk_buf.at[input_buf, :, 0, slot, :, :],
+              g_buf.at[input_buf, :, 0, slot, :, :],
+              h_buf.at[input_buf, :, 0, slot, :, :],
+              do_buf.at[input_buf, :, 0, slot, :, :],
+              dq_buf.at[output_buf, :, 0, slot, :, :],
+              dk_buf.at[output_buf, :, 0, slot, :, :],
+              dv_buf.at[output_buf, :, 0, slot, :, :],
+              db_buf.at[output_buf, pl.ds(slot * MB_PAD, MB_PAD), :],
+              dg_buf.at[output_buf, :, 0, slot, :, :],
+              safe_full_start_c + slot,
+            )
+
+        if REM > 0:
+          @pl.when(is_tail)
+          def _process_tail_window():
+            @pl.loop(0, REM, unroll=False)
+            def _process_tail_slot(rev_slot):
+              slot = REM - 1 - rev_slot
+              compute_chunk(
+                q_buf.at[input_buf, :, 0, slot, :, :],
+                k_buf.at[input_buf, :, 0, slot, :, :],
+                v_buf.at[input_buf, :, 0, slot, :, :],
+                beta_buf.at[
+                  input_buf, pl.ds(slot * MB_PAD, MB_PAD), :
+                ],
+                Aqk_buf.at[input_buf, :, 0, slot, :, :],
+                Akk_buf.at[input_buf, :, 0, slot, :, :],
+                g_buf.at[input_buf, :, 0, slot, :, :],
+                h_buf.at[input_buf, :, 0, slot, :, :],
+                do_buf.at[input_buf, :, 0, slot, :, :],
+                dq_buf.at[output_buf, :, 0, slot, :, :],
+                dk_buf.at[output_buf, :, 0, slot, :, :],
+                dv_buf.at[output_buf, :, 0, slot, :, :],
+                db_buf.at[output_buf, pl.ds(slot * MB_PAD, MB_PAD), :],
+                dg_buf.at[output_buf, :, 0, slot, :, :],
+                slot,
+              )
+
+        # =================== compute end ====================================
+
+        @pl.when(is_tail)
+        def _launch_tail_output():
+          with jax.named_scope("mega_dma_output_start"):
+            start_dmas(output_tail_descs(output_buf))
+
+        @pl.when(jnp.logical_not(is_tail))
+        def _launch_full_output():
+          with jax.named_scope("mega_dma_output_start"):
+            start_dmas(
+              output_batch_descs(output_buf, safe_full_start_c)
+            )
+
+      # Both output slots may still own an in-flight DMA after the loop.
+      # Drain the older (penultimate) window first, then the final window.
+      last_window = LOOP_NUM - 1
+      with jax.named_scope("mega_dma_output_drain"):
+        if LOOP_NUM > 1:
+          previous_window = LOOP_NUM - 2
+          previous_buf = previous_window % DMA_OUTPUT_BUFFER_COUNT
+          previous_start_c = NT - (previous_window + 1) * CHUNK_BATCH
+          wait_dmas(
+            output_batch_descs(previous_buf, previous_start_c)
+          )
+        last_buf = last_window % DMA_OUTPUT_BUFFER_COUNT
+        if REM > 0:
+          wait_dmas(output_tail_descs(last_buf))
+        else:
+          last_start_c = NT - (last_window + 1) * CHUNK_BATCH
+          wait_dmas(output_batch_descs(last_buf, last_start_c))
+      return
+
+  # Execute the body in batch-major, head-group-minor order. Scratch refs
+  # live for exactly one (batch, head-group) iteration.
+  @pl.loop(0, B, unroll=False)
+  def batch_loop(batch_idx):
+    @pl.loop(0, H // MB, unroll=False)
+    def head_group_loop(mb_offset):
+      if CP_ACTIVE:
+
+        @functools.partial(
+          pl.run_scoped,
+          dh_tmp_ref=pltpu.VMEM((MB, K, V), jnp.float32),
+          dS_acc_ref=pltpu.VMEM((MB, K, V), jnp.float32),
+          M_acc_ref=pltpu.VMEM((MB, K, K), jnp.float32),
+          ag_buf_ref=pltpu.VMEM((CP_SIZE, MB, K, V + K), jnp.float32),
+        )
+        def _cp_head_group_scoped(
+          dh_tmp_ref,
+          dS_acc_ref,
+          M_acc_ref,
+          ag_buf_ref,
+        ):
+          main_loop_body(
+            batch_idx,
+            mb_offset,
+            dh_tmp_ref,
+            dS_acc_ref,
+            M_acc_ref,
+            ag_buf_ref,
+          )
+      else:
+
+        @functools.partial(
+          pl.run_scoped,
+          dh_tmp_ref=pltpu.VMEM((MB, K, V), jnp.float32),
+        )
+        def _non_cp_head_group_scoped(dh_tmp_ref):
+          main_loop_body(batch_idx, mb_offset, dh_tmp_ref)
+
+@partial(
+  jax.jit,
+  static_argnames=[
+    "chunk_size",
+    "use_exp2",
+    "scale",
+    "mini_batch",
+    "chunk_batch",
+    "return_dh0",
+    "N_MAX",
+    "disable_recompute",
+    "cp_active",
+    "has_initial_state",
+    "cp_size",
+    "cp_axis_name",
+    "cp_context",
+  ],
+)
+def chunk_kda_bwd_fusion(
+  q: Float[Array, "H B T K"],
+  k: Float[Array, "H B T K"],
+  v: Float[Array, "H B T V"],
+  beta: Float[Array, "H B T"],
+  Aqk: Float[Array, "H B T BT_PAD"],
+  Akk: Float[Array, "H B T BT_PAD"],
+  g: Float[Array, "H B T K"],
+  h: Float[Array, "H B NT K V"] | None,
+  do: Float[Array, "H B T V"],
+  dht: Float[Array, "B N_MAX H K V"] | None,
+  initial_state: Float[Array, "B N_MAX H K V"] | None,
+  scale: float,
+  *,
+  segment_ids: Int[Array, "B T"] | None = None,
+  chunk_size: int = 64,
+  use_exp2: bool = True,
+  safe_gate: bool = False,
+  lower_bound: float | None = None,
+  mini_batch: int | None = None,
+  chunk_batch: int = KDA_DMA_CHUNK_BATCH,
+  return_dh0: bool = True,
+  disable_recompute: bool = True,
+  cp_active: bool = False,
+  has_initial_state: bool = False,
+  cp_context: CPContext | None = None,
+  cp_size: int | None = None,
+  cp_axis_name: str | None = None,
+  N_MAX: int | None = None,
+) -> tuple[
+  Float[Array, "H B T K"],  # q
+  Float[Array, "H B T K"],  # k
+  Float[Array, "H B T V"],  # v
+  Float[Array, "H B T"],  # beta
+  Float[Array, "H B T K"],  # g
+  Float[Array, "B N_MAX H K V"] | None,  # dh0
+]:
+  """M5 mega kernel: fuses M1+dAv+M4 (all phases) into a single Pallas call.
+
+  All branch decisions (``disable_recompute`` and ``cp_active``) are resolved
+  at trace time via ``static_argnames`` — the kernel body is a single source
+  of truth for every supported path. Intra contractions always preserve the
+  BF16 RHS low bits.
+
+  Same return signature as ``_fused_dhu_wy_intra_cumsum_pallas_jit``.
+  Eliminates HBM round-trips for w, qg, kg, v_new, dAqk, dv0.
+  ``K`` and ``V`` must be multiples of 128, and ``Aqk``/``Akk`` must
+  already expose their 128-aligned physical minor dimension.
+  """
+  H, B, T, K = q.shape
+  V = v.shape[-1]
+  BT = chunk_size
+  NT = T // BT
+  BT_pad = pl.cdiv(BT, 128) * 128
+  BETA_pad = 128
+
+  assert chunk_size == 64, f"only chunk_size=64 is supported, got {chunk_size}"
+  assert T % BT == 0, f"T={T} must be divisible by chunk_size={BT}"
+  assert use_exp2 is True, "only use_exp2=True is supported"
+  assert K % 128 == 0, f"K={K} must be a multiple of 128"
+  assert V % 128 == 0, f"V={V} must be a multiple of 128"
+  assert Aqk.shape[-1] == BT_pad, (
+    f"Aqk last dimension must be pre-padded to {BT_pad}, got {Aqk.shape[-1]}"
+  )
+  assert Akk.shape[-1] == BT_pad, (
+    f"Akk last dimension must be pre-padded to {BT_pad}, got {Akk.shape[-1]}"
+  )
+  assert (disable_recompute is False) or (h is not None), (
+    "h is required when disable_recompute=True"
+  )
+  assert (cp_active is False) or (
+    cp_context is not None and
+    cp_size is not None and
+    cp_size > 0 and
+    cp_axis_name is not None
+  )
+  assert (segment_ids is None) or (N_MAX is not None), (
+    "N_MAX must be provided for varlen input"
+  )
+  assert dht is None or dht.ndim == 5, (
+    f"dht must be 5D [B, N_MAX, H, K, V], got shape {dht.shape}"
+  )
+  assert initial_state is None or initial_state.ndim == 5, (
+    "initial_state must be 5D [B, N_MAX, H, K, V], "
+    f"got shape {initial_state.shape}"
+  )
+
+  chunk_batch = min(chunk_batch, NT)
+  assert chunk_batch > 0, f"chunk_batch must be positive, got {chunk_batch}"
+  if mini_batch is None:
+    if KDA_DMA_MINI_BATCH is not None:
+      MB = KDA_DMA_MINI_BATCH
+    else:
+      # FP32 tiles and CP's FP32 state summaries use twice the BF16 storage,
+      # so cap those programs at fewer heads to fit TPU v7x physical VMEM.
+      needs_fp32_budget = q.dtype == jnp.float32 or cp_active
+      max_mini_batch = 8 if needs_fp32_budget else 16
+      MB = min(H, max_mini_batch)
+      while H % MB != 0 and MB > 1:
+        MB -= 1
+  else:
+    MB = mini_batch
+  assert MB > 0, f"mini_batch must be positive, got {MB}"
+  assert H % MB == 0, f"H={H} must be divisible by mini_batch={MB}"
+
+  # Dynamic chunk-slot indexing into the packed BF16 beta/dbeta tile must
+  # advance by a 16-row-aligned stride on TPU. Eight-row padding works only
+  # when Mosaic can constant-fold the slot index.
+  MB_PAD = align_up(MB, 16)
+  N_HG = H // MB
+  DB_NT = ((NT + chunk_batch - 1) // chunk_batch) * chunk_batch
+  DB_TAIL_PAD = DB_NT - NT
+  N_MAX = 1 if (segment_ids is None) else N_MAX
+
+  is_varlen = segment_ids is not None
+  segment_ids = jnp.ones((B, T), dtype=jnp.int32) if not is_varlen else segment_ids
+  chunk_seg_ids = segment_ids.reshape(B, NT, BT)[:, :, 0]
+
+  dht_arr = (
+    dht
+    if dht is not None
+    else jnp.zeros((B, N_MAX, H, K, V), dtype=jnp.float32)
+  )
+  initial_state_arr = (
+    initial_state
+    if initial_state is not None
+    else jnp.zeros((B, N_MAX, H, K, V), dtype=jnp.float32)
+  )
+
+  # Match the compact PR #463 M4 layout: one 128-wide row per head/chunk,
+  # rather than expanding every beta scalar to a 128-wide row.
+  beta_r = beta.reshape(N_HG, MB, B, NT, BT).transpose(0, 2, 3, 1, 4)
+  beta_r = jnp.pad(
+    beta_r,
+    ((0, 0), (0, 0), (0, 0), (0, MB_PAD - MB), (0, BETA_pad - BT)),
+  ).reshape(N_HG * B * NT * MB_PAD, BETA_pad)
+
+  h_r = (
+    h.astype(jnp.float32)
+    if h is not None
+    else jnp.zeros((1, 1, 1, 1, 1), dtype=jnp.float32)
+  )
+  initial_state_arr = initial_state_arr.astype(jnp.float32).transpose(
+    2, 0, 1, 3, 4
+  )
+
+  # ── CP metadata arrays (per-batch) ──
+  if cp_active and cp_context is not None:
+    cp_post_num = jnp.broadcast_to(
+      jnp.asarray(cp_context.post_num_ranks, dtype=jnp.int32).reshape(B), (B,)
+    )
+    cp_is_last = jnp.broadcast_to(
+      jnp.asarray(cp_context.is_last_rank, dtype=jnp.int32).reshape(B), (B,)
+    )
+  else:
+    cp_post_num = jnp.zeros((B,), dtype=jnp.int32)
+    cp_is_last = jnp.zeros((B,), dtype=jnp.int32)
+
+  kernel = partial(
+    _bwd_mega_kernel,
+    H=H,
+    B=B,
+    SCALE=scale,
+    BT=BT,
+    BT_PAD=BT_pad,
+    K=K,
+    V=V,
+    NT=NT,
+    MB=MB,
+    MB_PAD=MB_PAD,
+    CHUNK_BATCH=chunk_batch,
+    DMA_INPUT_BUFFER_COUNT=KDA_DMA_INPUT_BUFFER_COUNT,
+    DMA_OUTPUT_BUFFER_COUNT=KDA_DMA_OUTPUT_BUFFER_COUNT,
+    DISABLE_RECOMPUTE=disable_recompute,
+    CP_ACTIVE=cp_active,
+    CP_SIZE=cp_size,
+    CP_AXIS_NAME=cp_axis_name,
+    HAS_H0=has_initial_state,
+  )
+  out_shape = [
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), q.dtype), # dq
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), k.dtype), # dk
+    jax.ShapeDtypeStruct((H, B, NT, BT, V), v.dtype), # dv
+    jax.ShapeDtypeStruct((N_HG * B * DB_NT * MB_PAD, BETA_pad), beta.dtype), # db
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), g.dtype), # dg
+    jax.ShapeDtypeStruct((H, B, N_MAX, K, V), jnp.float32), # dh0
+    jax.ShapeDtypeStruct(
+      (H, B, NT, K, V) if not disable_recompute else (1, 1, 1, 1, 1),
+      jnp.float32,
+    ),
+  ]
+
+  any_spec = pl.BlockSpec(memory_space=pl.ANY)
+
+  q_r = q.reshape(H, B, NT, BT, K)
+  k_r = k.reshape(H, B, NT, BT, K)
+  v_r = v.reshape(H, B, NT, BT, V)
+  g_r = g.reshape(H, B, NT, BT, K)
+  Aqk_r = Aqk.reshape(H, B, NT, BT, BT_pad)
+  Akk_r = Akk.reshape(H, B, NT, BT, BT_pad)
+  do_r = do.reshape(H, B, NT, BT, V)
+  dht_arr = dht_arr.astype(jnp.float32).transpose(2, 0, 1, 3, 4)
+  (dq_r, dk_r, dv_r, db_r, dg_r, dh0_r, _) = pl.pallas_call(
+    kernel,
+    out_shape=out_shape,
+    grid_spec=pltpu.PrefetchScalarGridSpec(
+      num_scalar_prefetch=3,
+      grid=(),
+      in_specs=[any_spec] * 11,
+      out_specs=[any_spec] * 7,
+    ),
+    compiler_params=pltpu.CompilerParams(
+      disable_bounds_checks=True,
+      vmem_limit_bytes=get_tpu_config().vmem_limit_bytes,
+      collective_id=0,
+      allow_collective_id_without_custom_barrier=True,
+    ),
+    interpret=get_interpret(),
+  )(
+    chunk_seg_ids,
+    cp_post_num,
+    cp_is_last,
+    q_r,
+    k_r,
+    v_r,
+    beta_r,
+    Aqk_r,
+    Akk_r,
+    g_r,
+    h_r,
+    do_r,
+    dht_arr,
+    initial_state_arr,
+  )
+
+  db_r = db_r.reshape(N_HG, B, DB_NT, MB_PAD, BETA_pad)[..., :MB, :BT]
+  if DB_TAIL_PAD:
+    REM = NT % chunk_batch
+    db_r = jnp.concatenate(
+      [db_r[:, :, :REM], db_r[:, :, chunk_batch:]],
+      axis=2,
+    )
+  db_r = db_r.transpose(0, 3, 1, 2, 4).reshape(H, B, NT, BT)
+  dh0_out = dh0_r.transpose(1, 2, 0, 3, 4)
+  if initial_state is not None:
+    dh0_out = dh0_out.astype(initial_state.dtype)
+  return (
+    dq_r.reshape(H, B, T, K),
+    dk_r.reshape(H, B, T, K),
+    dv_r.reshape(H, B, T, V),
+    db_r.reshape(H, B, T),
+    dg_r.reshape(H, B, T, K),
+    dh0_out if return_dh0 else None,
+  )

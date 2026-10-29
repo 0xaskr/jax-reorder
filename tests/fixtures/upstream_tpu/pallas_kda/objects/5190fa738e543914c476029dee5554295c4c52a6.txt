@@ -1,0 +1,2982 @@
+"""Fused kernel implementations for KDA backward pass.
+
+Each fusion eliminates HBM round-trips by merging adjacent kernels into a
+single Pallas program.
+"""
+
+from __future__ import annotations
+
+from functools import partial
+
+import jax
+import jax.numpy as jnp
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import tpu as pltpu
+
+from tops.hardware import get_tpu_config
+from tops.ops.common.cost import (
+  combine_cost_estimates,
+  kda_dh_cost,
+  kda_intra_bwd_cost,
+  kda_recompute_cost,
+  kda_vnew_cost,
+  kda_wy_bwd_cost,
+  resolve_cost_estimate,
+)
+from tops.ops.utils import get_interpret
+from tops.utils import align_up, assert_shape, assert_shape_or_none
+
+
+def _flatten_batch_segment_ids(segment_ids_2d):
+  """Flatten [B, T] segment_ids into global [B*T] with re-indexed IDs.
+
+  Each batch element's segment IDs are offset so they don't collide
+  across batches.  Padding (0) stays 0.
+
+  Example:
+      batch 0: [1,1,2,2,0,...] → [1,1,2,2,0,...]
+      batch 1: [1,1,1,2,0,...] → [3,3,3,4,0,...]
+  """
+  max_per_batch = jnp.max(segment_ids_2d, axis=1)
+  offsets = jnp.concatenate([
+    jnp.zeros(1, dtype=jnp.int32),
+    jnp.cumsum(max_per_batch)[:-1],
+  ])
+  valid = segment_ids_2d > 0
+  return jnp.where(valid, segment_ids_2d + offsets[:, None], 0).reshape(-1)
+
+
+def _dense_segment_ids(B, T):
+  """Build dense segment IDs: one 1-indexed segment per batch row."""
+  return jnp.repeat(jnp.arange(B, dtype=jnp.int32) + 1, T)
+
+
+def _chunk_segment_metadata(chunk_seg_ids, batch_idx, chunk_id, NT):
+  """Return segment metadata for one chunk from compressed per-chunk IDs.
+
+  chunk_seg_ids: [B, NT] int32 — ``segment_ids.reshape(B, NT, BT)[:, :, 0]``.
+  batch_idx: which batch element (0..B-1).
+  chunk_id: chunk index within that batch (0..NT-1).
+  NT: per-batch chunk count (T // BT).
+  Returns: (seg_cur, seq_idx, is_valid, is_first_chunk, is_last_chunk).
+  """
+  chunk_id = jnp.asarray(chunk_id, dtype=jnp.int32)
+  batch_idx = jnp.asarray(batch_idx, dtype=jnp.int32)
+
+  seg_cur = chunk_seg_ids[batch_idx, chunk_id]
+  is_valid = seg_cur != 0
+
+  prev_seg = jnp.where(chunk_id == 0, jnp.int32(0),
+                        chunk_seg_ids[batch_idx, jnp.maximum(chunk_id - 1, 0)])
+  next_seg = jnp.where(chunk_id + 1 >= NT, jnp.int32(0),
+                        chunk_seg_ids[batch_idx, jnp.minimum(chunk_id + 1, NT - 1)])
+
+  is_first_chunk = is_valid & (prev_seg != seg_cur)
+  is_last_chunk = is_valid & (next_seg != seg_cur)
+  seq_idx = jnp.maximum(seg_cur - 1, 0).astype(jnp.int32)
+  return seg_cur, seq_idx, is_valid, is_first_chunk, is_last_chunk
+
+
+def _matmul_in_dtype(lhs, rhs, compute_dtype, precision=None):
+  # TPU MXU requires an FP32 accumulator even for BF16 operands. Narrow pure
+  # low-precision results immediately; state-dependent contractions stay FP32.
+  return jnp.matmul(
+    lhs.astype(compute_dtype),
+    rhs.astype(compute_dtype),
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  ).astype(compute_dtype)
+
+# =====================================================================
+# M1: recompute_w_u_fwd + compute_v_new_from_h
+# =====================================================================
+
+@partial(jax.jit, static_argnames=["dtype", "compute_dtype"])
+def compute_m1_recompute(
+  bq, bk, bv, bb, bA, bg, bh, dtype, compute_dtype=jnp.float32,
+):
+  """(u, w, v_new, qg, kg) from saved h."""
+  bq = bq.astype(compute_dtype)
+  bk = bk.astype(compute_dtype)
+  bv = bv.astype(compute_dtype)
+  bb = bb.astype(compute_dtype)
+  bA = bA.astype(compute_dtype)
+  bg = bg.astype(jnp.float32)
+  bh = bh.astype(jnp.float32)
+  g_exp = jnp.exp2(bg)
+  v_beta = bv * bb[:, :, None]
+  u = _matmul_in_dtype(bA, v_beta, compute_dtype)
+  w = jnp.matmul(
+    bA.astype(jnp.float32),
+    (bk * bb[:, :, None] * g_exp).astype(jnp.float32),
+    preferred_element_type=jnp.float32,
+  )
+  u_mat = u.astype(dtype)
+  w_mat = w.astype(jnp.float32)
+  v_new = u_mat.astype(jnp.float32) - jnp.matmul(
+    w_mat.astype(jnp.float32),
+    bh,
+    preferred_element_type=jnp.float32,
+  )
+  qg = bq * g_exp
+  kg = bk * jnp.exp2(bg[:, -1:, :] - bg)
+  return u, w, v_new, qg, kg
+
+@partial(jax.jit, static_argnames=["scale"])
+def compute_dhu_recurrence(bkg, dh, bdv0, dh_tmp, g_exp_last, bqg, bw, bdo, scale):
+  bdv = jnp.matmul(bkg, dh, preferred_element_type=jnp.float32) + bdv0
+  dh_new = dh_tmp * g_exp_last[:, :, None] + jnp.matmul(
+    jnp.concatenate([bqg * scale, -bw], axis=1).transpose(0, 2, 1),
+    jnp.concatenate([bdo.astype(jnp.float32), bdv], axis=1),
+    preferred_element_type=jnp.float32,
+  )
+  return bdv, dh_new
+
+
+@partial(
+  jax.jit,
+  static_argnames=["scale", "precision", "return_b_dgk"],
+)
+def compute_wy_backward(
+  bdo, bdv, bvn, bv, bh, dh, bq, bk, bg, bb, bA, scale, precision,
+  mask_last=None,
+  mask_lower=None,
+  return_b_dgk=False,
+):
+  BT = bdo.shape[1]
+  dq_acc = (jnp.matmul(bdo, bh.transpose(0, 2, 1), precision=precision, preferred_element_type=jnp.float32) * scale)
+  b_dw = -jnp.matmul(bdv, bh.transpose(0, 2, 1), precision=precision, preferred_element_type=jnp.float32)
+  dk_acc = jnp.matmul(bvn, dh.transpose(0, 2, 1), precision=precision, preferred_element_type=jnp.float32)
+  b_dvb = jnp.matmul(bA.transpose(0, 2, 1), bdv, precision=precision, preferred_element_type=jnp.float32)
+  db_acc = (b_dvb * bv).sum(axis=2)
+
+  g_exp = jnp.exp2(bg)
+  g_exp_last = g_exp[:, BT - 1, :]
+  b_dgk = (bh * dh).sum(axis=2) * g_exp_last
+  dq_acc = dq_acc * g_exp
+  dk_acc = dk_acc * jnp.exp2(bg[:, BT - 1:BT, :] - bg)
+
+  gb = g_exp * bb[:, :, None]
+  kg_local = bk * g_exp
+  dAkk_local = jnp.matmul(
+    jnp.concatenate([bdv, b_dw], axis=2),
+    jnp.concatenate([bv, kg_local], axis=2).transpose(0, 2, 1),
+    precision=precision, preferred_element_type=jnp.float32)
+  dkgb = jnp.matmul(bA.transpose(0, 2, 1), b_dw, precision=precision, preferred_element_type=jnp.float32)
+  db_acc = db_acc + (dkgb * kg_local).sum(axis=2)
+
+  kdk = bk * dk_acc
+  b_dgk = b_dgk + kdk.sum(axis=1)
+  dg_acc = bq * dq_acc - kdk + kg_local * dkgb * bb[:, :, None]
+  if not return_b_dgk:
+    if mask_last is None:
+      idx = jnp.arange(BT, dtype=jnp.int32)
+      mask_last = (idx == BT - 1).astype(jnp.float32)
+    dg_acc = (
+      dg_acc + mask_last[None, :, None] * b_dgk[:, None, :]
+    )
+  dk_acc = dk_acc + dkgb * gb
+
+  if mask_lower is None:
+    idx = jnp.arange(BT, dtype=jnp.int32)
+    mask_lower = (idx[:, None] > idx[None, :]).astype(jnp.float32)
+  dAkk_local = jnp.where(mask_lower[None, :, :], dAkk_local * bb[:, None, :], 0.0)
+  dAkk_local = jnp.matmul(dAkk_local, bA.transpose(0, 2, 1), precision=precision, preferred_element_type=jnp.float32)
+  dAkk_local = jnp.matmul(bA.transpose(0, 2, 1), dAkk_local, precision=precision, preferred_element_type=jnp.float32)
+  dAkk_local = jnp.where(mask_lower[None, :, :], -dAkk_local, 0.0)
+  outputs = (dq_acc, dk_acc, b_dvb, db_acc, dg_acc, dAkk_local)
+  if return_b_dgk:
+    return (*outputs, b_dgk)
+  return outputs
+
+
+def _fused_recompute_w_u_vnew_from_h_kernel(
+  k_ref,
+  v_ref,
+  beta_ref,
+  A_ref,
+  q_ref,
+  g_ref,
+  h_ref,
+  w_ref,
+  qg_ref,
+  kg_ref,
+  v_new_ref,
+  *,
+  BT,
+  K,
+  V,
+  MB,
+):
+  """Compute w, qg, kg, and v_new for MB chunk tiles.
+
+  Per chunk:
+      u     = A @ (v * beta)
+      w     = A @ (k * beta * exp2(g))
+      qg    = q * exp2(g)
+      kg    = k * exp2(g_last - g)
+      v_new = u - w @ h
+  """
+  q = q_ref[:]  # [MB, BT, K]
+  k = k_ref[:]  # [MB, BT, K]
+  v = v_ref[:]  # [MB, BT, V]
+  beta = beta_ref[:]  # [MB, BT]
+  A = A_ref[:]  # [MB, BT, BT]
+  g = g_ref[:]  # [MB, BT, K]
+  h = h_ref[:]  # [MB, K, V]
+
+  u, w, v_new, qg, kg = compute_m1_recompute(q, k, v, beta, A, g, h, k_ref.dtype)
+
+  w_ref[:] = w.astype(w_ref.dtype)
+  qg_ref[:] = qg.astype(qg_ref.dtype)
+  kg_ref[:] = kg.astype(kg_ref.dtype)
+  v_new_ref[:] = v_new.astype(v_new_ref.dtype)
+
+@partial(jax.jit, static_argnames=["chunk_size", "mini_batch"])
+def fused_recompute_w_u_vnew_from_h_pallas(
+  q: jax.Array,
+  k: jax.Array,
+  v: jax.Array,
+  beta: jax.Array,
+  A: jax.Array,
+  g: jax.Array,
+  h: jax.Array,
+  chunk_size: int = 64,
+  mini_batch: int | None = None,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+  """Fuse recompute w/qg/kg + compute v_new into one Pallas kernel.
+
+  Eliminates the HBM round-trip for ``u`` by computing it internally
+  and discarding it after deriving ``v_new``.
+
+  Args:
+      q:    [H, B, T, K] query vectors.
+      k:    [H, B, T, K] key vectors.
+      v:    [H, B, T, V] value vectors.
+      beta: [H, B, T] per-token beta.
+      A:    [H, B, T, BT] Akk inverse matrix.
+      g:    [H, B, T, K] chunk-local cumsum gate in log2 space.
+      h:    [H, B, NT, K, V] saved pre-update hidden states.
+      chunk_size: Chunk size BT.
+      mini_batch: Number of flattened chunk tiles per Pallas program.
+
+  Returns:
+      w:      [H, B, T, K]
+      qg:     [H, B, T, K]
+      kg:     [H, B, T, K]
+      v_new:  [H, B, T, V]
+  """
+  H, B, T, K = q.shape
+  V = v.shape[-1]
+  BT = chunk_size
+  NT = T // BT
+  total = H * B * NT
+  total_orig = total  # saved for unpadding before _ir reshape
+
+  assert_shape(q, (H, B, T, K), "q")
+  assert_shape(k, (H, B, T, K), "k")
+  assert_shape(v, (H, B, T, V), "v")
+  assert_shape(beta, (H, B, T), "beta")
+  assert_shape(A, (H, B, T, BT), "A")
+  assert_shape(g, (H, B, T, K), "g")
+  assert_shape(h, (H, B, NT, K, V), "h")
+  assert T % BT == 0, f"T={T} must be divisible by chunk_size={BT}"
+
+  def _r(x, d):
+    return x.reshape(total, BT, d)
+
+  q_r = _r(q, K)
+  k_r = _r(k, K)
+  v_r = _r(v, V)
+  g_r = _r(g, K)
+  beta_r = beta.reshape(total, BT)
+  A_r = A.reshape(-1, BT, BT)
+  h_r = h.reshape(total, K, V)
+
+  align_minor = get_tpu_config().block_align_minor
+  if mini_batch is None:
+    elem_size = 2 if v.dtype == jnp.bfloat16 else 4
+    in_bytes = (3 * BT * K + BT * V + BT + BT * BT + K * V) * elem_size  # beta: BT bytes (2D)
+    out_bytes = (3 * BT * K + BT * V) * elem_size
+    per_chunk = in_bytes + out_bytes
+    vmem_budget = 8 * 1024 * 1024
+    hw_mb = max(1, vmem_budget // per_chunk)
+    MB = min(hw_mb, total)
+    # align upward to block_align_minor (TPU dim=-2 constraint)
+    MB = min(align_up(MB, align_minor), total)
+    # try to make total divisible by MB; reduce MB first, pad as fallback
+    need_pad = False
+    if total % MB != 0:
+      mb_try = MB
+      while mb_try > 1:
+        mb_try -= 1
+        if total % mb_try == 0 and (mb_try == total or mb_try % align_minor == 0):
+          MB = mb_try
+          break
+      else:
+        need_pad = True
+  else:
+    MB = mini_batch
+    assert total % MB == 0, f"total={total} must be divisible by mini_batch={MB}"
+    assert MB % align_minor == 0 or MB == total, (
+      f"mini_batch={MB} must be divisible by {align_minor} or equal to total={total}"
+    )
+    need_pad = False
+
+  # ---- pad if needed: round total up to a multiple of MB ----
+  if need_pad:
+    total_padded = ((total + MB - 1) // MB) * MB
+    pad_width = total_padded - total
+    q_r = jnp.pad(q_r, [(0, pad_width), (0, 0), (0, 0)])
+    k_r = jnp.pad(k_r, [(0, pad_width), (0, 0), (0, 0)])
+    v_r = jnp.pad(v_r, [(0, pad_width), (0, 0), (0, 0)])
+    g_r = jnp.pad(g_r, [(0, pad_width), (0, 0), (0, 0)])
+    beta_r = jnp.pad(beta_r, [(0, pad_width), (0, 0)])
+    A_r = jnp.pad(A_r, [(0, pad_width), (0, 0), (0, 0)])
+    h_r = jnp.pad(h_r, [(0, pad_width), (0, 0), (0, 0)])
+    total = total_padded
+
+  def _spec2(d1, d2=None):
+    if d2 is None:
+      return pl.BlockSpec(block_shape=(MB, d1), index_map=lambda idx: (idx, 0))
+    return pl.BlockSpec(block_shape=(MB, d1, d2), index_map=lambda idx: (idx, 0, 0))
+
+  in_specs = [
+    _spec2(BT, K),  # k
+    _spec2(BT, V),  # v
+    _spec2(BT),     # beta  ← 2D [MB, BT]
+    _spec2(BT, BT),  # A
+    _spec2(BT, K),  # q
+    _spec2(BT, K),  # g
+    _spec2(K, V),  # h
+  ]
+  out_specs = [
+    _spec2(BT, K),  # w
+    _spec2(BT, K),  # qg
+    _spec2(BT, K),  # kg
+    _spec2(BT, V),  # v_new
+  ]
+  out_shape = [
+    jax.ShapeDtypeStruct((total, BT, K), q.dtype),
+    jax.ShapeDtypeStruct((total, BT, K), q.dtype),
+    jax.ShapeDtypeStruct((total, BT, K), q.dtype),
+    jax.ShapeDtypeStruct((total, BT, V), v.dtype),
+  ]
+
+  kernel = partial(
+    _fused_recompute_w_u_vnew_from_h_kernel,
+    BT=BT,
+    K=K,
+    V=V,
+    MB=MB,
+  )
+
+  w_r, qg_r, kg_r, v_new_r = pl.pallas_call(
+    kernel,
+    out_shape=out_shape,
+    grid_spec=pltpu.PrefetchScalarGridSpec(
+      num_scalar_prefetch=0,
+      grid=(total // MB,),
+      in_specs=in_specs,
+      out_specs=out_specs,
+    ),
+    compiler_params=pltpu.CompilerParams(
+      dimension_semantics=("parallel",),
+      disable_bounds_checks=True,
+      vmem_limit_bytes=get_tpu_config().vmem_limit_bytes,
+    ),
+    interpret=get_interpret(),
+    cost_estimate=combine_cost_estimates(
+      kda_recompute_cost(H, B, NT, BT, K, V),
+      kda_vnew_cost(H, B, NT, BT, K, V),
+    ),
+  )(k_r, v_r, beta_r, A_r, q_r, g_r, h_r)
+
+  def _ir(x, d):
+    return x[:total_orig].reshape(H, B, T, d)
+
+  return (
+    _ir(w_r, K),
+    _ir(qg_r, K),
+    _ir(kg_r, K),
+    _ir(v_new_r, V),
+  )
+
+def _chunk_window_has_valid(
+  chunk_seg_ids,
+  batch_idx,
+  start_chunk,
+  window_size,
+):
+  """Return whether a contiguous chunk window contains a real segment."""
+  assert window_size > 0
+  has_valid = chunk_seg_ids[batch_idx, start_chunk] != 0
+  for offset in range(1, window_size):
+    has_valid = jnp.logical_or(
+      has_valid,
+      chunk_seg_ids[batch_idx, start_chunk + offset] != 0,
+    )
+  return has_valid
+
+# =====================================================================
+# M2: intra backward + chunk-local reverse cumsum
+# =====================================================================
+
+
+def _fused_intra_bwd_cumsum_kernel(
+  q_ref,
+  k_ref,
+  g_ref,
+  beta_ref,
+  dAqk_ref,
+  dAkk_ref,
+  dq_in_ref,
+  dk_in_ref,
+  db_in_ref,
+  dg_in_ref,
+  dq_ref,
+  dk_ref,
+  db_ref,
+  dg_ref,
+  *,
+  chunk_size,
+  head_dim,
+  sub_chunk_size,
+  mini_batch,
+  scale,
+):
+  """Compute intra backward updates and reverse cumsum dg in one kernel body."""
+  BC = sub_chunk_size
+  NC = chunk_size // BC
+  K = head_dim
+  dtype = q_ref.dtype
+  MB = mini_batch
+  # fp32 inputs: restore HIGHEST precision to avoid MXU bf16 internal rounding
+  # that causes catastrophic-cancellation errors in dg when gates→0.
+  # bf16 inputs: default precision is fine (bwd_atol is already 5e-2).
+  _prec = jax.lax.Precision.HIGHEST if dtype == jnp.float32 else None
+
+  # Load full chunk data — [MB, C, K] / [MB, C, 1]
+  q = q_ref[:, 0, 0].astype(jnp.float32)  # [MB, C, K]
+  k = k_ref[:, 0, 0].astype(jnp.float32)  # [MB, C, K]
+  g = g_ref[:, 0, 0].astype(jnp.float32)  # [MB, C, K]
+  beta = beta_ref[:, 0, 0].astype(jnp.float32)  # [MB, C, 1]
+
+  dAqk_full = dAqk_ref[:, 0, 0]  # [MB, C, C]
+  dAkk_full = dAkk_ref[:, 0, 0]  # [MB, C, C]
+
+  idx = jnp.arange(chunk_size, dtype=jnp.int32)
+  causal_mask = idx[:, None] >= idx[None, :]  # [C, C]
+  strict_lower = idx[:, None] > idx[None, :]  # [C, C]
+  cumsum_mask = (idx[:, None] <= idx[None, :]).astype(jnp.float32)  # [C, C]
+
+  dAqk_full = jnp.where(causal_mask[None], dAqk_full, 0.0).astype(jnp.float32) * scale
+  dAkk_full = jnp.where(strict_lower[None], dAkk_full, 0.0).astype(jnp.float32)
+
+  # ── Block-structured fully-vectorised computation ─────────────────────────
+  # Design rationale:
+  #
+  # BEFORE: for i_i in range(NC): for i_j in range(...): _dot_batch(...)
+  #   O(NC²) serial Python-level HLO Dot dispatches (NC=4 → 40 Dot ops).
+  #   XLA/MXU sees them as independent serial matmuls, no cross-dispatch fusion.
+  #
+  # AFTER (this implementation): reshape [MB,C,D]→[NC,MB,BC,D] and use
+  #   (NC,MB)-batched dot_general for diagonal, scatter-add over pair stacks
+  #   for off-diagonal.  Total HLO Dot ops = 8, constant regardless of NC.
+  #   Dispatch count: NC=1→4, NC=2→8, NC=4→8  (was 4/12/40).
+  #
+  # The throughput gain is entirely from this vectorisation over the NC
+  # dimension.  disable_recompute (saves fwd HBM re-reads) is a separate
+  # orthogonal improvement applied at the chunk_kda_bwd orchestrator level.
+  #
+  # With auto sub_chunk_size=min(64,BT): BT=64→NC=1 (4 dispatches total).
+  def _to_blocks(x):
+    # [MB, C, D] → [NC, MB, BC, D]  via jnp.stack over NC slices
+    return jnp.stack([x[:, i * BC : (i + 1) * BC] for i in range(NC)])
+
+  q_b = _to_blocks(q)  # [NC, MB, BC, K]
+  k_b = _to_blocks(k)
+  g_b = _to_blocks(g)
+  beta_b = _to_blocks(beta)  # [NC, MB, BC, 1]
+
+  # ── Helper: flatten [NC, MB, BC, D] → [MB, C, D] ─────────────────────────
+  def _from_blocks(x):
+    if NC == 1:
+      return x[0]
+    return jnp.concatenate([x[i] for i in range(NC)], axis=1)
+
+  # ── 1. ALL diagonal blocks via merged NM=NC*MB single-batch matmul ───────
+  # Stack NC diagonal tiles of dAqk/dAkk: [NC, MB, BC, BC]
+  dAqk_diag = jnp.stack(
+    [dAqk_full[:, i * BC : (i + 1) * BC, i * BC : (i + 1) * BC] for i in range(NC)]
+  )
+  dAkk_diag = jnp.stack(
+    [dAkk_full[:, i * BC : (i + 1) * BC, i * BC : (i + 1) * BC] for i in range(NC)]
+  )
+
+  g_max = jnp.max(g_b, axis=2, keepdims=True)  # [NC, MB, 1, K]
+  row_d = jnp.exp2(g_b - g_max)  # [NC, MB, BC, K]  in (0,1], no overflow
+  col_d = jnp.exp2(g_max - g_b)  # [NC, MB, BC, K]  >= 1; safe when BC*|lb| < 127
+
+  k_til = k_b * col_d  # [NC, MB, BC, K]
+  q_hat = q_b * row_d
+  k_hat = k_b * beta_b * row_d
+
+  # Mosaic (TPU Pallas) requires exactly 1 batch dim in dot_general.
+  # Merge NC and MB into a single batch axis NM to avoid the 2-batch-dim
+  # constraint: [NC, MB, M, K] → [NM, M, K].
+  NM = NC * MB
+  # _b1:  A @ B   i.e. contract last dim of A with second-to-last of B
+  _b1 = (((2,), (1,)), ((0,), (0,)))
+  # _b1t: A^T @ B i.e. contract second-to-last of A with second-to-last of B
+  _b1t = (((1,), (1,)), ((0,), (0,)))
+
+  def _f(x):
+    return x.reshape(NM, x.shape[2], x.shape[3])
+
+  dq_all = (
+    _f(row_d)
+    * jax.lax.dot_general(
+      _f(dAqk_diag), _f(k_til), _b1, preferred_element_type=jnp.float32, precision=_prec
+    )
+  ).reshape(NC, MB, BC, K)  # [NC,MB,BC,K]
+
+  dk_row_pre_all = (
+    _f(row_d)
+    * jax.lax.dot_general(
+      _f(dAkk_diag), _f(k_til), _b1, preferred_element_type=jnp.float32, precision=_prec
+    )
+  ).reshape(NC, MB, BC, K)
+
+  dk_col_all = (
+    _f(col_d)
+    * (
+      jax.lax.dot_general(
+        _f(dAqk_diag),
+        _f(q_hat),
+        _b1t,
+        preferred_element_type=jnp.float32,
+        precision=_prec,
+      )
+      + jax.lax.dot_general(
+        _f(dAkk_diag),
+        _f(k_hat),
+        _b1t,
+        preferred_element_type=jnp.float32,
+        precision=_prec,
+      )
+    )
+  ).reshape(NC, MB, BC, K)
+
+  # ── 2. ALL off-diagonal row pairs (i_j < i_i) ────────────────────────────
+  # Pairs: (i_i, i_j) for all i_i > i_j — NC*(NC-1)/2 total
+  # Matmul: [N_row, MB, BC, BC] @ [N_row, MB, BC, K]
+  #   batch=MB only (keep N_row for scatter-add), contract=BC
+  #   einsum 'pmab,pmbk->pmak'  → [N_row, MB, BC, K]
+  # Scatter-add results to i_i destination blocks.
+  row_pairs = [(ii, ij) for ii in range(NC) for ij in range(ii)]
+  if row_pairs:
+    Aqk_rp = jnp.stack(
+      [
+        dAqk_full[:, ii * BC : (ii + 1) * BC, ij * BC : (ij + 1) * BC]
+        for (ii, ij) in row_pairs
+      ]
+    )  # [N_row,MB,BC,BC]
+    Akk_rp = jnp.stack(
+      [
+        dAkk_full[:, ii * BC : (ii + 1) * BC, ij * BC : (ij + 1) * BC]
+        for (ii, ij) in row_pairs
+      ]
+    )
+    k_rp = jnp.stack([k_b[ij] for (_, ij) in row_pairs])  # [N_row,MB,BC,K]
+    g_rp = jnp.stack([g_b[ij] for (_, ij) in row_pairs])
+    # reference = first row of i_i block
+    g_ref_rp = jnp.stack(
+      [g_b[ii, :, 0:1, :] for (ii, _) in row_pairs]
+    )  # [N_row,MB,1,K]
+
+    k_dec_rp = k_rp * jnp.exp2(g_ref_rp - g_rp)  # [N_row,MB,BC,K]
+
+    # Merge N_row*MB for single-batch dot_general.
+    # einsum 'pmab,pmbk->pmak': contract last dim of A with dim2 of B.
+    N_row = len(row_pairs)
+    NR = N_row * MB
+    dq_rp = jax.lax.dot_general(
+      Aqk_rp.reshape(NR, BC, BC),
+      k_dec_rp.reshape(NR, BC, K),
+      _b1,
+      preferred_element_type=jnp.float32,
+      precision=_prec,
+    ).reshape(N_row, MB, BC, K)
+    dkpre_rp = jax.lax.dot_general(
+      Akk_rp.reshape(NR, BC, BC),
+      k_dec_rp.reshape(NR, BC, K),
+      _b1,
+      preferred_element_type=jnp.float32,
+      precision=_prec,
+    ).reshape(N_row, MB, BC, K)
+
+    # Accumulate per-block using Python list to avoid .at[ii].add() on the
+    # NC-indexed leading dimension — Pallas on TPU may not handle scatter
+    # on that dimension correctly.  Use input tensors (q_b/k_b) to derive
+    # zero initializers, matching the main-branch pattern.
+    dq_row_acc_list = [q_b[ii] * 0.0 for ii in range(NC)]  # NC×[MB,BC,K]
+    dkpre_row_acc_list = [k_b[ii] * 0.0 for ii in range(NC)]
+    for p_idx, (ii, _) in enumerate(row_pairs):
+      dq_row_acc_list[ii] = dq_row_acc_list[ii] + dq_rp[p_idx]
+      dkpre_row_acc_list[ii] = dkpre_row_acc_list[ii] + dkpre_rp[p_idx]
+
+    # per-block row decay: exp2(g_b[i] - g_b[i, :, 0:1, :])
+    row_decay = jnp.exp2(g_b - g_b[:, :, 0:1, :])  # [NC,MB,BC,K]
+    dq_all = jnp.stack(
+      [dq_all[ii] + row_decay[ii] * dq_row_acc_list[ii] for ii in range(NC)]
+    )
+    dk_row_pre_all = jnp.stack(
+      [dk_row_pre_all[ii] + row_decay[ii] * dkpre_row_acc_list[ii] for ii in range(NC)]
+    )
+
+  # ── 3. ALL off-diagonal col pairs (i_j > i_i) ────────────────────────────
+  # Pairs: (i_i, i_j) for all i_j > i_i
+  # dA_ji^T matmul: [N_col, MB, BC_j, BC_i] contract BC_j with [N_col, MB, BC_j, K]
+  #   einsum 'pmba,pmbk->pmak'  batch=MB only  → [N_col, MB, BC_i, K]
+  col_pairs = [(ii, ij) for ii in range(NC) for ij in range(ii + 1, NC)]
+  if col_pairs:
+    # dA_ji slices: row=j, col=i
+    Aqk_cp = jnp.stack(
+      [
+        dAqk_full[:, ij * BC : (ij + 1) * BC, ii * BC : (ii + 1) * BC]
+        for (ii, ij) in col_pairs
+      ]
+    )  # [N_col,MB,BC_j,BC_i]
+    Akk_cp = jnp.stack(
+      [
+        dAkk_full[:, ij * BC : (ij + 1) * BC, ii * BC : (ii + 1) * BC]
+        for (ii, ij) in col_pairs
+      ]
+    )
+    q_cp = jnp.stack([q_b[ij] for (_, ij) in col_pairs])  # [N_col,MB,BC,K]
+    k_cp = jnp.stack([k_b[ij] for (_, ij) in col_pairs])
+    g_cp = jnp.stack([g_b[ij] for (_, ij) in col_pairs])
+    beta_cp = jnp.stack([beta_b[ij] for (_, ij) in col_pairs])  # [N_col,MB,BC,1]
+    # reference = last row of i_i block
+    g_ref_cp = jnp.stack(
+      [g_b[ii, :, BC - 1 : BC, :] for (ii, _) in col_pairs]
+    )  # [N_col,MB,1,K]
+
+    row_d_cp = jnp.exp2(g_cp - g_ref_cp)  # [N_col,MB,BC,K]
+    q_dec_cp = q_cp * row_d_cp
+    kb_dec_cp = k_cp * beta_cp * row_d_cp
+
+    # Merge N_col*MB for single-batch dot_general.
+    # dA_ji^T @ q_dec: contract BC_j (dim1 after flatten) from both.
+    N_col = len(col_pairs)
+    NCP = N_col * MB
+    dk_col_cp = (
+      jax.lax.dot_general(
+        Aqk_cp.reshape(NCP, BC, BC),
+        q_dec_cp.reshape(NCP, BC, K),
+        _b1t,
+        preferred_element_type=jnp.float32,
+        precision=_prec,
+      )
+      + jax.lax.dot_general(
+        Akk_cp.reshape(NCP, BC, BC),
+        kb_dec_cp.reshape(NCP, BC, K),
+        _b1t,
+        preferred_element_type=jnp.float32,
+        precision=_prec,
+      )
+    ).reshape(N_col, MB, BC, K)  # [N_col,MB,BC_i,K]
+
+    # Accumulate per-block using Python list (same reason as row_pairs).
+    dk_col_acc_list = [k_b[ii] * 0.0 for ii in range(NC)]  # NC×[MB,BC,K]
+    for p_idx, (ii, _) in enumerate(col_pairs):
+      dk_col_acc_list[ii] = dk_col_acc_list[ii] + dk_col_cp[p_idx]
+
+    col_decay = jnp.exp2(g_b[:, :, BC - 1 : BC, :] - g_b)  # [NC,MB,BC,K]
+    dk_col_all = jnp.stack(
+      [dk_col_all[ii] + col_decay[ii] * dk_col_acc_list[ii] for ii in range(NC)]
+    )
+
+  # ── Flatten [NC, MB, BC, K] → [MB, C, K] and compute final outputs ───────
+
+  dq_out = _from_blocks(dq_all)  # [MB, C, K]
+  dk_row_pre_out = _from_blocks(dk_row_pre_all)
+  dk_col_out = _from_blocks(dk_col_all)
+
+  dbeta_out = jnp.sum(
+    k * dk_row_pre_out,
+    axis=-1,
+    keepdims=True,
+  )  # [MB, C, 1]
+  dk_row = beta * dk_row_pre_out  # [MB, C, K]
+  dk_out = dk_row + dk_col_out  # [MB, C, K]
+  dg_out = q * dq_out + k * (dk_row - dk_col_out)  # [MB, C, K]
+
+  dq_total = dq_in_ref[:, 0, 0].astype(jnp.float32) + dq_out
+  dk_total = dk_in_ref[:, 0, 0].astype(jnp.float32) + dk_out
+  db_total = db_in_ref[:, 0, 0].astype(jnp.float32) + dbeta_out
+  # Truncate dg to input dtype to match the original pipeline where
+  # Stage 4 writes dg in k.dtype before Stage 5 cumsum reads it back.
+  # Truncate the SUM of WY dg and intra dg to match original behavior where
+  # both Stage 3 (WY) and Stage 4 (intra) produce k.dtype dg.
+  dg_total = (dg_in_ref[:, 0, 0] + dg_out).astype(q_ref.dtype).astype(jnp.float32)
+
+  dg_reverse_cumsum = jax.lax.dot_general(
+    cumsum_mask,
+    dg_total,
+    (((1,), (1,)), ((), ())),
+    precision=jax.lax.Precision.HIGHEST,
+  ).transpose(1, 0, 2)
+
+  dq_ref[:, 0, 0] = dq_total.astype(dq_ref.dtype)
+  dk_ref[:, 0, 0] = dk_total.astype(dk_ref.dtype)
+  db_ref[:, 0, 0] = db_total.astype(db_ref.dtype)
+  dg_ref[:, 0, 0] = dg_reverse_cumsum.astype(dg_ref.dtype)
+
+
+@partial(jax.jit, static_argnames=["chunk_size", "scale", "mini_batch"])
+def fused_intra_bwd_cumsum_pallas(
+  q: jax.Array,
+  k: jax.Array,
+  g: jax.Array,
+  beta: jax.Array,
+  dAqk: jax.Array,
+  dAkk: jax.Array,
+  dq: jax.Array,
+  dk: jax.Array,
+  db: jax.Array,
+  dg: jax.Array,
+  chunk_size: int = 64,
+  scale: float = 1.0,
+  mini_batch: int | None = None,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+  """Fuse KDA bwd intra updates with chunk-local reverse cumsum of ``dg``.
+
+  Args:
+      q:    [H, B, T, K] query vectors.
+      k:    [H, B, T, K] key vectors.
+      g:    [H, B, T, K] chunk-local cumsum gates in log2 space.
+      beta: [H, B, T] per-token beta.
+      dAqk: [H, B, T, BT] gradient of Aqk attention matrix.
+      dAkk: [H, B, T, BT] gradient of Akk matrix.
+      dq:   [H, B, T, K] incoming dq.
+      dk:   [H, B, T, K] incoming dk.
+      db:   [H, B, T] incoming db.
+      dg:   [H, B, T, K] incoming dg.
+      chunk_size: Chunk size BT.
+      scale: Attention scale applied to dAqk (default 1.0, matching
+          the orchestrator convention where dAqk already embeds scale).
+      mini_batch: Number of heads per Pallas program.
+
+  Returns:
+      dq, dk, db, dg_raw in [H, B, T, *] layout, where dg_raw is the
+      chunk-local reverse cumsum of incoming plus intra ``dg``.
+  """
+  H, B, T, K = q.shape
+  BT = chunk_size
+  NT = T // BT
+
+  assert_shape(q, (H, B, T, K), "q")
+  assert_shape(k, (H, B, T, K), "k")
+  assert_shape(g, (H, B, T, K), "g")
+  assert_shape(beta, (H, B, T), "beta")
+  assert_shape(dAqk, (H, B, T, BT), "dAqk")
+  assert_shape(dAkk, (H, B, T, BT), "dAkk")
+  assert_shape(dq, (H, B, T, K), "dq")
+  assert_shape(dk, (H, B, T, K), "dk")
+  assert_shape(db, (H, B, T), "db")
+  assert_shape(dg, (H, B, T, K), "dg")
+  assert T % BT == 0, f"T={T} must be divisible by chunk_size={BT}"
+  BC = min(16, BT)
+  assert BT % BC == 0, f"chunk_size={BT} must be divisible by sub_chunk_size={BC}"
+
+  if mini_batch is None:
+    per_head_bytes = (6 * BT * K + 2 * BT * BT) * 4
+    vmem_budget = 8 * 1024 * 1024
+    MB = max(1, vmem_budget // per_head_bytes)
+    MB = min(MB, H, 16)
+    while MB > 1 and H % MB != 0:
+      MB -= 1
+  else:
+    MB = mini_batch
+    assert H % MB == 0, f"H={H} must be divisible by mini_batch={MB}"
+
+  q_r = q.reshape(H, B, NT, BT, K)
+  k_r = k.reshape(H, B, NT, BT, K)
+  g_r = g.reshape(H, B, NT, BT, K)
+  beta_r = beta.reshape(H, B, NT, BT, 1)
+  dAqk_r = dAqk.reshape(H, B, NT, BT, BT)
+  dAkk_r = dAkk.reshape(H, B, NT, BT, BT)
+  dq_r = dq.reshape(H, B, NT, BT, K)
+  dk_r = dk.reshape(H, B, NT, BT, K)
+  db_r = db.reshape(H, B, NT, BT, 1)
+  dg_r = dg.reshape(H, B, NT, BT, K)
+
+  kernel = partial(
+    _fused_intra_bwd_cumsum_kernel,
+    chunk_size=BT,
+    head_dim=K,
+    sub_chunk_size=BC,
+    mini_batch=MB,
+    scale=scale,
+  )
+  grid = (H // MB, B, NT)
+
+  out_shape = [
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), dq.dtype),
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), dk.dtype),
+    jax.ShapeDtypeStruct((H, B, NT, BT, 1), db.dtype),
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), jnp.float32),
+  ]
+
+  qk_spec = pl.BlockSpec(
+    index_map=lambda i, j, l: (i, j, l, 0, 0),
+    block_shape=(MB, 1, 1, BT, K),
+  )
+  b_spec = pl.BlockSpec(
+    index_map=lambda i, j, l: (i, j, l, 0, 0),
+    block_shape=(MB, 1, 1, BT, 1),
+  )
+  A_spec = pl.BlockSpec(
+    index_map=lambda i, j, l: (i, j, l, 0, 0),
+    block_shape=(MB, 1, 1, BT, BT),
+  )
+
+  dq_o, dk_o, db_o, dg_o = pl.pallas_call(
+    kernel,
+    interpret=get_interpret(),
+    out_shape=out_shape,
+    in_specs=[
+      qk_spec,
+      qk_spec,
+      qk_spec,
+      b_spec,
+      A_spec,
+      A_spec,
+      qk_spec,
+      qk_spec,
+      b_spec,
+      qk_spec,
+    ],
+    out_specs=[qk_spec, qk_spec, b_spec, qk_spec],
+    grid=grid,
+    compiler_params=pltpu.CompilerParams(
+      dimension_semantics=("parallel", "parallel", "parallel"),
+      disable_bounds_checks=True,
+      vmem_limit_bytes=get_tpu_config().vmem_limit_bytes,
+    ),
+    cost_estimate=kda_intra_bwd_cost(H, B, NT, BT, K),
+  )(q_r, k_r, g_r, beta_r, dAqk_r, dAkk_r, dq_r, dk_r, db_r, dg_r)
+
+  return (
+    dq_o.reshape(H, B, T, K),
+    dk_o.reshape(H, B, T, K),
+    db_o.reshape(H, B, T),
+    dg_o.reshape(H, B, T, K),
+  )
+
+
+# =====================================================================
+# M3: dhu reverse recurrence + WY dq/dk/dv/db/dg/dAkk
+# =====================================================================
+
+
+def _fused_dhu_wy_kernel(
+  chunk_seg_ids_ref,
+  q_ref,
+  k_ref,
+  v_ref,
+  v_new_ref,
+  qg_ref,
+  kg_ref,
+  w_ref,
+  g_ref,
+  beta_ref,
+  A_ref,
+  h_ref,
+  do_ref,
+  dv0_ref,
+  dht_ref,
+  dq_ref,
+  dk_ref,
+  dv_ref,
+  db_ref,
+  dg_ref,
+  dA_ref,
+  dh0_ref,
+  scratch_ref,
+  *,
+  BT,
+  K,
+  V,
+  NT,
+  scale,
+  MB,
+):
+  """Fuse Dhu reverse recurrence and WY backward for one reverse chunk tile."""
+  rev_c = pl.program_id(1)
+  chunk_id = NT - 1 - rev_c
+  _, seq_idx, _, is_first_chunk, is_last_chunk = _chunk_segment_metadata(
+    chunk_seg_ids_ref, chunk_id, NT,
+  )
+  precision = None if q_ref.dtype == jnp.bfloat16 else jax.lax.Precision.HIGHEST
+
+  @pl.when(is_last_chunk)
+  def _():
+    scratch_ref[:] = dht_ref[0, :].astype(scratch_ref.dtype)
+
+  dh = scratch_ref[:].astype(jnp.float32)
+  bq = q_ref[:, 0].astype(jnp.float32)
+  bk = k_ref[:, 0].astype(jnp.float32)
+  bv = v_ref[:, 0].astype(jnp.float32)
+  bvn = v_new_ref[:, 0].astype(jnp.float32)
+  bqg = qg_ref[:, 0].astype(jnp.float32)
+  bkg = kg_ref[:, 0].astype(jnp.float32)
+  bw = w_ref[:, 0].astype(jnp.float32)
+  bg = g_ref[:, 0].astype(jnp.float32)
+  bb = beta_ref[:, 0, :, 0].astype(jnp.float32)
+  bA = A_ref[:, 0].astype(jnp.float32)
+  bh = h_ref[:, 0].astype(jnp.float32)
+  bdo = do_ref[:, 0].astype(jnp.float32)
+  bdv0 = dv0_ref[:, 0].astype(jnp.float32)
+
+  # --- dhu reverse recurrence (NO precision= to match original dhu kernel) ---
+  bdv = (
+    jnp.matmul(
+      bkg,
+      dh,
+      preferred_element_type=jnp.float32,
+    )
+    + bdv0
+  )
+
+  scratch_ref[:] = scratch_ref[:] * jnp.exp2(bg[:, BT - 1, :, None])
+  scratch_ref[:] = scratch_ref[:] + (
+    jnp.matmul(
+      bqg.transpose(0, 2, 1),
+      bdo,
+      preferred_element_type=jnp.float32,
+    )
+    * scale
+    - jnp.matmul(
+      bw.transpose(0, 2, 1),
+      bdv,
+      preferred_element_type=jnp.float32,
+    )
+  )
+
+  bdo_scaled = bdo * scale
+  do_dv = jnp.concatenate([bdo_scaled, bdv], axis=1)
+  dq_dw = jnp.matmul(
+    do_dv,
+    bh.transpose(0, 2, 1),
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+  b_dq = dq_dw[:, :BT, :]
+  b_dw = -dq_dw[:, BT:, :]
+
+  b_dk = jnp.matmul(
+    bvn,
+    dh.transpose(0, 2, 1),
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+  b_dA = jnp.matmul(
+    bdv,
+    bv.transpose(0, 2, 1),
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+
+  bA_t = bA.transpose(0, 2, 1)
+  b_dvb = jnp.matmul(
+    bA_t,
+    bdv,
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+  b_db = (b_dvb * bv).sum(axis=2)
+
+  g_exp = jnp.exp2(bg)
+  b_dgk = (bh * dh).sum(axis=2) * jnp.exp2(bg[:, BT - 1, :])
+  b_dq = b_dq * g_exp
+  b_dk = b_dk * jnp.exp2(bg[:, BT - 1 : BT, :] - bg)
+
+  gb = g_exp * bb[:, :, None]
+  kg_local = bk * g_exp
+  b_dA = b_dA + jnp.matmul(
+    b_dw,
+    kg_local.transpose(0, 2, 1),
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+  dkgb = jnp.matmul(
+    bA_t,
+    b_dw,
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+  b_db = b_db + (dkgb * kg_local).sum(axis=2)
+
+  kdk = bk * b_dk
+  b_dgk = b_dgk + kdk.sum(axis=1)
+  o_t = jnp.arange(BT)
+  m_last = (o_t == BT - 1).astype(jnp.float32)
+  b_dg = (
+    bq * b_dq
+    - kdk
+    + m_last[None, :, None] * b_dgk[:, None, :]
+    + kg_local * dkgb * bb[:, :, None]
+  )
+  b_dk = b_dk + dkgb * gb
+
+  m_lower = o_t[:, None] > o_t[None, :]
+  b_dA = jnp.where(m_lower[None, :, :], b_dA * bb[:, None, :], 0.0)
+  b_dA = jnp.matmul(
+    b_dA,
+    bA_t,
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+  b_dA = jnp.matmul(
+    bA_t,
+    b_dA,
+    precision=precision,
+    preferred_element_type=jnp.float32,
+  )
+  b_dA = jnp.where(m_lower[None, :, :], -b_dA, 0.0)
+
+  dq_ref[:, 0] = b_dq
+  dk_ref[:, 0] = b_dk
+  dv_ref[:, 0] = b_dvb * bb[:, :, None]
+  db_ref[:, 0, :, 0] = b_db
+  dg_ref[:, 0] = b_dg
+  dA_ref[:, 0] = b_dA
+
+  @pl.when(is_first_chunk)
+  def _():
+    dh0_ref[0, :] = scratch_ref[:].astype(dh0_ref.dtype)
+
+
+@partial(
+  jax.jit,
+  static_argnames=["chunk_size", "use_exp2", "scale", "mini_batch", "return_dh0"],
+)
+def fused_dhu_wy_pallas(
+  q: jax.Array,
+  k: jax.Array,
+  v: jax.Array,
+  v_new: jax.Array,
+  qg: jax.Array,
+  kg: jax.Array,
+  w: jax.Array,
+  g: jax.Array,
+  beta: jax.Array,
+  A: jax.Array,
+  h: jax.Array,
+  do: jax.Array,
+  dv0: jax.Array,
+  dht: jax.Array | None,
+  scale: float,
+  *,
+  segment_ids: jax.Array | None = None,
+  chunk_size: int = 64,
+  use_exp2: bool = True,
+  mini_batch: int | None = None,
+  return_dh0: bool = True,
+) -> tuple[
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array | None,
+]:
+  """Fuse KDA bwd Dhu and WY backward into one Pallas call.
+
+  Args:
+      q:      [H, B, T, K] original query vectors.
+      k:      [H, B, T, K] original key vectors.
+      v:      [H, B, T, V] original value vectors.
+      v_new:  [H, B, T, V] WY-transformed values.
+      qg:     [H, B, T, K] gated query from stage 0.
+      kg:     [H, B, T, K] gated key from stage 0.
+      w:      [H, B, T, K] erase weights from stage 0.
+      g:      [H, B, T, K] chunk-local cumsum gate in log2 space.
+      beta:   [H, B, T] WY beta coefficients.
+      A:      [H, B, T, BT] Akk inverse matrix.
+      h:      [H, B, NT, K, V] saved forward hidden states.
+      do:     [H, B, T, V] output gradient.
+      dv0:    [H, B, T, V] value gradient entering Dhu.
+      dht:    [N, H, K, V] final-state gradient, or None.
+      scale:  Attention scale.
+      segment_ids: None for uniform inputs, or [T] int32 segment IDs
+        (1-indexed; 0=padding).  Converted to cu_seqlens internally.
+      chunk_size: Chunk size BT.
+      use_exp2: Must be True. M3 expects log2 gates and uses exp2 decay.
+      mini_batch: Number of heads per program.
+      return_dh0: Return ``dh0`` when True; return None to match the old Dhu
+        API when the caller has no initial state.
+
+  Returns:
+      dq, dk, dv, db, dg, dAkk, dh0 in head-first layout. ``dh0`` has shape
+      ``[N, H, K, V]`` (one slot per global segment) when ``return_dh0`` is
+      True; otherwise None.
+  """
+  H, B, T, K = q.shape
+  V = v.shape[-1]
+  BT = chunk_size
+  T_sum = B * T
+  NT = T_sum // BT
+  NT_per_seq = T // BT
+
+  assert_shape(q, (H, B, T, K), "q")
+  assert_shape(k, (H, B, T, K), "k")
+  assert_shape(v, (H, B, T, V), "v")
+  assert_shape(v_new, (H, B, T, V), "v_new")
+  assert_shape(qg, (H, B, T, K), "qg")
+  assert_shape(kg, (H, B, T, K), "kg")
+  assert_shape(w, (H, B, T, K), "w")
+  assert_shape(g, (H, B, T, K), "g")
+  assert_shape(beta, (H, B, T), "beta")
+  assert_shape(A, (H, B, T, BT), "A")
+  assert_shape(h, (H, B, NT_per_seq, K, V), "h")
+  assert_shape(do, (H, B, T, V), "do")
+  assert_shape(dv0, (H, B, T, V), "dv0")
+  assert T % BT == 0, f"T={T} must be divisible by chunk_size={BT}"
+  assert use_exp2 is True, (
+    "fused_dhu_wy_pallas currently expects log2 gates and use_exp2=True"
+  )
+
+  if segment_ids is not None:
+    if segment_ids.ndim == 2:
+      seg_1d = _flatten_batch_segment_ids(segment_ids)
+    elif B > 1:
+      # 1D shared segment_ids with B>1: broadcast to [B, T] before flattening
+      # so that global IDs span all B*T positions correctly.
+      seg_1d = _flatten_batch_segment_ids(
+        jnp.broadcast_to(segment_ids[None, :], (B, segment_ids.shape[0]))
+      )
+    else:
+      seg_1d = segment_ids
+  else:
+    seg_1d = _dense_segment_ids(B, T)
+  chunk_seg_ids = seg_1d.reshape(NT, BT)[:, 0]
+  if dht is not None:
+    N = dht.shape[0]
+  elif segment_ids is not None:
+    # Compute N so dht_arr covers all global segment slots.
+    # NT (= B*T/BT) is a static safe upper bound for the max global segment
+    # ID after _flatten_batch_segment_ids, avoiding int(jnp.max(tracer))
+    # which raises ConcretizationTypeError inside shard_map / jit contexts.
+    N = NT
+  else:
+    N = B
+  assert_shape_or_none(dht, (N, H, K, V), "dht")
+  dht_arr = dht if dht is not None else jnp.zeros((N, H, K, V), dtype=jnp.float32)
+
+  if mini_batch is None:
+    elem_size = 2 if q.dtype == jnp.bfloat16 else 4
+    per_head = (7 * BT * K + 4 * BT * V + BT + BT * BT + 2 * K * V) * elem_size + (
+      K * V + 3 * BT * K + BT * V + BT + BT * BT + K * V
+    ) * 4
+    hw = get_tpu_config()
+    vmem_budget = hw.vmem_limit_bytes
+    MB = max(1, vmem_budget // per_head)
+    MB = min(MB, H, 16)
+    while H % MB != 0 and MB > 1:
+      MB -= 1
+  else:
+    MB = mini_batch
+    assert H % MB == 0, f"H={H} must be divisible by mini_batch={MB}"
+
+  q_r = q.reshape(H, NT, BT, K)
+  k_r = k.reshape(H, NT, BT, K)
+  v_r = v.reshape(H, NT, BT, V)
+  vn_r = v_new.reshape(H, NT, BT, V)
+  qg_r = qg.reshape(H, NT, BT, K)
+  kg_r = kg.reshape(H, NT, BT, K)
+  w_r = w.reshape(H, NT, BT, K)
+  g_r = g.reshape(H, NT, BT, K)
+  beta_r = beta.reshape(H, NT, BT, 1)
+  A_r = A.reshape(H, NT, BT, BT)
+  h_r = h.reshape(H, NT, K, V)
+  do_r = do.reshape(H, NT, BT, V)
+  dv0_r = dv0.reshape(H, NT, BT, V)
+
+  def idx_chunk(head, chunk, chunk_seg_ids_ref):
+    return (head, NT - 1 - chunk, 0, 0)
+
+  def idx_state(head, chunk, chunk_seg_ids_ref):
+    chunk_id = NT - 1 - chunk
+    _, seq_idx, _, _, _ = _chunk_segment_metadata(chunk_seg_ids_ref, chunk_id, NT)
+    return (seq_idx, head, 0, 0)
+
+  qk_spec = pl.BlockSpec((MB, 1, BT, K), index_map=idx_chunk)
+  v_spec = pl.BlockSpec((MB, 1, BT, V), index_map=idx_chunk)
+  b_spec = pl.BlockSpec((MB, 1, BT, 1), index_map=idx_chunk)
+  A_spec = pl.BlockSpec((MB, 1, BT, BT), index_map=idx_chunk)
+  h_spec = pl.BlockSpec((MB, 1, K, V), index_map=idx_chunk)
+  state_spec = pl.BlockSpec((1, MB, K, V), index_map=idx_state)
+
+  kernel = partial(
+    _fused_dhu_wy_kernel,
+    scale=scale,
+    BT=BT,
+    K=K,
+    V=V,
+    NT=NT,
+    MB=MB,
+  )
+  scratch = pltpu.VMEM((MB, K, V), jnp.float32)
+  out_shape = [
+    jax.ShapeDtypeStruct((H, NT, BT, K), jnp.float32),
+    jax.ShapeDtypeStruct((H, NT, BT, K), jnp.float32),
+    jax.ShapeDtypeStruct((H, NT, BT, V), jnp.float32),
+    jax.ShapeDtypeStruct((H, NT, BT, 1), jnp.float32),
+    jax.ShapeDtypeStruct((H, NT, BT, K), jnp.float32),
+    jax.ShapeDtypeStruct((H, NT, BT, BT), jnp.float32),
+    jax.ShapeDtypeStruct((N, H, K, V), jnp.float32),
+  ]
+
+  dq_r, dk_r, dv_r, db_r, dg_r, dA_r, dh0_r = pl.pallas_call(
+    kernel,
+    out_shape=out_shape,
+    grid_spec=pltpu.PrefetchScalarGridSpec(
+      num_scalar_prefetch=1,
+      grid=(H // MB, NT),
+      in_specs=[
+        qk_spec,
+        qk_spec,
+        v_spec,
+        v_spec,
+        qk_spec,
+        qk_spec,
+        qk_spec,
+        qk_spec,
+        b_spec,
+        A_spec,
+        h_spec,
+        v_spec,
+        v_spec,
+        state_spec,
+      ],
+      out_specs=[qk_spec, qk_spec, v_spec, b_spec, qk_spec, A_spec, state_spec],
+      scratch_shapes=[scratch],
+    ),
+    compiler_params=pltpu.CompilerParams(
+      dimension_semantics=("parallel", "arbitrary"),
+      disable_bounds_checks=True,
+      vmem_limit_bytes=get_tpu_config().vmem_limit_bytes,
+    ),
+    interpret=get_interpret(),
+    cost_estimate=combine_cost_estimates(
+      kda_dh_cost(H, B, NT, BT, K, V),
+      kda_wy_bwd_cost(H, B, NT, BT, K, V),
+    ),
+  )(
+    chunk_seg_ids,
+    q_r,
+    k_r,
+    v_r,
+    vn_r,
+    qg_r,
+    kg_r,
+    w_r,
+    g_r,
+    beta_r,
+    A_r,
+    h_r,
+    do_r,
+    dv0_r,
+    dht_arr,
+  )
+
+  return (
+    dq_r.reshape(H, B, T, K),
+    dk_r.reshape(H, B, T, K),
+    dv_r.reshape(H, B, T, V),
+    db_r.reshape(H, B, T),
+    dg_r.reshape(H, B, T, K),
+    dA_r.reshape(H, B, T, BT),
+    dh0_r if return_dh0 else None,
+  )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Shared L1 helpers extracted from M4 / M5 kernels
+# ══════════════════════════════════════════════════════════════════════════
+
+@partial(jax.jit, static_argnames=["precision", "ref_dtype"])
+def compute_intra_backward(bq, bk, bg, bb, dAqk, dAkk,
+                           dq_acc, dk_acc, db_acc, dg_acc,
+                           precision, ref_dtype,
+                           causal_mask=None):
+  BT = bq.shape[1]
+  if causal_mask is None:
+    idx = jnp.arange(BT, dtype=jnp.int32)
+    causal_mask = (idx[:, None] >= idx[None, :]).astype(jnp.float32)
+  dAqk_full = jnp.where(causal_mask[None], dAqk, 0.0).astype(jnp.float32)
+  dAkk_full = dAkk.astype(jnp.float32)
+
+  BC = min(16, BT)
+  NC = BT // BC
+
+  def _to_blocks(x):
+    return jnp.stack([x[:, i * BC:(i + 1) * BC] for i in range(NC)])
+  def _from_blocks(x):
+    if NC == 1:
+      return x[0]
+    return jnp.concatenate([x[i] for i in range(NC)], axis=1)
+
+  q_b = _to_blocks(bq)
+  k_b = _to_blocks(bk)
+  g_b = _to_blocks(bg)
+  beta_b = _to_blocks(bb[:, :, None])
+
+  dAqk_diag = jnp.stack(
+    [dAqk_full[:, i * BC:(i + 1) * BC, i * BC:(i + 1) * BC] for i in range(NC)])
+  dAkk_diag = jnp.stack(
+    [dAkk_full[:, i * BC:(i + 1) * BC, i * BC:(i + 1) * BC] for i in range(NC)])
+
+  g_max = jnp.max(g_b, axis=2, keepdims=True)
+  row_d = jnp.exp2(g_b - g_max)
+  col_d = jnp.exp2(g_max - g_b)
+  k_til = k_b * col_d
+  q_hat = q_b * row_d
+  k_hat = k_b * beta_b * row_d
+
+  K = bq.shape[2]
+  MB = bq.shape[0]
+  NM = NC * MB
+  _b1 = (((2,), (1,)), ((0,), (0,)))
+  _b1t = (((1,), (1,)), ((0,), (0,)))
+  def _f(x):
+    return x.reshape(NM, x.shape[2], x.shape[3])
+
+  dq_all = (_f(row_d) * jax.lax.dot_general(
+    _f(dAqk_diag), _f(k_til), _b1,
+    preferred_element_type=jnp.float32, precision=precision,
+  )).reshape(NC, MB, BC, K)
+  dk_row_pre_all = (_f(row_d) * jax.lax.dot_general(
+    _f(dAkk_diag), _f(k_til), _b1,
+    preferred_element_type=jnp.float32, precision=precision,
+  )).reshape(NC, MB, BC, K)
+  dk_col_all = (_f(col_d) * (
+    jax.lax.dot_general(_f(dAqk_diag), _f(q_hat), _b1t,
+                        preferred_element_type=jnp.float32, precision=precision)
+    + jax.lax.dot_general(_f(dAkk_diag), _f(k_hat), _b1t,
+                          preferred_element_type=jnp.float32, precision=precision)
+  )).reshape(NC, MB, BC, K)
+
+  row_pairs = [(ii, ij) for ii in range(NC) for ij in range(ii)]
+  if row_pairs:
+    Aqk_rp = jnp.stack(
+      [dAqk_full[:, ii * BC:(ii + 1) * BC, ij * BC:(ij + 1) * BC]
+       for (ii, ij) in row_pairs])
+    Akk_rp = jnp.stack(
+      [dAkk_full[:, ii * BC:(ii + 1) * BC, ij * BC:(ij + 1) * BC]
+       for (ii, ij) in row_pairs])
+    k_rp = jnp.stack([k_b[ij] for (_, ij) in row_pairs])
+    g_rp = jnp.stack([g_b[ij] for (_, ij) in row_pairs])
+    g_ref_rp = jnp.stack([g_b[ii, :, 0:1, :] for (ii, _) in row_pairs])
+    k_dec_rp = k_rp * jnp.exp2(g_ref_rp - g_rp)
+
+    NR = len(row_pairs) * MB
+    dq_rp = jax.lax.dot_general(
+      Aqk_rp.reshape(NR, BC, BC), k_dec_rp.reshape(NR, BC, K),
+      _b1, preferred_element_type=jnp.float32, precision=precision,
+    ).reshape(len(row_pairs), MB, BC, K)
+    dkpre_rp = jax.lax.dot_general(
+      Akk_rp.reshape(NR, BC, BC), k_dec_rp.reshape(NR, BC, K),
+      _b1, preferred_element_type=jnp.float32, precision=precision,
+    ).reshape(len(row_pairs), MB, BC, K)
+
+    dq_row_acc = [q_b[ii] * 0.0 for ii in range(NC)]
+    dkpre_row_acc = [k_b[ii] * 0.0 for ii in range(NC)]
+    for p_idx, (ii, _) in enumerate(row_pairs):
+      dq_row_acc[ii] = dq_row_acc[ii] + dq_rp[p_idx]
+      dkpre_row_acc[ii] = dkpre_row_acc[ii] + dkpre_rp[p_idx]
+    row_decay = jnp.exp2(g_b - g_b[:, :, 0:1, :])
+    dq_all = jnp.stack(
+      [dq_all[ii] + row_decay[ii] * dq_row_acc[ii] for ii in range(NC)])
+    dk_row_pre_all = jnp.stack(
+      [dk_row_pre_all[ii] + row_decay[ii] * dkpre_row_acc[ii] for ii in range(NC)])
+
+  col_pairs = [(ii, ij) for ii in range(NC) for ij in range(ii + 1, NC)]
+  if col_pairs:
+    Aqk_cp = jnp.stack(
+      [dAqk_full[:, ij * BC:(ij + 1) * BC, ii * BC:(ii + 1) * BC]
+       for (ii, ij) in col_pairs])
+    Akk_cp = jnp.stack(
+      [dAkk_full[:, ij * BC:(ij + 1) * BC, ii * BC:(ii + 1) * BC]
+       for (ii, ij) in col_pairs])
+    q_cp = jnp.stack([q_b[ij] for (_, ij) in col_pairs])
+    k_cp = jnp.stack([k_b[ij] for (_, ij) in col_pairs])
+    g_cp = jnp.stack([g_b[ij] for (_, ij) in col_pairs])
+    beta_cp = jnp.stack([beta_b[ij] for (_, ij) in col_pairs])
+    g_ref_cp = jnp.stack([g_b[ii, :, BC - 1:BC, :] for (ii, _) in col_pairs])
+
+    row_d_cp = jnp.exp2(g_cp - g_ref_cp)
+    q_dec_cp = q_cp * row_d_cp
+    kb_dec_cp = k_cp * beta_cp * row_d_cp
+
+    NCP = len(col_pairs) * MB
+    dk_col_cp = (
+      jax.lax.dot_general(Aqk_cp.reshape(NCP, BC, BC),
+                          q_dec_cp.reshape(NCP, BC, K), _b1t,
+                          preferred_element_type=jnp.float32, precision=precision)
+      + jax.lax.dot_general(Akk_cp.reshape(NCP, BC, BC),
+                            kb_dec_cp.reshape(NCP, BC, K), _b1t,
+                            preferred_element_type=jnp.float32, precision=precision)
+    ).reshape(len(col_pairs), MB, BC, K)
+
+    dk_col_acc = [k_b[ii] * 0.0 for ii in range(NC)]
+    for p_idx, (ii, _) in enumerate(col_pairs):
+      dk_col_acc[ii] = dk_col_acc[ii] + dk_col_cp[p_idx]
+    col_decay = jnp.exp2(g_b[:, :, BC - 1:BC, :] - g_b)
+    dk_col_all = jnp.stack(
+      [dk_col_all[ii] + col_decay[ii] * dk_col_acc[ii] for ii in range(NC)])
+
+  dq_intra = _from_blocks(dq_all)
+  dk_row_pre = _from_blocks(dk_row_pre_all)
+  dk_col = _from_blocks(dk_col_all)
+  db_intra = jnp.sum(bk * dk_row_pre, axis=-1)
+  dk_row = bb[:, :, None] * dk_row_pre
+  dk_intra = dk_row + dk_col
+  dg_intra = bq * dq_intra + bk * (dk_row - dk_col)
+
+  dq_total = dq_acc + dq_intra
+  dk_total = dk_acc + dk_intra
+  db_total = db_acc + db_intra
+  dg_total = (dg_acc + dg_intra).astype(jnp.float32)
+  return dq_total, dk_total, db_total, dg_total
+
+def compute_intra_backward_sequential_to_chunk_refs(
+  bq, bk, bg, bb, dAqk, dAkk,
+  dq_acc, dk_acc, db_acc, dg_acc,
+  dq_out_ref, dk_out_ref, db_out_ref, dg_out_ref,
+  operand_dtype=None, b_dgk=None,
+):
+  """Compute one intra block into already-sliced per-chunk output refs.
+
+  ``operand_dtype`` lets a caller with fp32 output scratch (such as M5) retain
+  the contraction mode selected by its public input dtype. BF16 contractions
+  preserve RHS low bits for gate-parameter gradients.
+  """
+  BT = dq_acc.shape[1]
+  # Keep the positive exp2 argument bounded under the gate lower bound -5.
+  # With a midpoint reference, BC=32 spans at most 16 * 5 = 80 in either
+  # factor; a boundary reference would span 31 * 5 = 155 and overflow f32.
+  BC = min(32, BT)
+  assert BT % BC == 0, (
+    f"M4 intra contraction requires BT divisible by BC={BC}, got BT={BT}"
+  )
+  NC = BT // BC
+  _b1 = (((2,), (1,)), ((0,), (0,)))
+  _b1t = (((1,), (1,)), ((0,), (0,)))
+
+  def dot_rhs_compensated(lhs, rhs, dimension_numbers):
+    """Use the contraction mode required by the public output dtypes."""
+    contraction_dtype = dq_out_ref.dtype if operand_dtype is None else operand_dtype
+    if contraction_dtype == jnp.float32:
+      return jax.lax.dot_general(
+        lhs,
+        rhs,
+        dimension_numbers,
+        preferred_element_type=jnp.float32,
+        precision=jax.lax.Precision.HIGHEST,
+      )
+
+    lhs_bf16 = lhs.astype(jnp.bfloat16)
+    rhs_hi = rhs.astype(jnp.bfloat16)
+    result = jax.lax.dot_general(
+      lhs_bf16,
+      rhs_hi,
+      dimension_numbers,
+      preferred_element_type=jnp.float32,
+    )
+
+    # Preserve decay-created RHS low bits on every BF16 path without using
+    # HIGHEST.
+    rhs_lo = (rhs - rhs_hi.astype(jnp.float32)).astype(jnp.bfloat16)
+    return result + jax.lax.dot_general(
+      lhs_bf16,
+      rhs_lo,
+      dimension_numbers,
+      preferred_element_type=jnp.float32,
+    )
+
+  for ii in range(NC):
+    s_ii = slice(ii * BC, (ii + 1) * BC)
+    q_ii = bq[:, s_ii, :]
+    k_ii = bk[:, s_ii, :]
+    g_ii = bg[:, s_ii, :]
+    beta_ii = bb[:, s_ii, None]
+
+    # dAqk and dAkk are lower triangular.  Factor the row decay around the
+    # diagonal block midpoint and contract the complete causal prefix at once.
+    # This replaces one diagonal contraction plus ``ii`` pair contractions.
+    g_ref = g_ii[:, BC // 2:BC // 2 + 1, :]
+    row_decay = jnp.exp2(g_ii - g_ref)
+    row_stop = (ii + 1) * BC
+    s_prefix = slice(0, row_stop)
+    k_prefix_decayed = bk[:, s_prefix, :] * jnp.exp2(
+      g_ref - bg[:, s_prefix, :]
+    )
+    row_grads = dot_rhs_compensated(
+      jnp.concatenate(
+        [dAkk[:, s_ii, s_prefix], dAqk[:, s_ii, s_prefix]], axis=1,
+      ),
+      k_prefix_decayed,
+      _b1,
+    )
+    dk_row_pre_ii = row_decay * row_grads[:, :BC, :]
+    dq_ii = row_decay * row_grads[:, BC:, :]
+
+    # Reuse the midpoint for the column factorization.  Future-block decays
+    # stay <= 1, while either within-block positive exponent remains <= 80.
+    s_suffix = slice(ii * BC, BT)
+    suffix_decay = jnp.exp2(bg[:, s_suffix, :] - g_ref)
+    q_suffix_decayed = bq[:, s_suffix, :] * suffix_decay
+    kb_suffix_decayed = (
+      bk[:, s_suffix, :] * bb[:, s_suffix, None] * suffix_decay
+    )
+    col_decay = jnp.exp2(g_ref - g_ii)
+    dk_col_ii = col_decay * dot_rhs_compensated(
+      jnp.concatenate(
+        [dAqk[:, s_suffix, s_ii], dAkk[:, s_suffix, s_ii]], axis=1,
+      ),
+      jnp.concatenate([q_suffix_decayed, kb_suffix_decayed], axis=1),
+      _b1t,
+    )
+
+    db_intra_ii = jnp.sum(k_ii * dk_row_pre_ii, axis=-1)
+    dk_row_ii = beta_ii * dk_row_pre_ii
+    dk_intra_ii = dk_row_ii + dk_col_ii
+    dg_intra_ii = q_ii * dq_ii + k_ii * (dk_row_ii - dk_col_ii)
+
+    dq_out_ref[:, s_ii, :] = (
+      dq_acc[:, s_ii, :] + dq_ii
+    ).astype(dq_out_ref.dtype)
+    dk_out_ref[:, s_ii, :] = (
+      dk_acc[:, s_ii, :] + dk_intra_ii
+    ).astype(dk_out_ref.dtype)
+    db_out_ref[pl.ds(0, db_acc.shape[0]), s_ii] = (
+      db_acc[:, s_ii] + db_intra_ii
+    ).astype(db_out_ref.dtype)
+    dg_ii = dg_acc[:, s_ii, :] + dg_intra_ii
+    if b_dgk is not None and ii == NC - 1:
+      dg_ii = jnp.concatenate(
+        [
+          dg_ii[:, :BC - 1, :],
+          dg_ii[:, BC - 1:BC, :] + b_dgk[:, None, :],
+        ],
+        axis=1,
+      )
+    dg_out_ref[:, s_ii, :] = dg_ii.astype(
+      dg_out_ref.dtype
+    )
+
+
+def compute_intra_backward_sequential_to_refs(
+  bq, bk, bg, bb, dAqk, dAkk,
+  dq_acc, dk_acc, db_acc, dg_acc,
+  dq_out_ref, dk_out_ref, db_out_ref, dg_out_ref,
+  buf, k, db_head_stride, operand_dtype=None, b_dgk=None,
+):
+  """Compatibility wrapper for callers that own batched staging refs."""
+  compute_intra_backward_sequential_to_chunk_refs(
+    bq,
+    bk,
+    bg,
+    bb,
+    dAqk,
+    dAkk,
+    dq_acc,
+    dk_acc,
+    db_acc,
+    dg_acc,
+    dq_out_ref.at[buf, :, 0, k, :, :],
+    dk_out_ref.at[buf, :, 0, k, :, :],
+    db_out_ref.at[buf, pl.ds(k * db_head_stride, db_head_stride), :],
+    dg_out_ref.at[buf, :, 0, k, :, :],
+    operand_dtype=operand_dtype,
+    b_dgk=b_dgk,
+  )
+
+
+@jax.jit
+def compute_reverse_cumsum_dg(dg_total, cumsum_mask=None):
+  BT = dg_total.shape[1]
+  if cumsum_mask is None:
+    idx = jnp.arange(BT, dtype=jnp.int32)
+    cumsum_mask = (idx[:, None] <= idx[None, :]).astype(jnp.float32)
+  return jax.lax.dot_general(
+    cumsum_mask, dg_total, (((1,), (1,)), ((), ())),
+    precision=jax.lax.Precision.HIGHEST,
+  ).transpose(1, 0, 2)
+
+
+@jax.jit
+def compute_reverse_cumsum_dg_scan(dg_total):
+  """Compute reverse cumsum with a vectorized Hillis-Steele scan."""
+  BT = dg_total.shape[1]
+  out = dg_total
+  for d in range((BT - 1).bit_length()):
+    stride = 1 << d
+    out = jnp.concatenate(
+      [out[:, :BT - stride, :] + out[:, stride:, :], out[:, BT - stride:, :]],
+      axis=1,
+    )
+  return out
+
+# =====================================================================
+# M4: dhu + WY + intra backward + chunk-local reverse cumsum
+# =====================================================================
+
+
+def _fused_dhu_wy_intra_cumsum_kernel(
+  chunk_seg_ids_ref,
+  q_ref,
+  k_ref,
+  v_ref,
+  v_new_ref,
+  qg_ref,
+  kg_ref,
+  w_ref,
+  g_ref,
+  beta_ref,
+  A_ref,
+  h_ref,
+  do_ref,
+  dv0_ref,
+  dAqk_ref,
+  dht_ref,
+  dq_ref,
+  dk_ref,
+  dv_ref,
+  db_ref,
+  dg_ref,
+  dh0_ref,
+  dh_tmp_ref,
+  *,
+  BT,
+  K,
+  V,
+  NT,
+  scale,
+  MB,
+):
+  """Fuse Dhu, WY, intra backward, and reverse cumsum for one chunk tile."""
+  head_group = pl.program_id(0)
+  batch_idx = pl.program_id(1)
+  rev_c = pl.program_id(2)
+  chunk_id = NT - 1 - rev_c
+  _, seq_idx, _, is_first_chunk, is_last_chunk = _chunk_segment_metadata(
+    chunk_seg_ids_ref, batch_idx, chunk_id, NT,
+  )
+  precision = None if q_ref.dtype == jnp.bfloat16 else jax.lax.Precision.HIGHEST
+
+  @pl.when(is_last_chunk)
+  def _():
+    dh_tmp_ref[:] = dht_ref[:, 0, 0, :].astype(dh_tmp_ref.dtype)
+
+  dh = dh_tmp_ref[:].astype(jnp.float32)
+  bq = q_ref[:, 0, 0].astype(jnp.float32)
+  bk = k_ref[:, 0, 0].astype(jnp.float32)
+  bv = v_ref[:, 0, 0].astype(jnp.float32)
+  bvn = v_new_ref[:, 0, 0].astype(jnp.float32)
+  bqg = qg_ref[:, 0, 0].astype(jnp.float32)
+  bkg = kg_ref[:, 0, 0]
+  bw = w_ref[:, 0, 0].astype(jnp.float32)
+  bg = g_ref[:, 0, 0].astype(jnp.float32)
+  g_exp_last = jnp.exp2(bg[:, BT - 1, :])
+  bb = beta_ref[:, 0, 0, :, 0].astype(jnp.float32)
+  bA = A_ref[:, 0, 0].astype(jnp.float32)
+  bh = h_ref[:, 0, 0].astype(jnp.float32)
+  bdo = do_ref[:, 0, 0]
+  bdv0 = dv0_ref[:, 0, 0].astype(jnp.float32)
+  bdAqk = dAqk_ref[:, 0, 0].astype(jnp.float32)
+
+  # --- dhu reverse recurrence ---
+  bdv, dh_new = compute_dhu_recurrence(bkg, dh, bdv0, dh_tmp_ref[:], g_exp_last, bqg, bw, bdo, scale)
+  dh_tmp_ref[:] = dh_new
+
+  # --- WY backward ---
+  dq_acc, dk_acc, b_dvb, db_acc, dg_acc, dAkk_local = compute_wy_backward(
+    bdo, bdv, bvn, bv, bh, dh, bq, bk, bg, bb, bA, scale, precision)
+
+  # --- Intra backward + reverse cumsum ---
+  dq_total, dk_total, db_total, dg_total = compute_intra_backward(
+    bq, bk, bg, bb, bdAqk, dAkk_local, dq_acc, dk_acc, db_acc, dg_acc,
+    precision=precision, ref_dtype=q_ref.dtype,
+  )
+  dg_reverse_cumsum = compute_reverse_cumsum_dg(dg_total)
+
+  dq_ref[:, 0, 0] = dq_total.astype(dq_ref.dtype)
+  dk_ref[:, 0, 0] = dk_total.astype(dk_ref.dtype)
+  dv_ref[:, 0, 0] = (b_dvb * bb[:, :, None]).astype(dv_ref.dtype)
+  db_ref[:, 0, 0, :, 0] = db_total.astype(db_ref.dtype)
+  dg_ref[:, 0, 0] = dg_reverse_cumsum.astype(dg_ref.dtype)
+
+  @pl.when(is_first_chunk)
+  def _():
+    dh0_ref[:, 0, 0, :] = dh_tmp_ref[:].astype(dh0_ref.dtype)
+
+def _fused_dhu_wy_intra_cumsum_dma_kernel(
+  chunk_seg_ids_ref,
+  q_ref,
+  k_ref,
+  v_ref,
+  v_new_ref,
+  qg_ref,
+  kg_ref,
+  w_ref,
+  g_ref,
+  beta_ref,
+  A_ref,
+  h_ref,
+  do_ref,
+  dv0_ref,
+  dAqk_ref,
+  dht_ref,
+  dq_ref,
+  dk_ref,
+  dv_ref,
+  db_ref,
+  dg_ref,
+  dh0_ref,
+  *,
+  H,
+  B,
+  BT,
+  BT_PAD,
+  K,
+  V,
+  NT,
+  N_HG,
+  MB,
+  MB_PAD,
+  BETA_pad,
+  CHUNK_BATCH,
+  scale,
+  return_dh0,
+):
+  """Single-program M4 with manual double-buffered HBM DMA.
+
+  VMEM buffers and DMA semaphores are allocated internally via ``pl.run_scoped``
+  so the wrapper only carries the cross-chunk ``dh_tmp`` accumulator as scratch.
+  ``B`` (batch) and ``N_HG`` (head group) are nested ``pl.loop`` dimensions; each
+  ``(batch, head_group)`` pair runs one ``run_scoped`` backward pass over all
+  ``NT`` chunks in reverse order.
+  """
+  precision = None if q_ref.dtype == jnp.bfloat16 else jax.lax.Precision.HIGHEST
+  DB_NT = ((NT + CHUNK_BATCH - 1) // CHUNK_BATCH) * CHUNK_BATCH
+  DB_TAIL_PAD = DB_NT - NT
+
+  @pl.loop(0, B, unroll=False)
+  def batch_loop(batch_idx):
+    @pl.loop(0, N_HG, unroll=False)
+    def head_group_loop(hg):
+      @partial(
+        pl.run_scoped,
+        q_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), q_ref.dtype),
+        k_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), k_ref.dtype),
+        v_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, V), v_ref.dtype),
+        v_new_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, V), v_new_ref.dtype),
+        qg_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), qg_ref.dtype),
+        kg_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), kg_ref.dtype),
+        w_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), w_ref.dtype),
+        g_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), g_ref.dtype),
+        beta_buf=pltpu.VMEM((2, CHUNK_BATCH * MB_PAD, BETA_pad), beta_ref.dtype),
+        A_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, BT_PAD), A_ref.dtype),
+        h_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, K, V), h_ref.dtype),
+        do_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, V), do_ref.dtype),
+        dv0_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, V), dv0_ref.dtype),
+        dAqk_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, BT_PAD), dAqk_ref.dtype),
+        dq_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), dq_ref.dtype),
+        dk_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), dk_ref.dtype),
+        dv_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, V), dv_ref.dtype),
+        db_buf=pltpu.VMEM((2, CHUNK_BATCH * MB_PAD, BETA_pad), db_ref.dtype),
+        dg_buf=pltpu.VMEM((2, MB, 1, CHUNK_BATCH, BT, K), dg_ref.dtype),
+        dh0_buf=pltpu.VMEM((MB, K, V), dh0_ref.dtype),
+        dh_tmp_buf=pltpu.VMEM((MB, K, V), jnp.float32),  # dh_tmp accumulator
+        mask_last_buf=pltpu.VMEM((BT,), jnp.float32),
+        mask_lower_buf=pltpu.VMEM((BT, BT), jnp.float32),
+        in_sems=pltpu.SemaphoreType.DMA((14, 2)),
+        out_sems=pltpu.SemaphoreType.DMA((5, 2)),
+        state_sems=pltpu.SemaphoreType.DMA((2,)),
+      )
+      def _backward_scoped(
+        q_buf,
+        k_buf,
+        v_buf,
+        v_new_buf,
+        qg_buf,
+        kg_buf,
+        w_buf,
+        g_buf,
+        beta_buf,
+        A_buf,
+        h_buf,
+        do_buf,
+        dv0_buf,
+        dAqk_buf,
+        dq_buf,
+        dk_buf,
+        dv_buf,
+        db_buf,
+        dg_buf,
+        dh0_buf,
+        dh_tmp_buf,
+        mask_last_buf,
+        mask_lower_buf,
+        in_sems,
+        out_sems,
+        state_sems,
+      ):
+        def start_dmas(descs):
+          for desc in descs:
+            desc.start()
+          return descs
+
+        def _wait_dmas(descs):
+          for desc in descs:
+            desc.wait()
+
+        # Merged DMA: CHUNK_BATCH contiguous chunks per transfer (NT-dim slice).
+        def dma_in_desc(hbm_ref, vmem_ref, sem, pp_flag, chunk_offset, IS_REM=False):
+          if IS_REM:
+            src = hbm_ref.at[
+              (
+                pl.ds(hg * MB, MB),
+                pl.ds(batch_idx, 1),
+                pl.ds(chunk_offset, REM),
+                pl.ds(None),
+                pl.ds(None),
+              )
+            ]
+            return pltpu.make_async_copy(src, vmem_ref.at[pp_flag, :, :, :REM, :, :], sem)
+          else:
+            src = hbm_ref.at[
+              (
+                pl.ds(hg * MB, MB),
+                pl.ds(batch_idx, 1),
+                pl.ds(chunk_offset, CHUNK_BATCH),
+                pl.ds(None),
+                pl.ds(None),
+              )
+            ]
+            return pltpu.make_async_copy(src, vmem_ref.at[pp_flag], sem)
+
+        def _dma_out_batch_desc(vmem_ref, hbm_ref, sem, pp_flag, chunk_offset):
+          dst = hbm_ref.at[
+            (
+              pl.ds(hg * MB, MB),
+              pl.ds(batch_idx, 1),
+              pl.ds(chunk_offset, CHUNK_BATCH),
+              pl.ds(None),
+              pl.ds(None),
+            )
+          ]
+          return pltpu.make_async_copy(vmem_ref.at[pp_flag], dst, sem)
+
+        def _dma_in_tail_desc(hbm_ref, vmem_ref, sem, buf):
+          src = hbm_ref.at[
+            (
+              pl.ds(hg * MB, MB),
+              pl.ds(batch_idx, 1),
+              pl.ds(0, REM),
+              pl.ds(None),
+              pl.ds(None),
+            )
+          ]
+          return pltpu.make_async_copy(
+            src, vmem_ref.at[buf, :, :, :REM, :, :], sem,
+          )
+
+        def _dma_in_beta_desc(buf, chunk_offset):
+          beta_offset = (
+            ((hg * B + batch_idx) * NT + chunk_offset) * MB_PAD
+          )
+          packed_heads = CHUNK_BATCH * MB_PAD
+          src = beta_ref.at[
+            (pl.ds(beta_offset, packed_heads), pl.ds(None))
+          ]
+          return pltpu.make_async_copy(
+            src, beta_buf.at[buf], in_sems.at[8, buf],
+          )
+
+        def _dma_out_db_desc(buf, chunk_offset):
+          db_offset = (
+            ((hg * B + batch_idx) * DB_NT + chunk_offset) * MB_PAD
+          )
+          packed_heads = CHUNK_BATCH * MB_PAD
+          dst = db_ref.at[
+            (pl.ds(db_offset, packed_heads), pl.ds(None))
+          ]
+          return pltpu.make_async_copy(
+            db_buf.at[buf], dst, out_sems.at[3, buf],
+          )
+
+        def _dma_out_tail_desc(vmem_ref, hbm_ref, sem, buf):
+          dst = hbm_ref.at[
+            (
+              pl.ds(hg * MB, MB),
+              pl.ds(batch_idx, 1),
+              pl.ds(0, REM),
+              pl.ds(None),
+              pl.ds(None),
+            )
+          ]
+          return pltpu.make_async_copy(
+            vmem_ref.at[buf, :, :, :REM, :, :], dst, sem,
+          )
+
+        def _dma_state_in_desc(hbm_ref, sem, seq_idx):
+          src = hbm_ref.at[
+            (pl.ds(hg * MB, MB), batch_idx, seq_idx, pl.ds(None), pl.ds(None))
+          ]
+          return pltpu.make_async_copy(src, dh_tmp_buf, sem)
+
+        def _dma_state_out_desc(hbm_ref, sem, seq_idx):
+          dst = hbm_ref.at[
+            (pl.ds(hg * MB, MB), batch_idx, seq_idx, pl.ds(None), pl.ds(None))
+          ]
+          return pltpu.make_async_copy(dh0_buf, dst, sem)
+
+        def _input_dma_descs(buf, start_c):
+          return (
+            dma_in_desc(q_ref, q_buf, in_sems.at[0, buf], buf, start_c),
+            dma_in_desc(k_ref, k_buf, in_sems.at[1, buf], buf, start_c),
+            dma_in_desc(v_ref, v_buf, in_sems.at[2, buf], buf, start_c),
+            dma_in_desc(v_new_ref, v_new_buf, in_sems.at[3, buf], buf, start_c),
+            dma_in_desc(qg_ref, qg_buf, in_sems.at[4, buf], buf, start_c),
+            dma_in_desc(kg_ref, kg_buf, in_sems.at[5, buf], buf, start_c),
+            dma_in_desc(w_ref, w_buf, in_sems.at[6, buf], buf, start_c),
+            dma_in_desc(g_ref, g_buf, in_sems.at[7, buf], buf, start_c),
+            _dma_in_beta_desc(buf, start_c),
+            dma_in_desc(A_ref, A_buf, in_sems.at[9, buf], buf, start_c),
+            dma_in_desc(h_ref, h_buf, in_sems.at[10, buf], buf, start_c),
+            dma_in_desc(do_ref, do_buf, in_sems.at[11, buf], buf, start_c),
+            dma_in_desc(dv0_ref, dv0_buf, in_sems.at[12, buf], buf, start_c),
+            dma_in_desc(dAqk_ref, dAqk_buf, in_sems.at[13, buf], buf, start_c),
+          )
+
+        def _output_dma_descs(buf, start_c):
+          return (
+            _dma_out_batch_desc(dq_buf, dq_ref, out_sems.at[0, buf], buf, start_c),
+            _dma_out_batch_desc(dk_buf, dk_ref, out_sems.at[1, buf], buf, start_c),
+            _dma_out_batch_desc(dv_buf, dv_ref, out_sems.at[2, buf], buf, start_c),
+            _dma_out_db_desc(buf, start_c + DB_TAIL_PAD),
+            _dma_out_batch_desc(dg_buf, dg_ref, out_sems.at[4, buf], buf, start_c),
+          )
+
+        def _input_dma_tail_descs(buf):
+          return (
+            _dma_in_tail_desc(q_ref, q_buf, in_sems.at[0, buf], buf),
+            _dma_in_tail_desc(k_ref, k_buf, in_sems.at[1, buf], buf),
+            _dma_in_tail_desc(v_ref, v_buf, in_sems.at[2, buf], buf),
+            _dma_in_tail_desc(v_new_ref, v_new_buf, in_sems.at[3, buf], buf),
+            _dma_in_tail_desc(qg_ref, qg_buf, in_sems.at[4, buf], buf),
+            _dma_in_tail_desc(kg_ref, kg_buf, in_sems.at[5, buf], buf),
+            _dma_in_tail_desc(w_ref, w_buf, in_sems.at[6, buf], buf),
+            _dma_in_tail_desc(g_ref, g_buf, in_sems.at[7, buf], buf),
+            # Always fill the complete beta buffer. The extra tail rows overlap
+            # the next full window and are ignored because tail compute only
+            # visits slots ``k < REM``. Avoiding a prefix destination keeps the
+            # BF16 DMA out of Jellyfish's failing masked StridedMemcopy path.
+            _dma_in_beta_desc(buf, 0),
+            _dma_in_tail_desc(A_ref, A_buf, in_sems.at[9, buf], buf),
+            _dma_in_tail_desc(h_ref, h_buf, in_sems.at[10, buf], buf),
+            _dma_in_tail_desc(do_ref, do_buf, in_sems.at[11, buf], buf),
+            _dma_in_tail_desc(dv0_ref, dv0_buf, in_sems.at[12, buf], buf),
+            _dma_in_tail_desc(dAqk_ref, dAqk_buf, in_sems.at[13, buf], buf),
+          )
+
+        def _output_dma_tail_descs(buf):
+          return (
+            _dma_out_tail_desc(dq_buf, dq_ref, out_sems.at[0, buf], buf),
+            _dma_out_tail_desc(dk_buf, dk_ref, out_sems.at[1, buf], buf),
+            _dma_out_tail_desc(dv_buf, dv_ref, out_sems.at[2, buf], buf),
+            # Keep this a complete DMA tile. For odd NT the unused rows land
+            # in compact output guard storage and are removed by the wrapper.
+            _dma_out_db_desc(buf, 0),
+            _dma_out_tail_desc(dg_buf, dg_ref, out_sems.at[4, buf], buf),
+          )
+
+        def _start_input_dma(buf, start_c):
+          return start_dmas(_input_dma_descs(buf, start_c))
+
+        def _wait_input_dma(buf, start_c):
+          _wait_dmas(_input_dma_descs(buf, start_c))
+
+        def _launch_output_dma(buf, start_c):
+          return start_dmas(_output_dma_descs(buf, start_c))
+
+        def _wait_output_dma(buf, start_c):
+          _wait_dmas(_output_dma_descs(buf, start_c))
+
+        def _start_input_dma_tail(buf):
+          return start_dmas(_input_dma_tail_descs(buf))
+
+        def _wait_input_dma_tail(buf):
+          _wait_dmas(_input_dma_tail_descs(buf))
+
+        def _launch_output_dma_tail(buf):
+          return start_dmas(_output_dma_tail_descs(buf))
+
+        def _wait_output_dma_tail(buf):
+          _wait_dmas(_output_dma_tail_descs(buf))
+
+        def _input_window_has_valid(full_start_c, is_tail):
+          full_has_valid = _chunk_window_has_valid(
+            chunk_seg_ids_ref,
+            batch_idx,
+            full_start_c,
+            CHUNK_BATCH,
+          )
+          if REM > 0:
+            tail_has_valid = _chunk_window_has_valid(
+              chunk_seg_ids_ref,
+              batch_idx,
+              0,
+              REM,
+            )
+            return jnp.where(is_tail, tail_has_valid, full_has_valid)
+          return full_has_valid
+
+        def _start_input_dma_window(buf, full_start_c, is_tail, has_valid):
+          if REM > 0:
+            @pl.when(jnp.logical_and(is_tail, has_valid))
+            def _():
+              _start_input_dma_tail(buf)
+
+            @pl.when(jnp.logical_and(jnp.logical_not(is_tail), has_valid))
+            def _():
+              _start_input_dma(buf, full_start_c)
+          else:
+            @pl.when(has_valid)
+            def _():
+              _start_input_dma(buf, full_start_c)
+
+        def _wait_input_dma_window(buf, full_start_c, is_tail, has_valid):
+          if REM > 0:
+            @pl.when(jnp.logical_and(is_tail, has_valid))
+            def _():
+              _wait_input_dma_tail(buf)
+
+            @pl.when(jnp.logical_and(jnp.logical_not(is_tail), has_valid))
+            def _():
+              _wait_input_dma(buf, full_start_c)
+          else:
+            @pl.when(has_valid)
+            def _():
+              _wait_input_dma(buf, full_start_c)
+
+        def _start_dht_to_scratch(seq_idx):
+          desc = _dma_state_in_desc(dht_ref, state_sems.at[0], seq_idx)
+          desc.start()
+          return desc
+
+        def _start_dh0_from_scratch(seq_idx):
+          dh0_buf[:] = dh_tmp_buf[:].astype(dh0_buf.dtype)
+          desc = _dma_state_out_desc(dh0_ref, state_sems.at[1], seq_idx)
+          desc.start()
+          return desc
+
+        def _zero_output_slot(buf, k):
+          dq_buf[buf, :, 0, k, :, :] = jnp.zeros_like(dq_buf[buf, :, 0, k, :, :])
+          dk_buf[buf, :, 0, k, :, :] = jnp.zeros_like(dk_buf[buf, :, 0, k, :, :])
+          dv_buf[buf, :, 0, k, :, :] = jnp.zeros_like(dv_buf[buf, :, 0, k, :, :])
+          db_buf[buf, k * MB_PAD:(k + 1) * MB_PAD, :] = jnp.zeros_like(
+            db_buf[buf, k * MB_PAD:(k + 1) * MB_PAD, :]
+          )
+          dg_buf[buf, :, 0, k, :, :] = jnp.zeros_like(dg_buf[buf, :, 0, k, :, :])
+
+        def _compute_slot(buf, k, chunk_id):
+          _, seq_idx, is_valid, is_first_chunk, is_last_chunk = (
+            _chunk_segment_metadata(chunk_seg_ids_ref, batch_idx, chunk_id, NT)
+          )
+
+          @pl.when(is_last_chunk)
+          def _():
+            desc = _start_dht_to_scratch(seq_idx)
+            desc.wait()
+
+          @pl.when(~is_valid)
+          def _():
+            _zero_output_slot(buf, k)
+
+          @pl.when(is_valid)
+          def _():
+            dh = dh_tmp_buf[:]
+
+            # Keep Dhu-only operands out of the later WY/intra live range.
+            g_exp_last = jnp.exp2(
+              g_buf[buf, :, 0, k, BT - 1, :].astype(jnp.float32)
+            )
+            bdv, dh_new = compute_dhu_recurrence(
+              kg_buf[buf, :, 0, k, :, :],
+              dh,
+              dv0_buf[buf, :, 0, k, :, :],
+              dh,
+              g_exp_last,
+              qg_buf[buf, :, 0, k, :, :],
+              w_buf[buf, :, 0, k, :, :],
+              do_buf[buf, :, 0, k, :, :],
+              scale,
+            )
+            dh_tmp_buf[:] = dh_new
+            del dh_new
+
+            bdo = do_buf[buf, :, 0, k, :, :]
+            bq = q_buf[buf, :, 0, k, :, :]
+            bk = k_buf[buf, :, 0, k, :, :]
+            bv = v_buf[buf, :, 0, k, :, :]
+            bvn = v_new_buf[buf, :, 0, k, :, :]
+            bg = g_buf[buf, :, 0, k, :, :]
+            bb = beta_buf[
+              buf, k * MB_PAD:(k + 1) * MB_PAD, :BT,
+            ][:MB]
+            bA = A_buf[buf, :, 0, k, :, :BT]
+            bh = h_buf[buf, :, 0, k, :, :]
+
+            mask_last = mask_last_buf[:]
+            mask_lower = mask_lower_buf[:]
+            dq_acc, dk_acc, b_dvb, db_acc, dg_acc, dAkk_local = compute_wy_backward(
+              bdo, bdv, bvn, bv, bh, dh, bq, bk, bg, bb, bA, scale, precision,
+              mask_last=mask_last, mask_lower=mask_lower,
+            )
+            del bdo
+            del bv
+            del bvn
+            del bA
+            del bh
+
+            dv_buf[buf, :, 0, k, :, :] = (b_dvb * bb[:, :, None]).astype(dv_buf.dtype)
+            del b_dvb
+
+            bdAqk = dAqk_buf[buf, :, 0, k, :, :BT]
+            compute_intra_backward_sequential_to_refs(
+              bq, bk, bg, bb, bdAqk, dAkk_local, dq_acc, dk_acc, db_acc, dg_acc,
+              dq_buf, dk_buf, db_buf, dg_buf,
+              buf, k, MB_PAD,
+            )
+            del dq_acc, dk_acc, db_acc, dg_acc, dAkk_local
+            del bq, bk, bg, bb, bdAqk
+
+            dg_total = dg_buf[buf, :, 0, k, :, :].astype(jnp.float32)
+            dg_reverse_cumsum = compute_reverse_cumsum_dg_scan(dg_total)
+
+            dg_buf[buf, :, 0, k, :, :] = dg_reverse_cumsum.astype(dg_buf.dtype)
+
+          if return_dh0:
+            @pl.when(is_first_chunk)
+            def _():
+              desc = _start_dh0_from_scratch(seq_idx)
+              desc.wait()
+
+        REM = NT % CHUNK_BATCH
+        LOOP_NUM = pl.cdiv(NT, CHUNK_BATCH)
+
+        # Precompute constant index masks once (avoid per-chunk jnp.arange + broadcast)
+        idx = jnp.arange(BT, dtype=jnp.int32)
+        mask_last_buf[:] = (idx == BT - 1).astype(jnp.float32)
+        mask_lower_buf[:] = (idx[:, None] > idx[None, :]).astype(jnp.float32)
+
+        # The scan runs backward, so prefetch the same window consumed by
+        # loop_idx=0. A fixed offset of zero duplicates the first window and
+        # leaves the final CHUNK_BATCH chunks unloaded whenever LOOP_NUM > 1.
+        initial_is_tail = REM > 0 and LOOP_NUM == 1
+        initial_start_c = 0 if initial_is_tail else NT - CHUNK_BATCH
+        initial_has_valid = _input_window_has_valid(
+          initial_start_c,
+          initial_is_tail,
+        )
+        _start_input_dma_window(
+          0,
+          initial_start_c,
+          initial_is_tail,
+          initial_has_valid,
+        )
+
+        @pl.loop(0, LOOP_NUM, unroll=False)
+        def window_loop(loop_idx):
+          pp_flag = loop_idx % 2
+          next_flag = 1 - pp_flag
+          full_start_c = NT - (loop_idx + 1) * CHUNK_BATCH
+          is_tail = (loop_idx == LOOP_NUM - 1)
+
+          if REM > 0:
+            safe_full_start_c = jnp.where(is_tail, 0, full_start_c)
+          else:
+            is_tail = False
+            safe_full_start_c = full_start_c
+
+          window_has_valid = _input_window_has_valid(safe_full_start_c, is_tail)
+          _wait_input_dma_window(
+            pp_flag,
+            safe_full_start_c,
+            is_tail,
+            window_has_valid,
+          )
+
+          @pl.when(loop_idx + 1 < LOOP_NUM)
+          def _():
+            next_full_start_c = NT - (loop_idx + 2) * CHUNK_BATCH
+            if REM > 0:
+              next_is_tail = loop_idx + 1 == LOOP_NUM - 1
+              next_safe_full_start_c = jnp.where(next_is_tail, 0, next_full_start_c)
+            else:
+              next_is_tail = False
+              next_safe_full_start_c = next_full_start_c
+
+            next_has_valid = _input_window_has_valid(
+              next_safe_full_start_c,
+              next_is_tail,
+            )
+            _start_input_dma_window(
+              next_flag,
+              next_safe_full_start_c,
+              next_is_tail,
+              next_has_valid,
+            )
+
+          @pl.when(loop_idx >= 2)
+          def _():
+            _wait_output_dma(pp_flag, NT - (loop_idx - 1) * CHUNK_BATCH)
+
+          @pl.when(is_tail)
+          def _():
+            with jax.named_scope("tail_compute"):
+              for k in range(REM - 1, -1, -1):
+                _compute_slot(pp_flag, k, k)
+
+            _launch_output_dma_tail(pp_flag)
+
+          @pl.when(~is_tail)
+          def _():
+            with jax.named_scope("full_compute"):
+              for k in range(CHUNK_BATCH - 1, -1, -1):
+                _compute_slot(pp_flag, k, safe_full_start_c + k)
+
+            _launch_output_dma(pp_flag, safe_full_start_c)
+
+
+        last_window = LOOP_NUM - 1
+        if REM > 0:
+          _wait_output_dma_tail(last_window % 2)
+        else:
+          _wait_output_dma(last_window % 2, NT - (last_window + 1) * CHUNK_BATCH)
+
+        if LOOP_NUM > 1:
+          prev_window = LOOP_NUM - 2
+          _wait_output_dma(prev_window % 2, NT - (prev_window + 1) * CHUNK_BATCH)
+
+@partial(
+  jax.jit,
+  static_argnames=[
+    "chunk_size",
+    "use_exp2",
+    "scale",
+    "mini_batch",
+    "return_dh0",
+    "N_MAX",
+    "chunk_batch",
+    "cost_estimate_flops",
+  ],
+)
+def _fused_dhu_wy_intra_cumsum_dma_pallas_jit(
+  q: jax.Array,
+  k: jax.Array,
+  v: jax.Array,
+  v_new: jax.Array,
+  qg: jax.Array,
+  kg: jax.Array,
+  w: jax.Array,
+  g: jax.Array,
+  beta: jax.Array,
+  A: jax.Array,
+  h: jax.Array,
+  do: jax.Array,
+  dv0: jax.Array,
+  dAqk: jax.Array,
+  dht: jax.Array | None,
+  scale: float,
+  *,
+  segment_ids: jax.Array | None = None,
+  chunk_size: int = 64,
+  use_exp2: bool = True,
+  mini_batch: int | None = None,
+  return_dh0: bool = True,
+  N_MAX: int | None = None,
+  chunk_batch: int = 2,
+  cost_estimate_flops: int = -1,
+) -> tuple[
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array | None,
+]:
+  """DMA wrapper for the single-program M4 fused backward kernel."""
+  H, B, T, K = q.shape
+  V = v.shape[-1]
+  BT = chunk_size
+  NT = T // BT
+  chunk_batch = min(chunk_batch, NT)
+  assert chunk_batch > 0
+
+  assert BT == 64, (
+    "M4 DMA prefix/suffix contraction currently only supports chunk_size=64, "
+    f"got {BT}"
+  )
+
+  assert_shape(q, (H, B, T, K), "q")
+  assert_shape(k, (H, B, T, K), "k")
+  assert_shape(v, (H, B, T, V), "v")
+  assert_shape(v_new, (H, B, T, V), "v_new")
+  assert_shape(qg, (H, B, T, K), "qg")
+  assert_shape(kg, (H, B, T, K), "kg")
+  assert_shape(w, (H, B, T, K), "w")
+  assert_shape(g, (H, B, T, K), "g")
+  assert_shape(beta, (H, B, T), "beta")
+  assert_shape(A, (H, B, T, BT), "A")
+  assert_shape(h, (H, B, NT, K, V), "h")
+  assert_shape(do, (H, B, T, V), "do")
+  assert_shape(dv0, (H, B, T, V), "dv0")
+  assert T % BT == 0, f"T={T} must be divisible by chunk_size={BT}"
+  assert use_exp2 is True, (
+    "fused_dhu_wy_intra_cumsum_pallas currently expects log2 gates and use_exp2=True"
+  )
+
+  is_varlen = segment_ids is not None
+  if segment_ids is not None and segment_ids.ndim == 1:
+    segment_ids = jnp.broadcast_to(segment_ids[None, :], (B, T))
+  assert_shape_or_none(segment_ids, (B, T), "segment_ids")
+  segment_ids = jnp.ones((B, T), dtype=jnp.int32) if not is_varlen else segment_ids
+  chunk_seg_ids = segment_ids.reshape(B, NT, BT)[:, :, 0]
+
+  if dht is not None:
+    N = dht.shape[1]
+  elif is_varlen:
+    assert N_MAX is not None, (
+      "N_MAX must be provided when dht is None and segment_ids is set"
+    )
+    N = N_MAX
+  else:
+    N = 1
+  assert_shape_or_none(dht, (B, N, H, K, V), "dht")
+  dht_arr = dht if dht is not None else jnp.zeros((B, N, H, K, V), dtype=jnp.float32)
+
+  hw = get_tpu_config()
+  K_pad = align_up(K, hw.block_align_major)
+  V_pad = align_up(V, hw.block_align_major)
+  BT_PAD = align_up(BT, hw.block_align_major)
+  BETA_pad = align_up(BT, hw.block_align_major)
+  dAqk_width = dAqk.shape[-1]
+  assert dAqk_width in (BT, BT_PAD), (
+    f"dAqk minor dimension must be BT={BT} or BT_PAD={BT_PAD}, got {dAqk_width}"
+  )
+  assert_shape(dAqk, (H, B, T, dAqk_width), "dAqk")
+
+  if mini_batch is None:
+    elem_size = 2 if q.dtype == jnp.bfloat16 else 4
+    io_per_head = (
+      8 * BT * K_pad + 4 * BT * V_pad + BT_PAD + 3 * BT * BT_PAD + 2 * K_pad * V_pad
+    ) * elem_size + (
+      K_pad * V_pad + 5 * BT * K_pad + BT * V_pad + BT_PAD + 2 * BT * BT_PAD
+    ) * 4
+    # vmem buffers each carry chunk_batch chunks; per-head vmem scales accordingly.
+    per_head = (io_per_head + io_per_head * 3 // 2) * chunk_batch
+    MB = max(1, hw.vmem_limit_bytes // per_head)
+    MB = min(MB, H, 16)
+    while H % MB != 0 and MB > 1:
+      MB -= 1
+  else:
+    MB = mini_batch
+    assert H % MB == 0, f"H={H} must be divisible by mini_batch={MB}"
+  # MB = 1
+  N_HG = H // MB
+  MB_PAD = align_up(MB, hw.block_align_minor)
+  DB_NT = ((NT + chunk_batch - 1) // chunk_batch) * chunk_batch
+  DB_TAIL_PAD = DB_NT - NT
+
+  def _pad_k(x):
+    x = x.reshape(H, B, NT, BT, K)
+    if K_pad != K:
+      x = jnp.pad(x, ((0, 0), (0, 0), (0, 0), (0, 0), (0, K_pad - K)))
+    return x
+
+  def _pad_v(x):
+    x = x.reshape(H, B, NT, BT, V)
+    if V_pad != V:
+      x = jnp.pad(x, ((0, 0), (0, 0), (0, 0), (0, 0), (0, V_pad - V)))
+    return x
+
+  def _pad_a(x):
+    x = x.reshape(H, B, NT, BT, BT)
+    if BT_PAD != BT:
+      x = jnp.pad(x, ((0, 0), (0, 0), (0, 0), (0, 0), (0, BT_PAD - BT)))
+    return x
+
+  q_r = _pad_k(q)
+  k_r = _pad_k(k)
+  v_r = _pad_v(v)
+  vn_r = _pad_v(v_new)
+  qg_r = _pad_k(qg)
+  kg_r = _pad_k(kg)
+  w_r = _pad_k(w)
+  g_r = _pad_k(g)
+  A_r = _pad_a(A)
+  if dAqk_width == BT_PAD:
+    dAqk_r = dAqk.reshape(H, B, NT, BT, BT_PAD)
+  else:
+    dAqk_r = _pad_a(dAqk)
+  do_r = _pad_v(do)
+  dv0_r = _pad_v(dv0)
+
+  # Pack each chunk's beta vector into one 128-wide DMA row. Group heads by
+  # the M4 mini-batch and pad that axis to 8 so every HBM<->VMEM transfer is a
+  # legal [n*8, 128] tile. Unlike the old [..., BT, 128] representation, this
+  # costs only O(H * NT * 128) storage.
+  beta_r = beta.reshape(N_HG, MB, B, NT, BT).transpose(0, 2, 3, 1, 4)
+  beta_r = jnp.pad(
+    beta_r,
+    ((0, 0), (0, 0), (0, 0), (0, MB_PAD - MB), (0, BETA_pad - BT)),
+  ).reshape(N_HG * B * NT * MB_PAD, BETA_pad)
+
+  h_r = h.reshape(H, B, NT, K, V)
+  if K_pad != K or V_pad != V:
+    h_r = jnp.pad(h_r, ((0, 0), (0, 0), (0, 0), (0, K_pad - K), (0, V_pad - V)))
+  dht_r = dht_arr.transpose(2, 0, 1, 3, 4).reshape(H, B, N, K, V)
+  if K_pad != K or V_pad != V:
+    dht_r = jnp.pad(dht_r, ((0, 0), (0, 0), (0, 0), (0, K_pad - K), (0, V_pad - V)))
+
+  any_spec = pl.BlockSpec(memory_space=pl.ANY)
+  in_specs = [any_spec] * 15
+  out_specs = [any_spec] * 6
+
+  out_shape = [
+    jax.ShapeDtypeStruct((H, B, NT, BT, K_pad), q.dtype),
+    jax.ShapeDtypeStruct((H, B, NT, BT, K_pad), k.dtype),
+    jax.ShapeDtypeStruct((H, B, NT, BT, V_pad), v.dtype),
+    jax.ShapeDtypeStruct(
+      (N_HG * B * DB_NT * MB_PAD, BETA_pad), beta.dtype,
+    ),
+    jax.ShapeDtypeStruct((H, B, NT, BT, K_pad), g.dtype),
+    jax.ShapeDtypeStruct((H, B, N, K_pad, V_pad), jnp.float32),
+  ]
+
+  kernel = partial(
+    _fused_dhu_wy_intra_cumsum_dma_kernel,
+    H=H,
+    B=B,
+    BT=BT,
+    BT_PAD=BT_PAD,
+    K=K_pad,
+    V=V_pad,
+    NT=NT,
+    N_HG=N_HG,
+    MB=MB,
+    MB_PAD=MB_PAD,
+    BETA_pad=BETA_pad,
+    CHUNK_BATCH=chunk_batch,
+    scale=scale,
+    return_dh0=return_dh0,
+  )
+
+  dq_r, dk_r, dv_r, db_r, dg_r, dh0_r = pl.pallas_call(
+    kernel,
+    out_shape=out_shape,
+    grid_spec=pltpu.PrefetchScalarGridSpec(
+      num_scalar_prefetch=1,
+      grid=(),
+      in_specs=in_specs,
+      out_specs=out_specs,
+    ),
+    compiler_params=pltpu.CompilerParams(
+      disable_bounds_checks=True,
+      vmem_limit_bytes=hw.vmem_limit_bytes,
+    ),
+    interpret=get_interpret(),
+    cost_estimate=resolve_cost_estimate(
+      cost_estimate_flops,
+      combine_cost_estimates(
+        kda_dh_cost(H, B, NT, BT, K, V),
+        kda_wy_bwd_cost(H, B, NT, BT, K, V),
+        kda_intra_bwd_cost(H, B, NT, BT, K),
+      ),
+    ),
+  )(
+    chunk_seg_ids,
+    q_r,
+    k_r,
+    v_r,
+    vn_r,
+    qg_r,
+    kg_r,
+    w_r,
+    g_r,
+    beta_r,
+    A_r,
+    h_r,
+    do_r,
+    dv0_r,
+    dAqk_r,
+    dht_r,
+  )
+
+  if K_pad != K:
+    dq_r = dq_r[..., :K]
+    dk_r = dk_r[..., :K]
+    dg_r = dg_r[..., :K]
+    dh0_r = dh0_r[..., :K, :]
+  if V_pad != V:
+    dv_r = dv_r[..., :V]
+    dh0_r = dh0_r[..., :V]
+  # Undo the compact DMA layout [head_group, batch, chunk, padded_head, time].
+  # An odd-NT tail uses a complete DMA tile followed by guard chunks; remove
+  # those rows before restoring the public [head, batch, chunk, time] order.
+  db_r = db_r.reshape(N_HG, B, DB_NT, MB_PAD, BETA_pad)[..., :MB, :BT]
+  if DB_TAIL_PAD:
+    REM = NT % chunk_batch
+    db_r = jnp.concatenate(
+      [db_r[:, :, :REM], db_r[:, :, chunk_batch:]],
+      axis=2,
+    )
+  db_r = db_r.transpose(0, 3, 1, 2, 4).reshape(H, B, NT, BT)
+
+  dh0_out = (
+    dh0_r.reshape(H, B, N, K, V).transpose(1, 2, 0, 3, 4) if return_dh0 else None
+  )
+  return (
+    dq_r.reshape(H, B, T, K),
+    dk_r.reshape(H, B, T, K),
+    dv_r.reshape(H, B, T, V),
+    db_r.reshape(H, B, T),
+    dg_r.reshape(H, B, T, K),
+    dh0_out,
+  )
+
+@partial(
+  jax.jit,
+  static_argnames=[
+    "chunk_size",
+    "use_exp2",
+    "scale",
+    "mini_batch",
+    "return_dh0",
+    "N_MAX",
+    "cost_estimate_flops",
+  ],
+)
+def _fused_dhu_wy_intra_cumsum_pallas_jit(
+  q: jax.Array,
+  k: jax.Array,
+  v: jax.Array,
+  v_new: jax.Array,
+  qg: jax.Array,
+  kg: jax.Array,
+  w: jax.Array,
+  g: jax.Array,
+  beta: jax.Array,
+  A: jax.Array,
+  h: jax.Array,
+  do: jax.Array,
+  dv0: jax.Array,
+  dAqk: jax.Array,
+  dht: jax.Array | None,
+  scale: float,
+  *,
+  segment_ids: jax.Array | None = None,
+  chunk_size: int = 64,
+  use_exp2: bool = True,
+  mini_batch: int | None = None,
+  return_dh0: bool = True,
+  N_MAX: int | None = None,
+  cost_estimate_flops: int = -1,
+) -> tuple[
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array | None,
+]:
+  """Fuse KDA bwd Dhu, WY, intra backward, and reverse cumsum.
+
+  Args:
+      q:      [H, B, T, K] original query vectors.
+      k:      [H, B, T, K] original key vectors.
+      v:      [H, B, T, V] original value vectors.
+      v_new:  [H, B, T, V] WY-transformed values.
+      qg:     [H, B, T, K] gated query from stage 0.
+      kg:     [H, B, T, K] gated key from stage 0.
+      w:      [H, B, T, K] erase weights from stage 0.
+      g:      [H, B, T, K] chunk-local cumsum gate in log2 space.
+      beta:   [H, B, T] WY beta coefficients.
+      A:      [H, B, T, BT] Akk inverse matrix.
+      h:      [H, B, NT, K, V] saved forward hidden states.
+      do:     [H, B, T, V] output gradient.
+      dv0:    [H, B, T, V] value gradient entering Dhu.
+      dAqk:   [H, B, T, BT] gradient of Aqk attention matrix.
+      dht:    [B, N, H, K, V] already-merged final-state gradient, or None.
+      scale:  Attention scale.
+      segment_ids: None for uniform inputs, or [B, T] int32 segment IDs
+        using the same state-slot contract as the public DMA wrapper: IDs are
+        dense ``1..real_n`` before CP sharding, 0 is trailing padding, and a
+        post-CP subset need not start at 1 if ``N`` covers the original label
+        range. Per-batch IDs; no global flattening.
+      chunk_size: Chunk size BT.
+      use_exp2: Must be True. M4 expects log2 gates and uses exp2 decay.
+      mini_batch: Number of heads per program.
+      return_dh0: Return ``dh0`` when True; return None otherwise.
+      N_MAX: Static sequence-count upper bound used when ``segment_ids`` is
+        provided and ``dht`` is None.
+
+  Returns:
+      dq, dk, dv, db, dg_raw, dh0 in head-first layout. ``dg_raw`` includes
+      intra updates and the chunk-local reverse cumsum. ``dh0`` has shape
+      [B, N, H, K, V] when requested; otherwise None.
+  """
+  H, B, T, K = q.shape
+  V = v.shape[-1]
+  BT = chunk_size
+  NT = T // BT
+  HB = H * B
+
+  assert_shape(q, (H, B, T, K), "q")
+  assert_shape(k, (H, B, T, K), "k")
+  assert_shape(v, (H, B, T, V), "v")
+  assert_shape(v_new, (H, B, T, V), "v_new")
+  assert_shape(qg, (H, B, T, K), "qg")
+  assert_shape(kg, (H, B, T, K), "kg")
+  assert_shape(w, (H, B, T, K), "w")
+  assert_shape(g, (H, B, T, K), "g")
+  assert_shape(beta, (H, B, T), "beta")
+  assert_shape(A, (H, B, T, BT), "A")
+  assert_shape(h, (H, B, NT, K, V), "h")
+  assert_shape(do, (H, B, T, V), "do")
+  assert_shape(dv0, (H, B, T, V), "dv0")
+  assert_shape(dAqk, (H, B, T, BT), "dAqk")
+  is_varlen = segment_ids is not None
+  assert_shape_or_none(segment_ids, (B, T), "segment_ids")
+  assert T % BT == 0, f"T={T} must be divisible by chunk_size={BT}"
+  assert use_exp2 is True, (
+    "fused_dhu_wy_intra_cumsum_pallas currently expects log2 gates and use_exp2=True"
+  )
+
+  segment_ids = jnp.ones((B, T), dtype=jnp.int32) if not is_varlen else segment_ids
+  chunk_seg_ids = segment_ids.reshape(B, NT, BT)[:, :, 0]  # [B, NT]
+  if dht is not None:
+    N = dht.shape[1]  # dht is [B, N, H, K, V], N is dim 1
+  elif is_varlen:
+    N = N_MAX
+  else:
+    N = 1  # uniform: one sequence per batch element
+  assert_shape_or_none(dht, (B, N, H, K, V), "dht")
+  dht_arr = dht if dht is not None else jnp.zeros((B, N, H, K, V), dtype=jnp.float32)
+
+  if mini_batch is None:
+    elem_size = 2 if q.dtype == jnp.bfloat16 else 4
+    io_per_head = (8 * BT * K + 4 * BT * V + BT + 3 * BT * BT + 2 * K * V) * elem_size + (
+      K * V + 5 * BT * K + BT * V + BT + 2 * BT * BT + K * V
+    ) * 4
+    per_head = io_per_head + io_per_head * 3 // 2
+    hw = get_tpu_config()
+    vmem_budget = hw.vmem_limit_bytes
+    MB = max(1, vmem_budget // per_head)
+    MB = min(MB, H, 16)
+    while H % MB != 0 and MB > 1:
+      MB -= 1
+  else:
+    MB = mini_batch
+    assert H % MB == 0, f"H={H} must be divisible by mini_batch={MB}"
+
+  # Keep [H, B, ...] layout; reshape T → (NT, BT) only. No transpose.
+  # B is an independent dimension handled by a separate grid axis.
+  q_r = q.reshape(H, B, NT, BT, K)
+  k_r = k.reshape(H, B, NT, BT, K)
+  v_r = v.reshape(H, B, NT, BT, V)
+  vn_r = v_new.reshape(H, B, NT, BT, V)
+  qg_r = qg.reshape(H, B, NT, BT, K)
+  kg_r = kg.reshape(H, B, NT, BT, K)
+  w_r = w.reshape(H, B, NT, BT, K)
+  g_r = g.reshape(H, B, NT, BT, K)
+  beta_r = beta.reshape(H, B, NT, BT, 1)
+  A_r = A.reshape(H, B, NT, BT, BT)
+  h_r = h  # already [H, B, NT, K, V]
+  do_r = do.reshape(H, B, NT, BT, V)
+  dv0_r = dv0.reshape(H, B, NT, BT, V)
+  dAqk_r = dAqk.reshape(H, B, NT, BT, BT)
+
+  def idx_chunk(head_group, batch, chunk, chunk_seg_ids_ref):
+    return (head_group, batch, NT - 1 - chunk, 0, 0)
+
+  def idx_state(head_group, batch, chunk, chunk_seg_ids_ref):
+    chunk_id = NT - 1 - chunk
+    _, seq_idx, _, _, _ = _chunk_segment_metadata(chunk_seg_ids_ref, batch, chunk_id, NT)
+    return (head_group, batch, seq_idx, 0, 0)
+
+  # dht_arr [B, N, H, K, V] → [H, B, N, K, V]
+  dht_arr = dht_arr.transpose(2, 0, 1, 3, 4)
+
+  qk_spec = pl.BlockSpec((MB, 1, 1, BT, K), index_map=idx_chunk)
+  v_spec = pl.BlockSpec((MB, 1, 1, BT, V), index_map=idx_chunk)
+  b_spec = pl.BlockSpec((MB, 1, 1, BT, 1), index_map=idx_chunk)
+  A_spec = pl.BlockSpec((MB, 1, 1, BT, BT), index_map=idx_chunk)
+  h_spec = pl.BlockSpec((MB, 1, 1, K, V), index_map=idx_chunk)
+  state_spec = pl.BlockSpec((MB, 1, 1, K, V), index_map=idx_state)
+
+  kernel = partial(
+    _fused_dhu_wy_intra_cumsum_kernel,
+    scale=scale,
+    BT=BT,
+    K=K,
+    V=V,
+    NT=NT,
+    MB=MB,
+  )
+  dh_tmp = pltpu.VMEM((MB, K, V), jnp.float32)
+  out_shape = [
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), jnp.float32),
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), jnp.float32),
+    jax.ShapeDtypeStruct((H, B, NT, BT, V), jnp.float32),
+    jax.ShapeDtypeStruct((H, B, NT, BT, 1), jnp.float32),
+    jax.ShapeDtypeStruct((H, B, NT, BT, K), jnp.float32),
+    jax.ShapeDtypeStruct((H, B, N, K, V), jnp.float32),
+  ]
+
+  dq_r, dk_r, dv_r, db_r, dg_r, dh0_r = pl.pallas_call(
+    kernel,
+    out_shape=out_shape,
+    grid_spec=pltpu.PrefetchScalarGridSpec(
+      num_scalar_prefetch=1,
+      grid=(H // MB, B, NT),
+      in_specs=[
+        qk_spec,
+        qk_spec,
+        v_spec,
+        v_spec,
+        qk_spec,
+        qk_spec,
+        qk_spec,
+        qk_spec,
+        b_spec,
+        A_spec,
+        h_spec,
+        v_spec,
+        v_spec,
+        A_spec,
+        state_spec,
+      ],
+      out_specs=[qk_spec, qk_spec, v_spec, b_spec, qk_spec, state_spec],
+      scratch_shapes=[dh_tmp],
+    ),
+    compiler_params=pltpu.CompilerParams(
+      dimension_semantics=("parallel", "parallel", "arbitrary"),
+      disable_bounds_checks=True,
+      vmem_limit_bytes=get_tpu_config().vmem_limit_bytes,
+    ),
+    interpret=get_interpret(),
+    cost_estimate=resolve_cost_estimate(
+      cost_estimate_flops,
+      combine_cost_estimates(
+        kda_dh_cost(H, B, NT, BT, K, V),
+        kda_wy_bwd_cost(H, B, NT, BT, K, V),
+        kda_intra_bwd_cost(H, B, NT, BT, K),
+      ),
+    ),
+  )(
+    chunk_seg_ids,
+    q_r,
+    k_r,
+    v_r,
+    vn_r,
+    qg_r,
+    kg_r,
+    w_r,
+    g_r,
+    beta_r,
+    A_r,
+    h_r,
+    do_r,
+    dv0_r,
+    dAqk_r,
+    dht_arr,
+  )
+
+  dh0_out = dh0_r.transpose(1, 2, 0, 3, 4) if return_dh0 else None
+  return (
+    dq_r.reshape(H, B, T, K),
+    dk_r.reshape(H, B, T, K),
+    dv_r.reshape(H, B, T, V),
+    db_r.reshape(H, B, T),
+    dg_r.reshape(H, B, T, K),
+    dh0_out,
+  )
+
+
+def fused_dhu_wy_intra_cumsum_pallas(
+  q: jax.Array,
+  k: jax.Array,
+  v: jax.Array,
+  v_new: jax.Array,
+  qg: jax.Array,
+  kg: jax.Array,
+  w: jax.Array,
+  g: jax.Array,
+  beta: jax.Array,
+  A: jax.Array,
+  h: jax.Array,
+  do: jax.Array,
+  dv0: jax.Array,
+  dAqk: jax.Array,
+  dht: jax.Array | None,
+  scale: float,
+  *,
+  segment_ids: jax.Array | None = None,
+  chunk_size: int = 64,
+  use_exp2: bool = True,
+  mini_batch: int | None = None,
+  return_dh0: bool = True,
+  N_MAX: int | None = None,
+  chunk_batch: int = 2,
+  cost_estimate_flops: int = -1,
+) -> tuple[
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array,
+  jax.Array | None,
+]:
+  """Fuse KDA bwd Dhu, WY, intra backward, and reverse cumsum.
+
+  Supports uniform inputs and M4B chunk-aligned varlen/post-CP inputs. CP
+  ``all_gather`` and ``_merge_dht`` stay outside this wrapper; ``dht`` is the
+  already-merged local final-state gradient.
+
+  Args:
+      q:      [H, B, T, K] original query vectors.
+      k:      [H, B, T, K] original key vectors.
+      v:      [H, B, T, V] original value vectors.
+      v_new:  [H, B, T, V] WY-transformed values.
+      qg:     [H, B, T, K] gated query from stage 0.
+      kg:     [H, B, T, K] gated key from stage 0.
+      w:      [H, B, T, K] erase weights from stage 0.
+      g:      [H, B, T, K] chunk-local cumsum gate in log2 space.
+      beta:   [H, B, T] WY beta coefficients.
+      A:      [H, B, T, BT] Akk inverse matrix.
+      h:      [H, B, NT, K, V] saved forward hidden states.
+      do:     [H, B, T, V] output gradient.
+      dv0:    [H, B, T, V] value gradient entering Dhu.
+      dAqk:   [H, B, T, BT] gradient of Aqk attention matrix. The internal
+        fused pipeline may pass an already padded final dimension.
+      dht:    [B, N, H, K, V] already-merged final-state gradient, or None.
+      scale:  Attention scale.
+      segment_ids: None for uniform inputs, or [T] / [B, T] int32
+        segment IDs for chunk-aligned varlen. Before CP sharding, each logical
+        batch uses dense IDs ``1..real_n`` and 0 is reserved for trailing
+        token/state padding; every ``BT`` chunk passed here must contain one
+        ID. A post-CP shard may contain only a subset of those IDs and need not
+        start at 1, but ``N``/``N_MAX`` must still cover the original ID range.
+        Per-batch IDs; no global flattening. For non-CP padded state arrays,
+        slots ``real_n:N`` are padding: callers supply zero ``dht`` there and
+        ignore the corresponding ``dh0``.
+      chunk_size: Chunk size BT.
+      use_exp2: Must be True. M4 expects log2 gates and uses exp2 decay.
+      mini_batch: Number of heads per program.
+      return_dh0: Return ``dh0`` when True; return None otherwise.
+      N_MAX: Static sequence-count upper bound used when ``segment_ids`` is
+        provided and ``dht`` is None.
+      chunk_batch: Number of adjacent chunks merged into each DMA/compute
+        window. Defaults to 2. The compact beta/db tail fills a complete
+        ``chunk_batch``-chunk VMEM buffer so a remainder does not create a
+        partial DMA.
+      cost_estimate_flops: Fused-kernel FLOP override. Negative values use
+        the shape-derived estimate; zero disables the hint.
+
+  Returns:
+      dq, dk, dv, db, dg_raw, dh0 in head-first layout. ``dg_raw`` includes
+      intra updates and the chunk-local reverse cumsum. ``dh0`` has shape
+      [B, N, H, K, V] when requested; otherwise None. In non-CP varlen mode,
+      only the first ``real_n`` state slots are semantic.
+  """
+  H, B, T, K = q.shape
+  V = v.shape[-1]
+  BT = chunk_size
+  NT = T // BT
+
+  assert BT == 64, (
+    "M4 DMA prefix/suffix contraction currently only supports chunk_size=64, "
+    f"got {BT}"
+  )
+
+  assert_shape(q, (H, B, T, K), "q")
+  assert_shape(k, (H, B, T, K), "k")
+  assert_shape(v, (H, B, T, V), "v")
+  assert_shape(v_new, (H, B, T, V), "v_new")
+  assert_shape(qg, (H, B, T, K), "qg")
+  assert_shape(kg, (H, B, T, K), "kg")
+  assert_shape(w, (H, B, T, K), "w")
+  assert_shape(g, (H, B, T, K), "g")
+  assert_shape(beta, (H, B, T), "beta")
+  assert_shape(A, (H, B, T, BT), "A")
+  assert_shape(h, (H, B, NT, K, V), "h")
+  assert_shape(do, (H, B, T, V), "do")
+  assert_shape(dv0, (H, B, T, V), "dv0")
+  BT_PAD = align_up(BT, get_tpu_config().block_align_major)
+  assert dAqk.shape[-1] in (BT, BT_PAD), (
+    f"dAqk minor dimension must be BT={BT} or BT_PAD={BT_PAD}, got {dAqk.shape[-1]}"
+  )
+  assert_shape(dAqk, (H, B, T, dAqk.shape[-1]), "dAqk")
+  assert T % BT == 0, f"T={T} must be divisible by chunk_size={BT}"
+  assert use_exp2 is True, (
+    "fused_dhu_wy_intra_cumsum_pallas currently expects log2 gates and use_exp2=True"
+  )
+
+  # Compute N: uniform → 1, varlen → max segment_id per batch.
+  # dht shape [B, N, H, K, V] — N is dim 1.
+  if dht is not None:
+    N = dht.shape[1]
+  elif segment_ids is not None:
+    assert N_MAX is not None
+    N = N_MAX
+  else:
+    N = 1  # uniform: one sequence per batch element
+
+  assert_shape_or_none(dht, (B, N, H, K, V), "dht")
+  return _fused_dhu_wy_intra_cumsum_dma_pallas_jit(
+    q=q,
+    k=k,
+    v=v,
+    v_new=v_new,
+    qg=qg,
+    kg=kg,
+    w=w,
+    g=g,
+    beta=beta,
+    A=A,
+    h=h,
+    do=do,
+    dv0=dv0,
+    dAqk=dAqk,
+    dht=dht,
+    scale=scale,
+    segment_ids=segment_ids,
+    chunk_size=chunk_size,
+    use_exp2=use_exp2,
+    mini_batch=mini_batch,
+    return_dh0=return_dh0,
+    N_MAX=N_MAX,
+    chunk_batch=chunk_batch,
+    cost_estimate_flops=cost_estimate_flops,
+  )

@@ -1,0 +1,263 @@
+{
+  "repository": "primatrix/pallas-kernel",
+  "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+  "license": "Apache-2.0",
+  "verified_on": "2026-10-28",
+  "baseline_policy": "Remote main HEAD at collection time; last mega source change is c500d1bb.",
+  "scope": "Original complete chunk_kda_bwd_fusion launcher and _bwd_mega_kernel; device-local, CP inactive.",
+  "revisions": {
+    "latest": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "commit": "2026-10-28T12:55:12+08:00 perf(dsa): speed up packed varlen Attention backward to 45.8 ms (#667)",
+      "mega_last_change": "c500d1bb1b738e606e9629f5e5e6d4eb261c34ab"
+    },
+    "oct09": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "commit": "2026-10-09T20:26:15+08:00 feat(kda): add rematerialized head groups for all-gather CP HBM (#609)",
+      "mega_last_change": "114f2aa10c9bafaca7f4975763a421c2c5d054c7"
+    },
+    "sep08": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "commit": "2026-09-08T21:08:15+08:00 fix(kda): keep CP backward DMA tiling divisible and within VMEM budget (#577)",
+      "mega_last_change": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf"
+    },
+    "jul30": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "commit": "2026-07-30T19:02:11+08:00 perf(kda): opt chunk kda bwd mega kernel (#497)",
+      "mega_last_change": "6b69fe68754ea2892007285f7d5a158c3be4bcdf"
+    }
+  },
+  "files": {
+    "latest_mega": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/ops/kda/chunk_bwd_mega.py",
+      "snapshot": "objects/61dbbc60aabb62b72b1472e26f0f93b5d11247e9.txt",
+      "sha256": "5e09d5453599103102cefc0b572384e021bfac87655338f4ca2cf1d3f3c0cc00",
+      "git_blob": "61dbbc60aabb62b72b1472e26f0f93b5d11247e9"
+    },
+    "latest_fusion": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/ops/kda/chunk_bwd_fusion.py",
+      "snapshot": "objects/d1bda1272853f7aca4a5cd4d2bd39597a4cfe2ec.txt",
+      "sha256": "0709bdff8b8926b4e9e114fe025e94876b651883318d319f4de06cdd3b67dd74",
+      "git_blob": "d1bda1272853f7aca4a5cd4d2bd39597a4cfe2ec"
+    },
+    "latest_utils": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/utils.py",
+      "snapshot": "objects/0905d4f1363de1fde297f472624fabaa4d0dd2b8.txt",
+      "sha256": "a4e3caee99ccce9103e009bd1ab0ca77002afec078237cc5793de847646895f5",
+      "git_blob": "0905d4f1363de1fde297f472624fabaa4d0dd2b8"
+    },
+    "latest_oputils": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/ops/utils.py",
+      "snapshot": "objects/290515a4884d410e709b4a4a96a0a4aa371d6474.txt",
+      "sha256": "e0a5b15467895e1adadad1110c8431a496946caa9d86c73c68a73a591dba9ecc",
+      "git_blob": "290515a4884d410e709b4a4a96a0a4aa371d6474"
+    },
+    "latest_hardware": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/hardware.py",
+      "snapshot": "objects/8d07875b70218c2a2122e5874eb7628856df99b2.txt",
+      "sha256": "6e125d46b3fc8e6b005b0e37e9ecf5a8a9f387e0d2c9c091294eed33e3b496b0",
+      "git_blob": "8d07875b70218c2a2122e5874eb7628856df99b2"
+    },
+    "latest_cp": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/ops/common/cp_utils.py",
+      "snapshot": "objects/0e32462fc56163fcc2d48d18a9bd8f09493f6e53.txt",
+      "sha256": "e76c69b4487093be4500a1f0666c17d54cdacfe949e9fdc25d73922e6834f2b8",
+      "git_blob": "0e32462fc56163fcc2d48d18a9bd8f09493f6e53"
+    },
+    "latest_cost": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/ops/common/cost.py",
+      "snapshot": "objects/bf50d9407e3356b70a54d8634bf126998c27216a.txt",
+      "sha256": "2eb754c901b9021ddbd2e1082d418bbfd34a5205615dc9b26c716ef03d74231a",
+      "git_blob": "bf50d9407e3356b70a54d8634bf126998c27216a"
+    },
+    "latest_segmented": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "tops/ops/kda/packed_segmented.py",
+      "snapshot": "objects/37008242ca0ff3c37c40a6dc76c27a7bdaa6ad6e.txt",
+      "sha256": "f23714c2e1b81168288f43a7e21781cb861001ee9b794ff214c77a1d9d4da493",
+      "git_blob": "37008242ca0ff3c37c40a6dc76c27a7bdaa6ad6e"
+    },
+    "latest_license": {
+      "revision": "a861cfb60717d74dff52ed9d508cc7eab1782c1b",
+      "path": "LICENSE",
+      "snapshot": "objects/261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    },
+    "oct09_mega": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/ops/kda/chunk_bwd_mega.py",
+      "snapshot": "objects/e74fdd9171160771113b471d18d38aa87581e5d8.txt",
+      "sha256": "5be3a1c5d7d6da4e576cf2d5767b481251853cdf789a2843a65e889abb582bd3",
+      "git_blob": "e74fdd9171160771113b471d18d38aa87581e5d8"
+    },
+    "oct09_fusion": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/ops/kda/chunk_bwd_fusion.py",
+      "snapshot": "objects/d1bda1272853f7aca4a5cd4d2bd39597a4cfe2ec.txt",
+      "sha256": "0709bdff8b8926b4e9e114fe025e94876b651883318d319f4de06cdd3b67dd74",
+      "git_blob": "d1bda1272853f7aca4a5cd4d2bd39597a4cfe2ec"
+    },
+    "oct09_utils": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/utils.py",
+      "snapshot": "objects/0905d4f1363de1fde297f472624fabaa4d0dd2b8.txt",
+      "sha256": "a4e3caee99ccce9103e009bd1ab0ca77002afec078237cc5793de847646895f5",
+      "git_blob": "0905d4f1363de1fde297f472624fabaa4d0dd2b8"
+    },
+    "oct09_oputils": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/ops/utils.py",
+      "snapshot": "objects/290515a4884d410e709b4a4a96a0a4aa371d6474.txt",
+      "sha256": "e0a5b15467895e1adadad1110c8431a496946caa9d86c73c68a73a591dba9ecc",
+      "git_blob": "290515a4884d410e709b4a4a96a0a4aa371d6474"
+    },
+    "oct09_hardware": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/hardware.py",
+      "snapshot": "objects/8d07875b70218c2a2122e5874eb7628856df99b2.txt",
+      "sha256": "6e125d46b3fc8e6b005b0e37e9ecf5a8a9f387e0d2c9c091294eed33e3b496b0",
+      "git_blob": "8d07875b70218c2a2122e5874eb7628856df99b2"
+    },
+    "oct09_cp": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/ops/common/cp_utils.py",
+      "snapshot": "objects/0e32462fc56163fcc2d48d18a9bd8f09493f6e53.txt",
+      "sha256": "e76c69b4487093be4500a1f0666c17d54cdacfe949e9fdc25d73922e6834f2b8",
+      "git_blob": "0e32462fc56163fcc2d48d18a9bd8f09493f6e53"
+    },
+    "oct09_cost": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/ops/common/cost.py",
+      "snapshot": "objects/bf50d9407e3356b70a54d8634bf126998c27216a.txt",
+      "sha256": "2eb754c901b9021ddbd2e1082d418bbfd34a5205615dc9b26c716ef03d74231a",
+      "git_blob": "bf50d9407e3356b70a54d8634bf126998c27216a"
+    },
+    "oct09_segmented": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "tops/ops/kda/packed_segmented.py",
+      "snapshot": "objects/37008242ca0ff3c37c40a6dc76c27a7bdaa6ad6e.txt",
+      "sha256": "f23714c2e1b81168288f43a7e21781cb861001ee9b794ff214c77a1d9d4da493",
+      "git_blob": "37008242ca0ff3c37c40a6dc76c27a7bdaa6ad6e"
+    },
+    "oct09_license": {
+      "revision": "114f2aa10c9bafaca7f4975763a421c2c5d054c7",
+      "path": "LICENSE",
+      "snapshot": "objects/261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    },
+    "sep08_mega": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "tops/ops/kda/chunk_bwd_mega.py",
+      "snapshot": "objects/4ad56694a5798ee6aaa70434b7fcab29c22ea647.txt",
+      "sha256": "7b21ef41ec7579b1b0ee4fa58962cfe222aea94d9c7beb01fd1115d4167c41de",
+      "git_blob": "4ad56694a5798ee6aaa70434b7fcab29c22ea647"
+    },
+    "sep08_fusion": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "tops/ops/kda/chunk_bwd_fusion.py",
+      "snapshot": "objects/5190fa738e543914c476029dee5554295c4c52a6.txt",
+      "sha256": "cc984e35d6c4c5e33fe9166ccf8cae82780ccb48a68100fd292c90746fad15ab",
+      "git_blob": "5190fa738e543914c476029dee5554295c4c52a6"
+    },
+    "sep08_utils": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "tops/utils.py",
+      "snapshot": "objects/0905d4f1363de1fde297f472624fabaa4d0dd2b8.txt",
+      "sha256": "a4e3caee99ccce9103e009bd1ab0ca77002afec078237cc5793de847646895f5",
+      "git_blob": "0905d4f1363de1fde297f472624fabaa4d0dd2b8"
+    },
+    "sep08_oputils": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "tops/ops/utils.py",
+      "snapshot": "objects/290515a4884d410e709b4a4a96a0a4aa371d6474.txt",
+      "sha256": "e0a5b15467895e1adadad1110c8431a496946caa9d86c73c68a73a591dba9ecc",
+      "git_blob": "290515a4884d410e709b4a4a96a0a4aa371d6474"
+    },
+    "sep08_hardware": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "tops/hardware.py",
+      "snapshot": "objects/8d07875b70218c2a2122e5874eb7628856df99b2.txt",
+      "sha256": "6e125d46b3fc8e6b005b0e37e9ecf5a8a9f387e0d2c9c091294eed33e3b496b0",
+      "git_blob": "8d07875b70218c2a2122e5874eb7628856df99b2"
+    },
+    "sep08_cp": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "tops/ops/common/cp_utils.py",
+      "snapshot": "objects/7ad650acc6067b50d6d50485cd582ed13e6b8f38.txt",
+      "sha256": "506ec5a68ce47caf903c79b89ffdf30d7acd5c58c896d651e930178278d2ad93",
+      "git_blob": "7ad650acc6067b50d6d50485cd582ed13e6b8f38"
+    },
+    "sep08_cost": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "tops/ops/common/cost.py",
+      "snapshot": "objects/bf50d9407e3356b70a54d8634bf126998c27216a.txt",
+      "sha256": "2eb754c901b9021ddbd2e1082d418bbfd34a5205615dc9b26c716ef03d74231a",
+      "git_blob": "bf50d9407e3356b70a54d8634bf126998c27216a"
+    },
+    "sep08_license": {
+      "revision": "8de99b4db8a5b67e3971a635723d67d5d1a76aaf",
+      "path": "LICENSE",
+      "snapshot": "objects/261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    },
+    "jul30_mega": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "path": "tops/ops/kda/chunk_bwd_mega.py",
+      "snapshot": "objects/e440605ad4ba4c43de83936ab3629ca71f28341e.txt",
+      "sha256": "4b9c6ab68083cc1d892d5d75f35ea9b87b74f286a4a55e4d9065b5ab783bb790",
+      "git_blob": "e440605ad4ba4c43de83936ab3629ca71f28341e"
+    },
+    "jul30_fusion": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "path": "tops/ops/kda/chunk_bwd_fusion.py",
+      "snapshot": "objects/5f29e5a21c992126aaba39591306f268598b78b5.txt",
+      "sha256": "14a1add00689970efdce61d9c52399a3f7001efcb926024736e69696a132c6ae",
+      "git_blob": "5f29e5a21c992126aaba39591306f268598b78b5"
+    },
+    "jul30_utils": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "path": "tops/utils.py",
+      "snapshot": "objects/e3bf2cf3fbc384b3ff1d0f3dea482462c3493981.txt",
+      "sha256": "a57bcc4494037efcee2d27efec89af2964a11750a2d1517523b6a8b030d73c30",
+      "git_blob": "e3bf2cf3fbc384b3ff1d0f3dea482462c3493981"
+    },
+    "jul30_oputils": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "path": "tops/ops/utils.py",
+      "snapshot": "objects/290515a4884d410e709b4a4a96a0a4aa371d6474.txt",
+      "sha256": "e0a5b15467895e1adadad1110c8431a496946caa9d86c73c68a73a591dba9ecc",
+      "git_blob": "290515a4884d410e709b4a4a96a0a4aa371d6474"
+    },
+    "jul30_hardware": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "path": "tops/hardware.py",
+      "snapshot": "objects/64013ec099d2e75ac64560c1103c231ff0b74641.txt",
+      "sha256": "38f329ef13399f162b9c9a4acdcb230f46f16a1b9ade829ce6ec1e68e3926e34",
+      "git_blob": "64013ec099d2e75ac64560c1103c231ff0b74641"
+    },
+    "jul30_cp": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "path": "tops/ops/common/cp_utils.py",
+      "snapshot": "objects/d57ab8fb761f1275f73a189406bcc2b39a844474.txt",
+      "sha256": "cec55f16cc9f3c00f4f6d2fccad75f0083f48fdc72d2c56197a84933da7b30ab",
+      "git_blob": "d57ab8fb761f1275f73a189406bcc2b39a844474"
+    },
+    "jul30_license": {
+      "revision": "6b69fe68754ea2892007285f7d5a158c3be4bcdf",
+      "path": "LICENSE",
+      "snapshot": "objects/261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64"
+    }
+  }
+}

@@ -1,0 +1,227 @@
+"""TPU hardware configuration and auto-detection.
+
+Provides :class:`TpuConfig` — an immutable dataclass that bundles per-generation
+hardware parameters (VMEM, SMEM, MXU alignment, peak FLOPS) and
+auto-detects the current TPU from the JAX device list.
+
+Typical usage::
+
+    from tops.hardware import get_tpu_config
+
+    cfg = get_tpu_config()
+    compiler_params = pltpu.CompilerParams(
+        vmem_limit_bytes=cfg.vmem_limit_bytes,
+        ...
+    )
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import jax
+
+
+@dataclass(frozen=True)
+class TpuConfig:
+  """Per-generation TPU hardware parameters (immutable).
+
+  All per-core values are sourced from the JAX Pallas TPU info module
+  (``jax._src.pallas.mosaic.tpu_info``).
+
+  Attributes:
+      generation: Short generation string (``"v6e"``, ``"v7"``, …).
+      description: Human-readable description (e.g. ``"TPU v6e (Trillium)"``).
+      vmem_per_core_bytes: Physical VMEM per TPU core in bytes.  To lift the
+        compiler-imposed scoped limit during kernel compilation, set
+        ``LIBTPU_INIT_ARGS=--xla_tpu_scoped_vmem_limit_kib=<KIB>`` before JAX
+        init **and** pass ``CompilerParams(vmem_limit_bytes=<BYTES>)``.
+      compiler_vmem_limit_bytes: Maximum VMEM budget accepted by the compiler
+        for an individual kernel.  ``None`` uses the physical VMEM capacity.
+      cmem_per_core_bytes: Collective memory (CMEM) per core in bytes.
+      smem_per_core_bytes: Scalar memory (SMEM) per core in bytes.
+      hbm_per_core_bytes: HBM capacity per core in bytes.
+      mem_bw_bytes_per_second: HBM bandwidth per core in bytes/s.
+      num_lanes: Number of vector lanes per TensorCore.
+      num_sublanes: Number of sublanes per lane.
+      mxu_column_size: MXU systolic array column size.
+      tflops_bf16_2d: MXU 2D BF16 peak TFLOPS per chip.
+      tflops_fp8_2d: MXU 2D FP8 peak TFLOPS per chip.
+      tflops_fp32_2d: MXU 2D FP32 peak TFLOPS per chip.
+      tflops_int8_2d: MXU 2D INT8 peak TFLOPS per chip.
+      tflops_int4_2d: MXU 2D INT4 peak TFLOPS per chip.
+      frequency_ghz: MXU operating frequency in GHz.
+      tflops_fp32_1d: Non-MAC 1D vector FP32 peak TFLOPS per chip.
+      block_align_minor: Pallas TPU alignment for the second-to-last block dim
+          (dim=-2). Must be divisible by 8 or equal the array dim.  Applies to
+          non-trivial HBM/ANY block specs of rank ≥ 2.
+      block_align_major: Pallas TPU alignment for the last block dim (dim=-1).
+          Must be divisible by 128 or equal the array dim.  Same constraint scope
+          as ``block_align_minor``.
+  """
+
+  generation: str
+  vmem_per_core_bytes: int
+  smem_per_core_bytes: int
+  tflops_bf16_2d: float
+  tflops_fp8_2d: float
+  tflops_fp32_2d: float
+  # Pallas TPU block shape alignment constraints (v4+).
+  # For any non-trivial HBM/ANY block spec of rank ≥ 2, the last two
+  # block dimensions must either equal the corresponding array dimensions
+  # or be divisible by these values:
+  block_align_minor: int = 8  # dim=-2: block size % 8 == 0  (or == array dim)
+  block_align_major: int = 128  # dim=-1: block size % 128 == 0 (or == array dim)
+  compiler_vmem_limit_bytes: int | None = None
+  hbm_bandwidth_gbps: float = (
+    0.0  # HBM bandwidth in GB/s per chip (legacy, prefer mem_bw_bytes_per_second)
+  )
+  frequency_ghz: float = 0.0  # MXU operating frequency in GHz
+  tflops_fp32_1d: float = 0.0  # Non-MAC 1D vector FP32 peak TFLOPS per chip
+  description: str = ""  # Human-readable description
+  # --- Fields from jax._src.pallas.mosaic.tpu_info ---
+  num_lanes: int = 128
+  num_sublanes: int = 8
+  mxu_column_size: int = 128
+  cmem_per_core_bytes: int = 0
+  hbm_per_core_bytes: int = 0
+  mem_bw_bytes_per_second: int = 0
+  tflops_int8_2d: float = 0.0
+  tflops_int4_2d: float = 0.0
+
+  @property
+  def vmem_limit_bytes(self) -> int:
+    """Maximum VMEM budget accepted by ``CompilerParams``."""
+    return self.compiler_vmem_limit_bytes or self.vmem_per_core_bytes
+
+  @property
+  def vmem_hw_limit_bytes(self) -> int:
+    """Hardware VMEM ceiling for dynamic tile-sizing.
+
+    This intentionally remains the physical capacity even when libtpu reserves
+    a small portion of VMEM from individual compiler requests.
+    """
+    return int(self.vmem_per_core_bytes * 1.0)
+
+
+# =============================================================================
+# Preset instances for known TPU generations
+# =============================================================================
+# Sources:
+#   All per-core values below are taken from the JAX Pallas TPU info module
+#   (jax._src.pallas.mosaic.tpu_info._get_tpu_info_impl), which is the
+#   authoritative hardware description used by the Pallas compiler.
+#   Chips with 2 physical TensorCores (v7) report per-TensorCore values;
+#   our TpuConfig fields are per-device (1 device = 1 TensorCore).
+
+TPU_V6E = TpuConfig(
+  generation="v6e",
+  vmem_per_core_bytes=128 * 1024 * 1024,
+  smem_per_core_bytes=1024 * 1024,
+  tflops_fp8_2d=920.0,
+  tflops_bf16_2d=920.0,
+  tflops_fp32_2d=460.0,
+  hbm_bandwidth_gbps=1640.0,
+  frequency_ghz=1.75,
+  tflops_fp32_1d=7.168,
+  description="TPU v6e (Trillium)",
+  mxu_column_size=256,
+  hbm_per_core_bytes=34_400_000_000,
+  mem_bw_bytes_per_second=int(1.64e12),
+  tflops_int8_2d=1840.0,
+  tflops_int4_2d=3680.0,
+)
+
+TPU_V7 = TpuConfig(
+  generation="v7",
+  vmem_per_core_bytes=64 * 1024 * 1024,
+  # libtpu reserves 64 KiB of v7's 64 MiB physical VMEM from scoped compiler
+  # requests.  Asking for the physical capacity is rejected as invalid.
+  compiler_vmem_limit_bytes=65472 * 1024,
+  smem_per_core_bytes=1024 * 1024,
+  tflops_fp8_2d=2300.0,
+  tflops_bf16_2d=1155.0,
+  tflops_fp32_2d=577.5,
+  hbm_bandwidth_gbps=3700.0,
+  frequency_ghz=2.2,
+  tflops_fp32_1d=9.0112,
+  description="TPU v7 (Ironwood) — 2 devices per chip, values are per-device",
+  mxu_column_size=256,
+  hbm_per_core_bytes=103_000_000_000,
+  mem_bw_bytes_per_second=int(3.70e12),
+  tflops_int8_2d=0.0,
+  tflops_int4_2d=0.0,
+)
+
+#: Map generation string → preset config.
+_PRESETS: dict[str, TpuConfig] = {
+  "v6e": TPU_V6E,
+  "v7": TPU_V7,
+}
+
+# ---------------------------------------------------------------------------
+# Auto-detection
+# ---------------------------------------------------------------------------
+
+# Mapping from JAX device_kind substrings to _PRESETS keys.
+# Order matters: more-specific prefixes must come first so that
+# "TPU v6e" matches "v6e" before the generic "v6" catch-all.
+_DEVICE_KIND_MAP: list[tuple[str, str]] = [
+  ("tpu7x", "v7"),
+  ("v6 lite", "v6e"),
+  ("v7 lite", "v7"),
+  ("v7e", "v7"),
+  ("v6e", "v6e"),
+  ("v7", "v7"),
+  ("v6", "v6e"),
+]
+
+
+def _detect_tpu_config() -> TpuConfig:
+  """Auto-detect the current TPU configuration from ``jax.devices()``.
+
+  Returns:
+      Matching :class:`TpuConfig` preset, or ``TPU_V6E`` as a safe fallback
+      when no TPU device is found (e.g. on CPU / GPU hosts or in CI).
+  """
+  try:
+    devices = jax.devices()
+  except RuntimeError:
+    devices = []
+
+  for device in devices:
+    dk = device.device_kind.lower()
+    for needle, key in _DEVICE_KIND_MAP:
+      if needle in dk:
+        return _PRESETS[key]
+
+  # No TPU found — return conservative default (v6e: 128 MB VMEM)
+  return TPU_V6E
+
+
+# ---------------------------------------------------------------------------
+# Global config access
+# ---------------------------------------------------------------------------
+
+_current_config: TpuConfig | None = None
+
+
+def set_tpu_config(config: TpuConfig) -> None:
+  """Override the auto-detected TPU config.
+
+  Useful for testing or when running on a host without TPU hardware.
+  """
+  global _current_config
+  _current_config = config
+
+
+def get_tpu_config() -> TpuConfig:
+  """Return the current TPU hardware configuration.
+
+  On first call, auto-detection runs via :func:`_detect_tpu_config`.
+  Subsequent calls return the cached (or previously overridden) config.
+  """
+  global _current_config
+  if _current_config is None:
+    _current_config = _detect_tpu_config()
+  return _current_config

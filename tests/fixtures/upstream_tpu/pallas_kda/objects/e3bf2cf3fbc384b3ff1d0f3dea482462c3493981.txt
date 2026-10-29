@@ -1,0 +1,746 @@
+import functools
+import importlib
+import inspect
+import logging
+import os
+import time
+import types
+from pathlib import Path
+from functools import singledispatch
+
+import numpy as np
+import jax
+import jax.numpy as jnp
+
+
+logger = logging.getLogger(__name__)
+
+TOPS_CPU_FALLBACK = "TOPS_CPU_FALLBACK"
+TOPS_DUMP_DIR = "TOPS_DUMP_DIR"
+TOPS_DUMP_INCLUDE = "TOPS_DUMP_INCLUDE"
+TOPS_DUMP_EXCLUDE = "TOPS_DUMP_EXCLUDE"
+
+_GLOBAL_ENABLE_TOKENS = {"1", "true", "all", "*"}
+_UNRESOLVED = object()
+_TRACER_FALLBACK_WARNED: set[str] = set()
+
+
+def _env_tokens(name: str) -> set[str]:
+  value = os.environ.get(name, "")
+  return {token.strip().lower() for token in value.split(",") if token.strip()}
+
+
+def _export_fn_name(fn) -> str:
+  return getattr(fn, "__name__", fn.__class__.__name__)
+
+
+def _export_qualified_name(fn) -> str:
+  module = getattr(fn, "__module__", "")
+  name = _export_fn_name(fn)
+  return f"{module}.{name}" if module else name
+
+
+def _matches_export_filter(tokens: set[str], fn) -> bool:
+  if not tokens:
+    return False
+  if tokens & _GLOBAL_ENABLE_TOKENS:
+    return True
+  fn_name = _export_fn_name(fn).lower()
+  qualified_name = _export_qualified_name(fn).lower()
+  module_name = getattr(fn, "__module__", "").lower()
+  return fn_name in tokens or qualified_name in tokens or module_name in tokens
+
+
+def _should_fallback(fn) -> bool:
+  return _matches_export_filter(_env_tokens(TOPS_CPU_FALLBACK), fn)
+
+
+def _should_dump(fn) -> bool:
+  if not os.environ.get(TOPS_DUMP_DIR):
+    return False
+
+  include = _env_tokens(TOPS_DUMP_INCLUDE)
+  exclude = _env_tokens(TOPS_DUMP_EXCLUDE)
+
+  if include and not _matches_export_filter(include, fn):
+    return False
+  return not _matches_export_filter(exclude, fn)
+
+
+def _contains_tracer(value) -> bool:
+  try:
+    leaves = jax.tree_util.tree_leaves(value)
+  except Exception:
+    leaves = (value,)
+  return any(isinstance(leaf, jax.core.Tracer) for leaf in leaves)
+
+
+def _is_concrete_array(value) -> bool:
+  return isinstance(value, jax.Array) and not isinstance(value, jax.core.Tracer)
+
+
+def _get_original_device(value):
+  if _is_concrete_array(value):
+    return list(value.devices())[0]
+  if isinstance(value, dict):
+    values = value.values()
+  elif isinstance(value, (list, tuple)):
+    values = value
+  else:
+    return None
+
+  for item in values:
+    device = _get_original_device(item)
+    if device is not None:
+      return device
+  return None
+
+
+def _move_value_to_device(value, device):
+  if _is_concrete_array(value):
+    return jax.device_put(value, device)
+  if isinstance(value, tuple):
+    return tuple(_move_value_to_device(item, device) for item in value)
+  if isinstance(value, list):
+    return [_move_value_to_device(item, device) for item in value]
+  if isinstance(value, dict):
+    return {key: _move_value_to_device(item, device) for key, item in value.items()}
+  return value
+
+
+def _move_args_to_device(args, kwargs, device):
+  return (
+    tuple(_move_value_to_device(arg, device) for arg in args),
+    {key: _move_value_to_device(value, device) for key, value in kwargs.items()},
+  )
+
+
+def _move_result_to_device(result, device):
+  return _move_value_to_device(result, device)
+
+
+def _dump_value(value):
+  if value is None:
+    return None
+  if isinstance(value, jax.Array):
+    return np.asarray(value)
+  if isinstance(value, np.ndarray):
+    return value
+  if isinstance(value, (str, bytes, int, float, bool, np.number)):
+    return value
+  if isinstance(value, tuple):
+    return tuple(_dump_value(item) for item in value)
+  if isinstance(value, list):
+    return [_dump_value(item) for item in value]
+  if isinstance(value, dict):
+    return {key: _dump_value(item) for key, item in value.items()}
+  return value
+
+
+def _shape_of(value):
+  shape = getattr(value, "shape", None)
+  return tuple(shape) if shape is not None else None
+
+
+def _dtype_of(value):
+  dtype = getattr(value, "dtype", None)
+  return str(dtype) if dtype is not None else None
+
+
+def _as_output_items(result):
+  if isinstance(result, tuple):
+    return result
+  return (result,)
+
+
+def _collect_input_dump(fn, args, kwargs):
+  if _contains_tracer((args, kwargs)):
+    return None
+
+  signature = inspect.signature(fn)
+  bound = signature.bind_partial(*args, **kwargs)
+  inputs = {name: _dump_value(value) for name, value in bound.arguments.items()}
+  return {
+    "inputs": inputs,
+    "input_shapes": {name: _shape_of(value) for name, value in bound.arguments.items()},
+    "input_dtypes": {name: _dtype_of(value) for name, value in bound.arguments.items()},
+    "timestamp": time.time(),
+  }
+
+
+def _flush_dump(fn, pending, result):
+  if pending is None or _contains_tracer(result):
+    return
+
+  dump_dir = Path(os.environ[TOPS_DUMP_DIR])
+  dump_dir.mkdir(parents=True, exist_ok=True)
+
+  timestamp = pending["timestamp"]
+  output_items = _as_output_items(result)
+  outputs = {
+    str(idx): _dump_value(value) for idx, value in enumerate(output_items)
+  }
+  meta = {
+    "fn": _export_qualified_name(fn),
+    "shapes": pending["input_shapes"],
+    "dtypes": pending["input_dtypes"],
+    "output_shapes": {
+      str(idx): _shape_of(value) for idx, value in enumerate(output_items)
+    },
+    "output_dtypes": {
+      str(idx): _dtype_of(value) for idx, value in enumerate(output_items)
+    },
+    "timestamp": timestamp,
+    "pid": os.getpid(),
+  }
+  filename = f"{_export_qualified_name(fn)}_{timestamp:.6f}_rank{os.getpid()}.npz"
+  path = dump_dir / filename
+  np.savez(
+    path,
+    inputs=np.array(pending["inputs"], dtype=object),
+    outputs=np.array(outputs, dtype=object),
+    meta=np.array(meta, dtype=object),
+  )
+
+
+def _resolve_cpu_impl(fn, cpu_impl):
+  if cpu_impl is not None:
+    return cpu_impl
+
+  module_path = getattr(fn, "__module__", "")
+  if not module_path.startswith("tops.ops."):
+    raise ModuleNotFoundError(
+      f"Cannot infer CPU implementation for non-ops module {module_path!r}."
+    )
+
+  cpu_module_path = module_path.replace("tops.ops.", "tops.cpu.ops.", 1)
+  cpu_module = importlib.import_module(cpu_module_path)
+  return getattr(cpu_module, _export_fn_name(fn))
+
+
+class _ExportedFunction:
+  def __init__(self, fn, cpu_impl=None):
+    self._fn = fn
+    self._cpu_impl = cpu_impl
+    self._resolved_cpu_impl = _UNRESOLVED
+    functools.update_wrapper(self, fn)
+    try:
+      self.__signature__ = inspect.signature(fn)
+    except (TypeError, ValueError):
+      pass
+
+  def __getattr__(self, name):
+    return getattr(self._fn, name)
+
+  def __call__(self, *args, **kwargs):
+    pending_dump = None
+    if _should_dump(self._fn):
+      try:
+        pending_dump = _collect_input_dump(self._fn, args, kwargs)
+      except Exception as exc:
+        logger.warning(
+          "Failed to collect dump inputs for %s: %s",
+          _export_qualified_name(self._fn),
+          exc,
+        )
+
+    if _should_fallback(self._fn):
+      try:
+        if _contains_tracer((args, kwargs)):
+          fn_name = _export_qualified_name(self._fn)
+          if fn_name not in _TRACER_FALLBACK_WARNED:
+            _TRACER_FALLBACK_WARNED.add(fn_name)
+            logger.warning(
+              "CPU fallback skipped for %s under JAX tracing; "
+              "fallback is eager-only. Running original implementation.",
+              fn_name,
+            )
+          result = self._fn(*args, **kwargs)
+        else:
+          if self._resolved_cpu_impl is _UNRESOLVED:
+            self._resolved_cpu_impl = _resolve_cpu_impl(self._fn, self._cpu_impl)
+
+          original_device = _get_original_device((args, kwargs))
+          cpu = jax.devices("cpu")[0]
+          cpu_args, cpu_kwargs = _move_args_to_device(args, kwargs, cpu)
+          with jax.default_device(cpu):
+            result = self._resolved_cpu_impl(*cpu_args, **cpu_kwargs)
+          if original_device is not None and original_device != cpu:
+            result = _move_result_to_device(result, original_device)
+      except Exception as exc:
+        logger.warning(
+          "CPU fallback failed for %s; running original implementation: %s",
+          _export_qualified_name(self._fn),
+          exc,
+        )
+        result = self._fn(*args, **kwargs)
+    else:
+      result = self._fn(*args, **kwargs)
+
+    if pending_dump is not None:
+      try:
+        _flush_dump(self._fn, pending_dump, result)
+      except Exception as exc:
+        logger.warning(
+          "Failed to dump I/O for %s: %s",
+          _export_qualified_name(self._fn),
+          exc,
+        )
+
+    return result
+
+
+def export(fn=None, *, cpu_impl=None):
+  """Mark a public kernel API for runtime CPU fallback and I/O dump.
+
+  Args:
+      fn: Function being decorated.
+      cpu_impl: Optional CPU reference implementation. If omitted, the
+          implementation is inferred by replacing ``tops.ops.`` with
+          ``tops.cpu.ops.`` in the decorated function's module path.
+
+  Returns:
+      Callable wrapper preserving the original signature and forwarding
+      attributes such as ``custom_vjp.defvjp`` to the wrapped object.
+  """
+
+  def decorate(inner_fn):
+    return _ExportedFunction(inner_fn, cpu_impl=cpu_impl)
+
+  if fn is None:
+    return decorate
+  return decorate(fn)
+
+
+def next_power_of_2(n: int):
+  """Return the smallest power of 2 greater than or equal to n"""
+  n -= 1
+  n |= n >> 1
+  n |= n >> 2
+  n |= n >> 4
+  n |= n >> 8
+  n |= n >> 16
+  n |= n >> 32
+  n += 1
+  return n
+
+
+@singledispatch
+def cdiv(x: int, y: int):
+  return (x + y - 1) // y
+
+
+@cdiv.register
+def cdiv(x: jax.Array, y: int):
+  return (x + y - 1) // y
+
+
+def align_up(x: int, align: int):
+  return cdiv(x, align) * align
+
+
+@singledispatch
+def pad_to_multiple(x, multiple: int, axis: int, val):
+  raise NotImplementedError(f"pad_to_multiple is not implemented for type {type(x)}")
+
+
+@pad_to_multiple.register
+def pad_to_multiple(x: jax.Array, multiple: int | list, axis: int | list, val):
+  if isinstance(multiple, int):
+    multiple = [multiple]
+  if isinstance(axis, int):
+    axis = [axis]
+
+  assert len(multiple) == len(axis), (
+    f"Length of multiple {len(multiple)} must match length of axis {len(axis)}"
+  )
+
+  shape = list(x.shape)
+  pad_width = [(0, 0)] * len(shape)
+  for idx in range(0, len(axis)):
+    ax = axis[idx]
+    mu = multiple[idx]
+    length = shape[ax]
+    remainder = length % mu
+    if remainder == 0:
+      continue
+    pad_len = mu - remainder
+    pad_width[ax] = (0, pad_len)
+  return jnp.pad(x, pad_width, constant_values=val)
+
+
+def pad_to_multiple_varlen(
+  x: jax.Array, multiple: int, axis: int, cu_seqlens_cpu: jax.Array
+):
+  N = len(cu_seqlens_cpu) - 1
+  C = multiple
+  orig_seqlens = jnp.diff(cu_seqlens_cpu).tolist()
+  padded_seqlens = [((L + C - 1) // C) * C for L in orig_seqlens]
+
+  if orig_seqlens == padded_seqlens:
+    return x, cu_seqlens_cpu, None, None
+
+  padded = []
+  for i in range(N):
+    bos = int(cu_seqlens_cpu[i])
+    L = orig_seqlens[i]
+    pad = padded_seqlens[i] - L
+    seg = x[:, bos : bos + L]
+    if pad > 0:
+      pw = ((0, 0), (0, pad)) + ((0, 0),) * (x.ndim - 2)
+      seg = jnp.pad(seg, pw)
+    padded.append(seg)
+
+  padded_tensors = jnp.concatenate(padded, axis=1)
+  offsets = [0]
+  for pl in padded_seqlens:
+    offsets.append(offsets[-1] + pl)
+  new_cu_seqlens = jnp.array(offsets, dtype=jnp.int32)
+
+  return padded_tensors, new_cu_seqlens, orig_seqlens, padded_seqlens
+
+
+# def unpad_to_multiple_varlen(x: jax.Array, axis: int, cu_seqlens_cpu: jax.Array, padded_cu_seqlens_cpu: jax.Array):
+#     parts = []
+#     offset = 0
+#     for L, PL in zip(x, x):
+#         parts.append(x[:, offset : offset + L])
+#         offset += PL
+#     return jnp.concatenate(parts, axis=1)
+
+
+def segment_ids_to_cu_seqlens(segment_ids) -> jax.Array:
+  """Convert sorted segment IDs to cumulative sequence lengths.
+
+  Supports both 0-based and 1-based segment IDs — only transitions
+  between adjacent values matter, not the absolute values.
+
+  Args:
+      segment_ids: [T] or [B, T] — sorted non-decreasing integer segment IDs.
+          E.g. [1, 1, 1, 2, 2, 3, 3, 3] for 3 segments of lengths [3, 2, 3].
+          When [B, T], each row is processed independently and the results
+          are padded to a common N_max+1 length.
+
+  Returns:
+      cu_seqlens: [N+1] or [B, N_max+1] int32 — cumulative sequence lengths.
+          E.g. [0, 3, 5, 8].
+  """
+  seg = jnp.asarray(segment_ids)
+  if seg.ndim == 1:
+    T = seg.shape[0]
+    changes = jnp.concatenate([jnp.ones(1, dtype=jnp.bool_), seg[1:] != seg[:-1]])
+    n_segs = int(jnp.sum(changes))
+    starts = jnp.nonzero(changes, size=n_segs)[0]
+    return jnp.concatenate([starts, jnp.array([T])]).astype(jnp.int32)
+  # Batched: [B, T]
+  assert seg.ndim == 2
+  B = seg.shape[0]
+  per_batch = [segment_ids_to_cu_seqlens(seg[b]) for b in range(B)]
+  n_max = max(cu.shape[0] for cu in per_batch)
+  # Pad each to n_max with the last value (total valid length)
+  padded = []
+  for cu in per_batch:
+    pad_len = n_max - cu.shape[0]
+    if pad_len > 0:
+      padded.append(jnp.concatenate([cu, jnp.full(pad_len, cu[-1], dtype=jnp.int32)]))
+    else:
+      padded.append(cu)
+  return jnp.stack(padded, axis=0)
+
+
+def prepare_lens(cu_seqlens: jax.Array) -> jax.Array:
+  """
+  Compute the actual length of each sequence.
+  [0, 48, 64] -> [48, 16]
+  """
+  return cu_seqlens[1:] - cu_seqlens[:-1]
+
+
+def compute_padded_cu_seqlens(cu_seqlens_cpu: jax.Array, chunk_size: int):
+  """Compute padded cumulative sequence lengths.
+
+  Each sequence length is rounded up to the next multiple of
+  ``chunk_size``.
+
+  Args:
+      cu_seqlens_cpu: [N+1] or [B, N+1] int array — original cumulative
+          sequence lengths.
+      chunk_size: int — alignment multiple.
+
+  Returns:
+      [N+1] or [B, N+1] int array — padded cumulative sequence lengths.
+  """
+  if cu_seqlens_cpu.ndim == 2:
+    # Batched: process each row independently.
+    B = cu_seqlens_cpu.shape[0]
+    rows = [compute_padded_cu_seqlens(cu_seqlens_cpu[b], chunk_size) for b in range(B)]
+    return jnp.stack(rows, axis=0)
+  lens = jnp.diff(cu_seqlens_cpu)
+  padded_lens = cdiv(lens, chunk_size) * chunk_size
+  padded_cu = jnp.concatenate(
+    [
+      jnp.zeros(1, dtype=cu_seqlens_cpu.dtype),
+      jnp.cumsum(padded_lens),
+    ]
+  )
+  return padded_cu
+
+
+def _merge_short_segments(cu_seqlens, n_segs, min_seg_len, T_in, n_real):
+  """Merge segments shorter than min_seg_len, preserving batch boundaries.
+
+  Uses a greedy forward scan: a boundary is kept only if the distance
+  from the last accepted boundary is >= ``min_seg_len``, OR the
+  boundary falls on a batch element start.
+
+  Args:
+      cu_seqlens: [max_segs + 1] initial cu_seqlens.
+      n_segs: Number of real segments (traced value).
+      min_seg_len: Minimum segment length to keep.
+      T_in: Per-batch-element sequence length (for batch boundary detection).
+      n_real: Total number of real (non-padding) tokens.
+
+  Returns:
+      Filtered cu_seqlens with same shape [max_segs + 1].
+  """
+  max_segs = cu_seqlens.shape[0] - 1
+
+  def scan_fn(prev_pos, idx):
+    cur_pos = cu_seqlens[idx + 1]
+    is_real = (idx + 1) <= n_segs
+    is_batch_bnd = (cur_pos > 0) & ((cur_pos % T_in) == 0)
+    keep = is_real & (((cur_pos - prev_pos) > min_seg_len) | is_batch_bnd)
+    new_prev = jnp.where(keep, cur_pos, prev_pos)
+    return new_prev, keep
+
+  _, keeps = jax.lax.scan(scan_fn, jnp.int32(0), jnp.arange(max_segs))
+
+  # Compact kept boundaries using cumsum + searchsorted
+  kept_cumsum = jnp.cumsum(keeps.astype(jnp.int32))
+  n_kept = kept_cumsum[-1]
+
+  query = jnp.arange(1, max_segs + 1, dtype=jnp.int32)
+  src_indices = jnp.searchsorted(kept_cumsum, query, side="left")
+  src_indices = jnp.clip(src_indices, 0, max_segs - 1)
+
+  out_values = cu_seqlens[src_indices + 1]
+  out_values = jnp.where(query <= n_kept, out_values, n_real)
+
+  return jnp.concatenate([jnp.zeros(1, dtype=jnp.int32), out_values])
+
+
+def align_segment_ids(
+  segment_ids: jax.Array,
+  N_max: int,
+  chunk_size: int,
+) -> jax.Array:
+  """Align segment_ids to chunk boundaries, matching _align_seqs layout."""
+  assert segment_ids.ndim == 1
+  assert segment_ids.dtype == jnp.int32
+  T = segment_ids.shape[0]
+
+  is_boundary = jnp.concatenate([
+    jnp.ones(1, dtype=jnp.bool_),
+    segment_ids[1:] != segment_ids[:-1],
+  ])
+  seg_idx = jnp.cumsum(is_boundary.astype(jnp.int32)) - 1
+
+  positions = jnp.arange(T, dtype=jnp.int32)
+  seg_starts = jnp.full(N_max, T, dtype=jnp.int32).at[seg_idx].min(positions)
+  seg_ends = jnp.zeros(N_max, dtype=jnp.int32).at[seg_idx].max(positions + 1)
+  seg_lens = jnp.maximum(seg_ends - seg_starts, 0)
+  seg_labels = segment_ids[jnp.minimum(seg_starts, T - 1)]
+
+  is_real = (seg_labels > 0) & (seg_lens > 0)
+  aligned_lens = jnp.where(
+    is_real,
+    align_up(seg_lens, chunk_size),
+    0,
+  )
+  aligned_starts = jnp.concatenate([
+    jnp.zeros(1, dtype=jnp.int32),
+    jnp.cumsum(aligned_lens)[:-1],
+  ])
+
+  T_aligned = ((T + N_max * (chunk_size - 1) + chunk_size - 1) // chunk_size) * chunk_size
+  out = jnp.zeros((T_aligned,), dtype=jnp.int32)
+  apos = jnp.arange(T_aligned, dtype=jnp.int32)
+
+  def body(i, ids):
+    start = aligned_starts[i]
+    end = start + aligned_lens[i]
+    mask = is_real[i] & (apos >= start) & (apos < end)
+    return jnp.where(mask, seg_labels[i], ids)
+
+  return jax.lax.fori_loop(0, N_max, body, out)
+
+
+def segment_ids_to_seqlens(
+  segment_ids: jax.Array,
+  max_segs: int,
+  chunk_size: int = 1,
+) -> jax.Array:
+  """Convert segment_ids to a cu_seqlens boundary array.
+
+  Segment IDs are 1-indexed per-element labels; 0 = padding.  The
+  returned array follows the FLA cu_seqlens convention:
+  ``cu_seqlens[i]`` is the cumulative end position of segment *i*,
+  with phantom (padding) entries beyond the real segment count all
+  equal to the total number of valid tokens.
+
+  Args:
+      segment_ids: [T] or [B, T] int32 segment IDs (1-indexed; 0 = padding).
+          When [B, T], each row is processed independently.
+      max_segs: Maximum number of segments (determines output size).
+      chunk_size: Chunk size used by the downstream kernel.  Affects
+          the ``max_segs`` upper bound.  Defaults to 1 (finest
+          granularity, i.e. every position could start a new segment).
+
+  Returns:
+      cu_seqlens: [max_segs + 1] or [B, max_segs + 1] int32 array in FLA
+          convention ``[0, n1, n1+n2, ...]``.
+  """
+  if segment_ids.ndim == 2:
+    B = segment_ids.shape[0]
+    rows = [segment_ids_to_seqlens(segment_ids[b], max_segs, chunk_size) for b in range(B)]
+    return jnp.stack(rows, axis=0)
+  assert segment_ids.ndim == 1, (
+    f"[segment_ids] Expected 1D array [T], got ndim={segment_ids.ndim}"
+  )
+  assert chunk_size >= 1, f"[chunk_size] Must be >= 1, got {chunk_size}"
+  T = segment_ids.shape[0]
+
+  seg = segment_ids.reshape(-1)
+  padding_value = 0
+  valid = seg != padding_value
+
+  is_boundary = jnp.concatenate([jnp.ones(1, dtype=jnp.bool_), seg[1:] != seg[:-1]])
+  is_boundary = is_boundary & valid
+
+  seg_idx = jnp.where(valid, jnp.cumsum(is_boundary.astype(jnp.int32)), padding_value)
+  n_segs = seg_idx.max()
+  n_real = jnp.sum(valid).astype(jnp.int32)
+
+  is_end = jnp.concatenate([seg[1:] != seg[:-1], jnp.ones(1, dtype=jnp.bool_)]) & valid
+  prefix_len = jnp.cumsum(valid.astype(jnp.int32))
+
+  drop_idx = jnp.asarray(max_segs + 1, dtype=jnp.int32)
+  scatter_idx = jnp.where(is_end, seg_idx, drop_idx)
+  scatter_val = jnp.where(is_end, prefix_len, 0)
+
+  cu_seqlens = jnp.zeros((max_segs + 1,), dtype=jnp.int32)
+  cu_seqlens = cu_seqlens.at[scatter_idx].max(scatter_val, mode="drop")
+
+  out_idx = jnp.arange(max_segs + 1, dtype=jnp.int32)
+  cu_seqlens = jnp.where(out_idx > n_segs, n_real, cu_seqlens)
+
+  return cu_seqlens
+
+
+def prepare_chunk_indices(
+  cu_seqlens: jax.Array,
+  chunk_size: int,
+  max_T: int | None = None,
+) -> jax.Array:
+  """Compute per-chunk (seq_id, block_id) mapping from cu_seqlens.
+
+  Args:
+      cu_seqlens: [N+1] or [B, N+1] int array.
+      chunk_size: Chunk size.
+      max_T: Maximum T for the output. If None, uses cu_seqlens[-1].
+
+  Returns:
+      [total_nt, 2] or [B, NT_max, 2] int32 array.
+  """
+  if cu_seqlens.ndim == 2:
+    B = cu_seqlens.shape[0]
+    per_batch = [prepare_chunk_indices(cu_seqlens[b], chunk_size,
+                                       max_T=max_T) for b in range(B)]
+    return jnp.stack(per_batch, axis=0)
+  lens = prepare_lens(cu_seqlens)
+  n_chunks = cdiv(lens, chunk_size)
+  num_seqs = len(lens)
+  if max_T is None:
+    max_T = cu_seqlens[-1]
+  total_nt = max_T // chunk_size
+  seq_ids = jnp.repeat(
+    jnp.arange(num_seqs, dtype=jnp.int32), n_chunks, total_repeat_length=total_nt
+  )
+  prefix_chunks = jnp.concatenate([jnp.zeros(1, dtype=jnp.int32), jnp.cumsum(n_chunks)])
+  seq_offsets = jnp.repeat(prefix_chunks[:-1], n_chunks, total_repeat_length=total_nt)
+  block_ids = jnp.arange(total_nt, dtype=jnp.int32) - seq_offsets
+  return jnp.stack([seq_ids, block_ids], axis=1)
+
+
+def assert_shape_or_none(
+  x: jax.Array | list[jax.Array | None] | tuple[jax.Array | None, ...] | None,
+  expected_shape: list[int] | tuple[int, ...],
+  name: str | list[str] | tuple[str, ...] = "tensor",
+):
+  """
+  Concise helper to assert tensor shapes.
+  Skips assertion for any element that is None.
+  Supports a single array or an iterable of arrays that should all match the expected shape.
+  """
+  if x is None:
+    return
+
+  if isinstance(x, (list, tuple)):
+    has_names = isinstance(name, (list, tuple)) and len(name) == len(x)
+    for i, tensor in enumerate(x):
+      if tensor is not None:
+        curr_name = name[i] if has_names else f"{name}_{i}"
+        assert tensor.shape == expected_shape, (
+          f"[{curr_name}] Expected shape {expected_shape}, got {tensor.shape}"
+        )
+  else:
+    assert x.shape == expected_shape, (
+      f"[{name}] Expected shape {expected_shape}, got {x.shape}"
+    )
+
+
+def assert_shape(
+  x: jax.Array | list[jax.Array] | tuple[jax.Array, ...],
+  expected_shape: list[int] | tuple[int, ...],
+  name: str | list[str] | tuple[str, ...] = "tensor",
+):
+  """
+  Concise helper to assert tensor shapes.
+  Supports a single array or an iterable of arrays that should all match the expected shape.
+  """
+  if isinstance(x, (list, tuple)):
+    # If name is not a sequence or has mismatched length, use a generic numbered name
+    has_names = isinstance(name, (list, tuple)) and len(name) == len(x)
+    for i, tensor in enumerate(x):
+      curr_name = name[i] if has_names else f"{name}_{i}"
+      assert tensor.shape == expected_shape, (
+        f"[{curr_name}] Expected shape {expected_shape}, got {tensor.shape}"
+      )
+  else:
+    assert x.shape == expected_shape, (
+      f"[{name}] Expected shape {expected_shape}, got {x.shape}"
+    )
+
+
+def export_public(current_globals):
+  """ """
+  public_members = []
+
+  module_name = current_globals.get("__name__")
+
+  for name, obj in current_globals.items():
+    if name.startswith("_"):
+      continue
+
+    if hasattr(obj, "__module__") and obj.__module__ != module_name:
+      continue
+
+    if isinstance(obj, types.ModuleType):
+      continue
+
+    if name == "export_public":
+      continue
+
+    public_members.append(name)
+
+  return public_members

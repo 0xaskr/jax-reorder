@@ -1,0 +1,21 @@
+import os
+
+import jax.numpy as jnp
+
+def exp(x):
+    return jnp.exp(x.astype(jnp.float32))
+
+def exp2(x):
+    """Base-2 exponential, matching Triton's tl.exp2."""
+    return jnp.exp2(x.astype(jnp.float32))
+
+
+def get_interpret() -> bool:
+    """Determine the ``interpret`` flag for ``pallas_call``.
+
+    Reads the environment variable ``PALLAS_INTERPRET``.  When set to
+    ``"1"`` or ``"true"`` (case-insensitive) interpret mode is enabled;
+    every other value (including unset) disables it.
+    """
+    env = os.environ.get("PALLAS_INTERPRET", "")
+    return env.strip().lower() in ("1", "true")
